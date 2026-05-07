@@ -599,9 +599,9 @@ function renderGuide(){
     t.filter(function(b){return b.grade==='A'||(b.grade==='B'&&b.hriScore>=50);}).sort(function(a,b){if(a.grade!==b.grade)return a.grade<b.grade?-1:1;return b.hriScore-a.hriScore;}),
     function(b){return bCard(b,'hri',b.hriScore,'var(--grn)','OVER 1.5 H+R+RBI','Over 1.5 H+R+RBI',b.obp,'OBP',b.avg,'AVG',b.hpg,'H/G','');});
 
-  html+=makeSect('hit','hit','🩵','Over 1.5 Hits',
+  html+=makeSect('hit','hit','🩵','Over 0.5 Hits',
     t.filter(function(b){return b.grade==='A'||(b.grade==='B'&&b.hitScore>=50);}).sort(function(a,b){if(a.grade!==b.grade)return a.grade<b.grade?-1:1;return b.hitScore-a.hitScore;}),
-    function(b){return bCard(b,'hit',b.hitScore,'var(--tel)','OVER 1.5 HITS','Over 1.5 Hits',b.avg,'AVG',b.hpg,'H/G',b.obp,'OBP','');});
+    function(b){return bCard(b,'hit',b.hitScore,'var(--tel)','OVER 0.5 HITS','Over 0.5 Hits',b.avg,'AVG',b.hpg,'H/G',b.obp,'OBP','');});
 
   html+=makeSect('tb','tb','🔷','Over 1.5 Total Bases',
     t.filter(function(b){return b.grade==='A'||(b.grade==='B'&&b.tbScore>=50);}).sort(function(a,b){if(a.grade!==b.grade)return a.grade<b.grade?-1:1;return b.tbScore-a.tbScore;}),
@@ -748,9 +748,9 @@ function renderBatters(){
   // Prop type legend
   html+='<div style="font-size:10px;font-weight:700;color:var(--mut);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Prop Types</div>';
   html+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:5px">';
-  html+='<div style="background:rgba(0,0,0,.2);border-radius:7px;padding:8px"><div style="font-size:11px;font-weight:700;color:var(--grn)">🟢 H+R+RBI</div><div style="font-size:10px;color:var(--mut);margin-top:2px">Best for lineup spots 1-4. Needs run production.</div></div>';
-  html+='<div style="background:rgba(0,0,0,.2);border-radius:7px;padding:8px"><div style="font-size:11px;font-weight:700;color:var(--tel)">🩵 Hits</div><div style="font-size:10px;color:var(--mut);margin-top:2px">High AVG + low walk rate. Walks ≠ hits.</div></div>';
-  html+='<div style="background:rgba(0,0,0,.2);border-radius:7px;padding:8px"><div style="font-size:11px;font-weight:700;color:var(--nvy)">🔷 Total Bases</div><div style="font-size:10px;color:var(--mut);margin-top:2px">High SLG + low walks. Walks = 0 TB always.</div></div>';
+  html+='<div style="background:rgba(0,0,0,.2);border-radius:7px;padding:8px"><div style="font-size:11px;font-weight:700;color:var(--grn)">🟢 H+R+RBI</div><div style="font-size:10px;color:var(--mut);margin-top:2px">Over 1.5 combined Hits + Runs + RBI.</div></div>';
+  html+='<div style="background:rgba(0,0,0,.2);border-radius:7px;padding:8px"><div style="font-size:11px;font-weight:700;color:var(--tel)">🩵 Hits</div><div style="font-size:10px;color:var(--mut);margin-top:2px">Over 0.5 hits. High AVG + low walk rate.</div></div>';
+  html+='<div style="background:rgba(0,0,0,.2);border-radius:7px;padding:8px"><div style="font-size:11px;font-weight:700;color:var(--nvy)">🔷 Total Bases</div><div style="font-size:10px;color:var(--mut);margin-top:2px">Over 1.5 TB. High SLG + low walks. Walks = 0 TB.</div></div>';
   html+='<div style="background:rgba(0,0,0,.2);border-radius:7px;padding:8px"><div style="font-size:11px;font-weight:700;color:var(--pur)">🟣 Home Run</div><div style="font-size:10px;color:var(--mut);margin-top:2px">HR/G rate + hitter-friendly park. Coors is best.</div></div>';
   html+='</div>';
 
@@ -875,7 +875,7 @@ function renderLog(){
 function setLM(m){LM=m;renderLog();}
 
 function renderSingleForm(){
-  var mkts=['Over 1.5 H+R+RBI','Over 1.5 Hits','Over 1.5 Total Bases','Over 0.5 HR','Over 4.5 Ks','Over 5.5 Ks','Over 6.5 Ks','Under 3.5 Ks','Under 4.5 Ks','Over 0.5 HR Allowed','Over 1.5 HR Allowed','Over Game Total','Under Game Total','Other'];
+  var mkts=['Over 1.5 H+R+RBI','Over 0.5 Hits','Over 1.5 Total Bases','Over 0.5 HR','Over 4.5 Ks','Over 5.5 Ks','Over 6.5 Ks','Under 3.5 Ks','Under 4.5 Ks','Over 0.5 HR Allowed','Over 1.5 HR Allowed','Over Game Total','Under Game Total','Other'];
   var html='<div class="card">';
   html+='<label class="lbl">Player / Pitcher</label><input class="inp" id="fp" value="'+LOG_FORM.player+'" placeholder="e.g. Freddie Freeman" oninput="LOG_FORM.player=this.value">';
   html+='<label class="lbl">Team</label><input class="inp" id="ft" value="'+LOG_FORM.team+'" placeholder="e.g. Los Angeles Dodgers" oninput="LOG_FORM.team=this.value">';
@@ -906,7 +906,7 @@ function renderParlayForm(){
   html+='<div style="font-size:10px;color:var(--mut);margin-bottom:7px;text-transform:uppercase">Add Leg Manually</div>';
   html+='<input class="inp" placeholder="Player name" value="'+MAN_LEG.player+'" oninput="MAN_LEG.player=this.value">';
   html+='<select class="inp" onchange="MAN_LEG.market=this.value">';
-  ['Over 1.5 H+R+RBI','Over 1.5 Hits','Over 1.5 Total Bases','Over 0.5 HR','Over 5.5 Ks','Under 4.5 Ks','Over 0.5 HR Allowed','Over Game Total','Under Game Total','Other'].forEach(function(m){html+='<option>'+m+'</option>';});
+  ['Over 1.5 H+R+RBI','Over 0.5 Hits','Over 1.5 Total Bases','Over 0.5 HR','Over 5.5 Ks','Under 4.5 Ks','Over 0.5 HR Allowed','Over Game Total','Under Game Total','Other'].forEach(function(m){html+='<option>'+m+'</option>';});
   html+='</select>';
   html+='<button class="btn-s" onclick="addManLeg()" style="margin-top:0">+ Add Leg</button></div>';
   html+='<label class="lbl">Combined Odds</label><input class="inp" type="number" placeholder="e.g. +350" value="'+PAR_FORM.odds+'" oninput="PAR_FORM.odds=this.value">';
