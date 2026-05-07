@@ -1,0 +1,1046 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Hitters Edge v7.0</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0a0f1a;--sur:#111827;--sur2:#1a2235;--bdr:#1e2d45;
+  --txt:#e2e8f0;--mut:#64748b;
+  --grn:#22c55e;--gbg:#052e16;
+  --amb:#f59e0b;--abg:#2d1a00;
+  --red:#ef4444;--rbg:#2d0a0a;
+  --blu:#3b82f6;--bbg:#0a1929;
+  --pur:#a855f7;--pbg:#1e0a2d;
+  --tel:#14b8a6;--tbg:#021a18;
+  --nvy:#6366f1;--nbg:#0d0e2a;
+  --gld:#fbbf24;
+}
+body{background:var(--bg);color:var(--txt);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:14px;min-height:100vh;padding-bottom:72px;max-width:600px;margin:0 auto}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes fadein{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+.hdr{background:var(--sur);border-bottom:1px solid var(--bdr);padding:13px 15px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
+.logo{font-size:19px;font-weight:700;color:var(--gld)}
+.nav{position:fixed;bottom:0;left:0;right:0;background:var(--sur);border-top:1px solid var(--bdr);display:flex;z-index:100;max-width:600px;margin:0 auto}
+.nb{flex:1;padding:9px 2px 7px;background:none;border:none;color:var(--mut);font-size:9px;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:2px}
+.nb.active{color:var(--gld)}
+.nb-ic{font-size:17px}
+.pg{display:none;padding:13px 13px 0;animation:fadein .2s ease}
+.pg.active{display:block}
+.card{background:var(--sur);border:1px solid var(--bdr);border-radius:12px;padding:13px;margin-bottom:10px}
+.sect{margin-bottom:8px;border-radius:12px;overflow:hidden;border:1px solid var(--bdr)}
+.shdr{display:flex;align-items:center;justify-content:space-between;padding:11px 13px;cursor:pointer;user-select:none}
+.stit{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:700}
+.scnt{font-size:10px;padding:2px 7px;border-radius:20px;background:rgba(0,0,0,.3)}
+.sarr{font-size:11px;color:var(--mut);transition:transform .2s}
+.sarr.open{transform:rotate(180deg)}
+.sbdy{display:none;padding:8px}
+.sbdy.open{display:block}
+.s-hri .shdr{background:#0a1f0a}.s-hri .stit{color:var(--grn)}
+.s-hit .shdr{background:var(--tbg)}.s-hit .stit{color:var(--tel)}
+.s-tb .shdr{background:var(--nbg)}.s-tb .stit{color:var(--nvy)}
+.s-hr .shdr{background:var(--pbg)}.s-hr .stit{color:var(--pur)}
+.s-ok .shdr{background:var(--bbg)}.s-ok .stit{color:var(--blu)}
+.s-uk .shdr{background:var(--rbg)}.s-uk .stit{color:var(--red)}
+.s-ha .shdr{background:var(--pbg)}.s-ha .stit{color:var(--pur)}
+.s-go .shdr{background:#0a1f0a}.s-go .stit{color:var(--grn)}
+.s-gu .shdr{background:var(--bbg)}.s-gu .stit{color:var(--blu)}
+.gc{border-radius:11px;padding:12px;margin-bottom:8px;border-left:3px solid}
+.gc.hri{background:#0a1f0a;border-color:var(--grn)}
+.gc.hit{background:var(--tbg);border-color:var(--tel)}
+.gc.tb{background:var(--nbg);border-color:var(--nvy)}
+.gc.hr{background:var(--pbg);border-color:var(--pur)}
+.gc.ok{background:var(--bbg);border-color:var(--blu)}
+.gc.uk{background:var(--rbg);border-color:var(--red)}
+.gc.ha{background:var(--pbg);border-color:var(--pur)}
+.gc.go{background:#0a1f0a;border-color:var(--grn)}
+.gc.gu{background:var(--bbg);border-color:var(--blu)}
+.gtyp{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;margin-bottom:4px}
+.gnm{font-size:15px;font-weight:700;margin-bottom:2px}
+.gmt{font-size:11px;color:var(--mut);margin-bottom:6px}
+.sbar-wrap{margin:6px 0 4px}
+.sbar-top{display:flex;justify-content:space-between;font-size:10px;color:var(--mut);margin-bottom:2px}
+.sbar-tr{height:4px;background:var(--sur2);border-radius:2px;overflow:hidden}
+.sbar-fill{height:100%;border-radius:2px;transition:width .6s ease}
+.s4{display:grid;grid-template-columns:repeat(4,1fr);gap:5px;margin:7px 0}
+.s4b{background:rgba(0,0,0,.3);border-radius:7px;padding:6px;text-align:center}
+.s4v{font-size:13px;font-weight:700}
+.s4l{font-size:8px;color:var(--mut);margin-top:1px;text-transform:uppercase}
+.gln{background:rgba(0,0,0,.3);border-radius:7px;padding:7px 10px;display:flex;justify-content:space-between;align-items:center;margin:7px 0}
+.badge{border-radius:20px;padding:2px 8px;font-size:11px;font-weight:700}
+.ba{background:var(--gbg);color:var(--grn);border:1px solid var(--grn)}
+.bb{background:var(--abg);color:var(--amb);border:1px solid var(--amb)}
+.bc{background:var(--sur2);color:var(--mut);border:1px solid var(--bdr)}
+.bw{background:var(--gbg);color:var(--grn)}
+.bl2{background:var(--rbg);color:var(--red)}
+.bpend{background:var(--sur2);color:var(--mut)}
+.hot{font-size:10px;padding:2px 6px;border-radius:10px;margin-left:5px}
+.btn{background:var(--gld);color:#000;border:none;border-radius:9px;padding:10px 14px;font-size:13px;font-weight:700;cursor:pointer;width:100%;margin-top:8px}
+.btn:active{opacity:.85}
+.btn-s{background:var(--sur2);color:var(--txt);border:1px solid var(--bdr);border-radius:8px;padding:8px 13px;font-size:12px;cursor:pointer;width:100%;margin-top:6px}
+.inp{width:100%;background:var(--sur2);border:1px solid var(--bdr);border-radius:8px;color:var(--txt);padding:10px 12px;font-size:14px;margin-bottom:10px}
+.inp:focus{outline:none;border-color:var(--gld)}
+select.inp option{background:var(--sur2)}
+.lbl{font-size:10px;color:var(--mut);display:block;margin-bottom:3px;text-transform:uppercase;letter-spacing:.5px}
+.pnl-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:14px}
+.pnl-box{background:var(--sur);border:1px solid var(--bdr);border-radius:10px;padding:12px;text-align:center}
+.bet-row{background:var(--sur);border:1px solid var(--bdr);border-radius:9px;padding:11px;margin-bottom:7px;display:flex;align-items:center;justify-content:space-between;gap:9px}
+.tab-row{display:flex;gap:5px;margin-bottom:12px}
+.tab-b{flex:1;padding:7px;background:var(--sur2);border:1px solid var(--bdr);border-radius:7px;color:var(--mut);font-size:11px;cursor:pointer;text-align:center;font-weight:600}
+.tab-b.active{background:var(--gld);color:#000;border-color:var(--gld)}
+.leg{background:var(--sur2);border-radius:8px;padding:9px;margin-bottom:7px;display:flex;align-items:center;justify-content:space-between}
+.leg-rm{background:var(--rbg);color:var(--red);border:1px solid var(--red);border-radius:5px;padding:3px 8px;font-size:10px;cursor:pointer}
+.pr-row{background:var(--sur);border:1px solid var(--bdr);border-radius:10px;padding:12px;margin-bottom:8px}
+.pr-row.best{border-color:var(--grn)}.pr-row.worst{border-color:var(--red)}
+.stl{font-size:11px;font-weight:700;color:var(--mut);text-transform:uppercase;letter-spacing:1px;margin:14px 0 8px;display:flex;align-items:center;gap:6px}
+.stl::after{content:"";flex:1;height:1px;background:var(--bdr)}
+.empty{text-align:center;padding:30px 16px;color:var(--mut);font-size:13px;line-height:1.6}
+.spnr{width:30px;height:30px;border:3px solid var(--bdr);border-top-color:var(--gld);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 14px}
+.load{text-align:center;padding:50px 20px;color:var(--mut)}
+.rbtn{background:var(--sur2);border:1px solid var(--bdr);color:var(--mut);border-radius:7px;padding:4px 10px;font-size:10px;cursor:pointer}
+.toast-el{position:fixed;bottom:82px;left:50%;transform:translateX(-50%);background:var(--sur2);border:1px solid var(--bdr);color:var(--txt);padding:8px 17px;border-radius:20px;font-size:12px;z-index:200;white-space:nowrap;opacity:0;transition:opacity .3s;pointer-events:none}
+.toast-el.show{opacity:1}
+.ai-out{margin-top:12px;font-size:13px;line-height:1.7}
+.ai-sec{border-radius:9px;padding:11px;margin-bottom:8px}
+.ai-sec-lbl{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px}
+.rbtns{display:flex;gap:5px;margin-top:6px}
+.btnw{background:var(--grn);color:#000;border:none;border-radius:6px;padding:5px 10px;font-size:11px;font-weight:600;cursor:pointer}
+.btnl{background:var(--red);color:#fff;border:none;border-radius:6px;padding:5px 10px;font-size:11px;font-weight:600;cursor:pointer}
+</style>
+</head>
+<body>
+
+<div class="hdr">
+  <div>
+    <div class="logo">⚾ Hitters Edge v7</div>
+    <div style="font-size:10px;color:var(--mut)" id="lu">Loading data...</div>
+  </div>
+  <div style="text-align:right">
+    <div style="font-size:16px;font-weight:700;color:var(--grn)" id="pnl-hdr">$0.00</div>
+    <div style="font-size:9px;color:var(--mut);text-transform:uppercase">All Time P&L</div>
+  </div>
+</div>
+
+<div id="pg-guide"    class="pg active"><div class="load"><div class="spnr"></div>Fetching today's games...</div></div>
+<div id="pg-batters"  class="pg"><div class="load"><div class="spnr"></div>Loading...</div></div>
+<div id="pg-pitchers" class="pg"><div class="load"><div class="spnr"></div>Loading...</div></div>
+<div id="pg-totals"   class="pg"><div class="load"><div class="spnr"></div>Loading...</div></div>
+<div id="pg-pnl"      class="pg"></div>
+<div id="pg-log"      class="pg"></div>
+
+<nav class="nav">
+  <button class="nb active" id="nb-guide"    onclick="sp('guide')">   <span class="nb-ic">📋</span>Guide</button>
+  <button class="nb"         id="nb-batters"  onclick="sp('batters')"> <span class="nb-ic">⚾</span>Batters</button>
+  <button class="nb"         id="nb-pitchers" onclick="sp('pitchers')"><span class="nb-ic">⏱</span>Pitchers</button>
+  <button class="nb"         id="nb-totals"   onclick="sp('totals')">  <span class="nb-ic">🏟</span>Totals</button>
+  <button class="nb"         id="nb-pnl"      onclick="sp('pnl')">     <span class="nb-ic">💰</span>P&amp;L</button>
+  <button class="nb"         id="nb-log"      onclick="sp('log')">     <span class="nb-ic">➕</span>Log</button>
+</nav>
+<div class="toast-el" id="toast"></div>
+
+<script>
+var D=null,BETS=[],LEGS=[],LM='single',AI_OUT='',AI_LOAD=false,TOAST_T=null,AI_KEY=sget('ai_key','');
+var OPEN={hri:true,hit:false,tb:false,hr:false,ok:false,uk:false,ha:false,go:false,gu:false};
+var LOG_FORM={player:'',team:'',market:'Over 1.5 H+R+RBI',odds:'-115',stake:'25',result:'PENDING',notes:''};
+var PAR_FORM={odds:'',stake:'25',result:'PENDING'};
+var MAN_LEG={player:'',market:'Over 1.5 H+R+RBI'};
+
+function sget(k,d){try{var v=localStorage.getItem('he7_'+k);return v?JSON.parse(v):d;}catch(e){return d;}}
+function sset(k,v){try{localStorage.setItem('he7_'+k,JSON.stringify(v));}catch(e){}}
+BETS=sget('bets',[]);
+
+var PF={'Coors Field':115,'Great American Ball Park':112,'Fenway Park':108,'Globe Life Field':107,'Citizens Bank Park':106,'American Family Field':105,'Wrigley Field':104,'Rogers Centre':104,'Yankee Stadium':103,'Truist Park':102,'Camden Yards':103,'Guaranteed Rate Field':103,'Dodger Stadium':101,'T-Mobile Park':100,'Progressive Field':100,'Nationals Park':100,'Minute Maid Park':98,'Angel Stadium':99,'Chase Field':99,'loanDepot park':98,'Oracle Park':97,'Citi Field':97,'Comerica Park':97,'Petco Park':96,'Target Field':96,'PNC Park':96,'Busch Stadium':95,'Kauffman Stadium':95,'Tropicana Field':97,'Sutter Health Park':98};
+var MLB='https://statsapi.mlb.com/api/v1';
+
+function sp(n){
+  document.querySelectorAll('.pg').forEach(function(p){p.classList.remove('active');});
+  document.querySelectorAll('.nb').forEach(function(b){b.classList.remove('active');});
+  document.getElementById('pg-'+n).classList.add('active');
+  document.getElementById('nb-'+n).classList.add('active');
+  if(n==='log')renderLog();
+  if(n==='pnl')renderPnL();
+}
+
+function toast(msg){
+  var t=document.getElementById('toast');
+  t.textContent=msg;t.classList.add('show');
+  if(TOAST_T)clearTimeout(TOAST_T);
+  TOAST_T=setTimeout(function(){t.classList.remove('show');},2500);
+}
+
+function getToday(){
+  var s=new Date().toLocaleDateString('en-US',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'});
+  var p=s.split('/');return p[2]+'-'+p[0]+'-'+p[1];
+}
+
+function fmtTime(iso){
+  if(!iso)return 'TBD';
+  try{var d=new Date(iso),h=d.getUTCHours(),m=d.getUTCMinutes(),mo=d.getUTCMonth()+1;
+  var et=h-(mo>=3&&mo<=11?4:5);et=((et%24)+24)%24;
+  var ampm=et>=12?'PM':'AM',h12=et%12||12;
+  return h12+':'+(m<10?'0':'')+m+' '+ampm+' ET';}catch(e){return 'TBD';}
+}
+
+function sc(s){return s>=70?'var(--grn)':s>=50?'var(--amb)':'var(--mut)';}
+
+function bar(s,c){
+  var col=c||sc(s);
+  return '<div class="sbar-wrap"><div class="sbar-top"><span>Score</span><span style="color:'+col+';font-weight:700">'+s+'/100</span></div><div class="sbar-tr"><div class="sbar-fill" style="width:'+s+'%;background:'+col+'"></div></div></div>';
+}
+
+function s4(items){
+  return '<div class="s4">'+items.map(function(i){
+    return '<div class="s4b"><div class="s4v" style="color:'+(i[2]||'var(--txt)')+'">'+( i[0]!==undefined&&i[0]!==null?i[0]:'—')+'</div><div class="s4l">'+i[1]+'</div></div>';
+  }).join('')+'</div>';
+}
+
+function hotBadge(hc){
+  if(!hc||hc==='Neutral')return '';
+  if(hc==='HOT')return '<span class="hot" style="background:var(--gbg);color:var(--grn)">🔥 HOT</span>';
+  if(hc==='Warming')return '<span class="hot" style="background:var(--abg);color:var(--amb)">📈</span>';
+  if(hc==='COLD')return '<span class="hot" style="background:var(--rbg);color:var(--red)">🥶 COLD</span>';
+  if(hc==='Cooling')return '<span class="hot" style="background:var(--abg);color:var(--amb)">📉</span>';
+  return '';
+}
+
+function gradeBadge(g){
+  if(g==='A')return '<span class="badge ba">★ A</span>';
+  if(g==='B')return '<span class="badge bb">⚡ B</span>';
+  return '<span class="badge bc">C</span>';
+}
+
+async function fetchJ(url){
+  try{var r=await fetch(url);if(!r.ok)throw new Error('HTTP '+r.status);return await r.json();}
+  catch(e){console.error('fetchJ error:',e.message,url);return null;}
+}
+
+function sleep(ms){return new Promise(function(r){setTimeout(r,ms);});}
+
+function setProgress(msg){
+  document.getElementById('lu').textContent=msg;
+}
+
+async function loadGames(){
+  var today=getToday();
+  var data=await fetchJ(MLB+'/schedule?sportId=1&date='+today+'&hydrate=lineups,probablePitcher(note),team,venue&language=en');
+  if(!data||!data.dates||!data.dates[0])return[];
+  return data.dates[0].games.map(function(g){
+    return{
+      gamePk:g.gamePk,time:fmtTime(g.gameDate),
+      venue:g.venue&&g.venue.name||'Unknown',
+      park:PF[g.venue&&g.venue.name]||100,
+      awayTeam:g.teams&&g.teams.away&&g.teams.away.team&&g.teams.away.team.name||'TBD',
+      homeTeam:g.teams&&g.teams.home&&g.teams.home.team&&g.teams.home.team.name||'TBD',
+      awayPitcher:{name:g.teams&&g.teams.away&&g.teams.away.probablePitcher&&g.teams.away.probablePitcher.fullName||'TBD',id:g.teams&&g.teams.away&&g.teams.away.probablePitcher&&g.teams.away.probablePitcher.id||null},
+      homePitcher:{name:g.teams&&g.teams.home&&g.teams.home.probablePitcher&&g.teams.home.probablePitcher.fullName||'TBD',id:g.teams&&g.teams.home&&g.teams.home.probablePitcher&&g.teams.home.probablePitcher.id||null},
+      awayLineup:extractLineup(g,'away'),
+      homeLineup:extractLineup(g,'home')
+    };
+  });
+}
+
+function extractLineup(g,side){
+  var arr=g.lineups&&g.lineups[side+'Players']||[];
+  return arr.map(function(p,i){
+    return{spot:i+1,name:p.fullName||'Unknown',id:p.id||null,pos:p.primaryPosition&&p.primaryPosition.abbreviation||'?'};
+  });
+}
+
+async function loadPitcher(id,season){
+  if(!id)return null;
+  var data=await fetchJ(MLB+'/people/'+id+'?hydrate=stats(group=pitching,type=season,season='+season+')&sportId=1');
+  var splits=data&&data.people&&data.people[0]&&data.people[0].stats&&data.people[0].stats[0]&&data.people[0].stats[0].splits||[];
+  if(!splits.length)return null;
+  var s=splits[0].stat;
+  var ip=parseFloat(s.inningsPitched)||1,gs=parseInt(s.gamesStarted)||0;
+  var ks=parseInt(s.strikeOuts)||0,bbs=parseInt(s.baseOnBalls)||0;
+  var era=parseFloat(s.era)||0,whip=parseFloat(s.whip)||0;
+  var h=parseInt(s.hits)||0,hr=parseInt(s.homeRuns)||0;
+  var k9=Math.round((ks/ip)*9*100)/100,bb9=Math.round((bbs/ip)*9*100)/100;
+  var avgK=Math.round((ks/Math.max(gs,1))*10)/10,avgH=Math.round((h/Math.max(gs,1))*10)/10;
+  var avgHR=Math.round((hr/Math.max(gs,1))*100)/100;
+  var team=splits[0]&&splits[0].team&&splits[0].team.name||'Unknown';
+  var rf=await loadPitcherForm(id,season);
+  var vuln=0,flags=[];
+  if(era>4.50){vuln++;flags.push('ERA '+era);}
+  if(whip>1.40){vuln++;flags.push('WHIP '+whip);}
+  if(k9<7.0){vuln++;flags.push('K/9 '+k9);}
+  if(rf.lastERA!=='N/A'&&parseFloat(rf.lastERA)>5.0){vuln++;flags.push('Last '+rf.lastERA+' ERA');}
+  if(rf.last3ERA!=='N/A'&&parseFloat(rf.last3ERA)>5.5)vuln=Math.min(vuln+1,4);
+  return{era,whip,k9,bb9,ip,gs,avgK,avgH,avgHR,team,
+    isAce:era<=2.50&&gs>=6,isVuln:vuln>=2,vulnScore:vuln,flags,
+    lastERA:rf.lastERA,last3ERA:rf.last3ERA};
+}
+
+async function loadPitcherForm(id,season){
+  var data=await fetchJ(MLB+'/people/'+id+'/stats?stats=gameLog&group=pitching&season='+season+'&sportId=1');
+  var splits=data&&data.stats&&data.stats[0]&&data.stats[0].splits||[];
+  if(!splits.length)return{lastERA:'N/A',last3ERA:'N/A'};
+  var last=splits[splits.length-1].stat;
+  var lIP=parseFloat(last.inningsPitched)||0,lER=parseInt(last.earnedRuns)||0;
+  var lastERA=lIP>0?String(Math.round((lER/lIP)*9*100)/100):'0 IP';
+  var recent=splits.slice(-3),tIP=0,tER=0;
+  recent.forEach(function(r){tIP+=parseFloat(r.stat.inningsPitched)||0;tER+=parseInt(r.stat.earnedRuns)||0;});
+  var last3ERA=tIP>0?String(Math.round((tER/tIP)*9*100)/100):'N/A';
+  return{lastERA:lastERA,last3ERA:last3ERA};
+}
+
+async function loadBatter(id,season){
+  if(!id)return null;
+  var data=await fetchJ(MLB+'/people/'+id+'?hydrate=stats(group=hitting,type=season,season='+season+')&sportId=1');
+  var splits=data&&data.people&&data.people[0]&&data.people[0].stats&&data.people[0].stats[0]&&data.people[0].stats[0].splits||[];
+  if(!splits.length)return null;
+  var s=splits[0].stat;
+  var games=parseInt(s.gamesPlayed)||1,hits=parseInt(s.hits)||0,hrs=parseInt(s.homeRuns)||0;
+  var tb=parseInt(s.totalBases)||0,runs=parseInt(s.runs)||0,rbi=parseInt(s.rbi)||0;
+  var bb=parseInt(s.baseOnBalls)||0,dbl=parseInt(s.doubles)||0,tri=parseInt(s.triples)||0;
+  var avg=parseFloat(s.avg)||0,obp=parseFloat(s.obp)||0,slg=parseFloat(s.slg)||0;
+  var xbh=dbl+tri+hrs;
+  var hpg=Math.round((hits/games)*100)/100,hrpg=Math.round((hrs/games)*100)/100;
+  var tbpg=Math.round((tb/games)*100)/100,runspg=Math.round((runs/games)*100)/100;
+  var rbipg=Math.round((rbi/games)*100)/100,xbhpg=Math.round((xbh/games)*100)/100;
+  var bbRate=Math.round((obp-avg)*1000)/1000;
+  var l14=await loadL14(id,season);
+  var hotCold='Neutral';
+  if(l14.avg>0&&avg>0){
+    if(l14.avg>=avg+0.050)hotCold='HOT';
+    else if(l14.avg>=avg+0.020)hotCold='Warming';
+    else if(l14.avg<=avg-0.050)hotCold='COLD';
+    else if(l14.avg<=avg-0.020)hotCold='Cooling';
+  }
+  return{avg,obp,slg,hpg,hrpg,tbpg,runspg,rbipg,xbhpg,bbRate,hotCold,l14avg:l14.avg};
+}
+
+async function loadL14(id,season){
+  var data=await fetchJ(MLB+'/people/'+id+'/stats?stats=gameLog&group=hitting&season='+season+'&sportId=1');
+  var splits=data&&data.stats&&data.stats[0]&&data.stats[0].splits||[];
+  if(!splits.length)return{hits:0,avg:0};
+  var cutoff=new Date();cutoff.setDate(cutoff.getDate()-14);
+  var tH=0,tAB=0;
+  for(var i=splits.length-1;i>=0;i--){
+    if(new Date(splits[i].date)<cutoff)break;
+    tH+=parseInt(splits[i].stat.hits)||0;
+    tAB+=parseInt(splits[i].stat.atBats)||0;
+  }
+  return{hits:tH,avg:tAB>0?Math.round((tH/tAB)*1000)/1000:0};
+}
+
+function sHRI(b,spot,vuln,park){
+  var s=0;
+  if(spot===1)s+=25;else if(spot===2)s+=22;else if(spot===3)s+=15;else if(spot===4)s+=10;else s+=3;
+  if(b.obp>=0.380)s+=15;else if(b.obp>=0.350)s+=10;else if(b.obp>=0.320)s+=5;
+  if(b.avg>=0.300)s+=10;else if(b.avg>=0.275)s+=7;else if(b.avg>=0.250)s+=4;
+  if(b.hpg>=1.2)s+=10;else if(b.hpg>=1.0)s+=7;else if(b.hpg>=0.8)s+=4;
+  if(b.runspg+b.rbipg>=1.5)s+=10;else if(b.runspg+b.rbipg>=1.0)s+=6;else if(b.runspg+b.rbipg>=0.7)s+=3;
+  if(vuln>=4)s+=15;else if(vuln>=3)s+=10;else if(vuln>=2)s+=5;
+  if(park>=108)s+=8;else if(park>=104)s+=5;else if(park>=100)s+=3;else if(park<96)s-=5;
+  if(b.hotCold==='HOT')s+=10;else if(b.hotCold==='Warming')s+=5;else if(b.hotCold==='COLD')s-=10;else if(b.hotCold==='Cooling')s-=5;
+  return Math.max(0,Math.min(100,s));
+}
+function sHit(b,spot,vuln,park){
+  var s=0;
+  if(spot===1)s+=20;else if(spot===2)s+=18;else if(spot===3)s+=12;else if(spot===4)s+=8;else s+=2;
+  if(b.avg>=0.310)s+=25;else if(b.avg>=0.290)s+=18;else if(b.avg>=0.270)s+=12;else if(b.avg>=0.250)s+=6;
+  if(b.hpg>=1.3)s+=20;else if(b.hpg>=1.1)s+=14;else if(b.hpg>=0.9)s+=8;
+  if(b.bbRate>=0.120)s-=12;else if(b.bbRate>=0.090)s-=7;else if(b.bbRate>=0.060)s-=3;else if(b.bbRate<=0.030)s+=5;
+  if(b.obp>=0.370)s+=8;else if(b.obp>=0.340)s+=4;
+  if(vuln>=4)s+=15;else if(vuln>=3)s+=10;else if(vuln>=2)s+=5;
+  if(park>=108)s+=5;else if(park<96)s-=5;
+  if(b.hotCold==='HOT')s+=10;else if(b.hotCold==='COLD')s-=10;
+  return Math.max(0,Math.min(100,s));
+}
+function sTB(b,spot,vuln,park){
+  var s=0;
+  if(b.slg>=0.500)s+=20;else if(b.slg>=0.450)s+=14;else if(b.slg>=0.400)s+=8;else if(b.slg>=0.350)s+=4;
+  if(b.tbpg>=1.8)s+=20;else if(b.tbpg>=1.5)s+=14;else if(b.tbpg>=1.2)s+=8;else if(b.tbpg>=0.9)s+=4;
+  if(b.xbhpg>=0.60)s+=15;else if(b.xbhpg>=0.45)s+=10;else if(b.xbhpg>=0.30)s+=5;
+  if(b.avg>=0.300)s+=10;else if(b.avg>=0.275)s+=7;else if(b.avg>=0.250)s+=4;
+  if(b.bbRate>=0.120)s-=15;else if(b.bbRate>=0.090)s-=8;else if(b.bbRate>=0.060)s-=3;else if(b.bbRate<=0.030)s+=5;
+  if(vuln>=4)s+=10;else if(vuln>=3)s+=7;else if(vuln>=2)s+=4;
+  if(park>=108)s+=10;else if(park>=104)s+=6;else if(park>=100)s+=3;else if(park<96)s-=8;
+  if(b.hotCold==='HOT')s+=8;else if(b.hotCold==='COLD')s-=8;
+  return Math.max(0,Math.min(100,s));
+}
+function sHR(b,vuln,park){
+  var s=0;
+  if(b.hrpg>=0.25)s+=30;else if(b.hrpg>=0.18)s+=20;else if(b.hrpg>=0.12)s+=12;else if(b.hrpg>=0.07)s+=5;
+  if(b.slg>=0.500)s+=10;else if(b.slg>=0.450)s+=6;
+  if(vuln>=4)s+=10;else if(vuln>=3)s+=7;else if(vuln>=2)s+=4;
+  if(park>=112)s+=15;else if(park>=108)s+=10;else if(park>=104)s+=5;else if(park<96)s-=10;
+  return Math.max(0,Math.min(100,s));
+}
+function sGame(aERA,hERA,aWHIP,hWHIP,aAce,hAce,aVuln,hVuln,park){
+  var s=0;
+  if(park>=112)s+=25;else if(park>=108)s+=18;else if(park>=104)s+=10;else if(park>=100)s+=5;else if(park<96)s-=10;
+  var avgERA=(aERA+hERA)/2,avgWHIP=(aWHIP+hWHIP)/2;
+  if(avgERA>=5.0)s+=25;else if(avgERA>=4.5)s+=18;else if(avgERA>=4.0)s+=10;else if(avgERA>=3.5)s+=3;else if(avgERA<=3.0)s-=15;
+  if(avgWHIP>=1.40)s+=15;else if(avgWHIP>=1.25)s+=8;else if(avgWHIP<=1.10)s-=10;
+  if(aVuln&&hVuln)s+=15;else if(aVuln||hVuln)s+=8;
+  if(aAce&&hAce)s-=20;else if(aAce||hAce)s-=10;
+  return Math.max(0,Math.min(100,s));
+}
+
+async function loadAll(){
+  var season=new Date().getFullYear();
+  setProgress('Fetching today\'s games...');
+  var games=await loadGames();
+  if(!games.length){
+    D={games:[],batters:[],pitchers:[],totals:[],date:getToday(),loadedAt:'No games scheduled'};
+    renderAll();return;
+  }
+
+  setProgress('Fetching pitcher stats...');
+  var pCache={},pIds=[];
+  games.forEach(function(g){
+    if(g.awayPitcher.id&&pIds.indexOf(g.awayPitcher.id)===-1)pIds.push(g.awayPitcher.id);
+    if(g.homePitcher.id&&pIds.indexOf(g.homePitcher.id)===-1)pIds.push(g.homePitcher.id);
+  });
+  for(var i=0;i<pIds.length;i++){
+    setProgress('Pitchers: '+(i+1)+'/'+pIds.length+'...');
+    pCache[pIds[i]]=await loadPitcher(pIds[i],season);
+    await sleep(300);
+  }
+
+  setProgress('Fetching batter stats...');
+  var bCache={},allP=[];
+  games.forEach(function(g){
+    g.awayLineup.forEach(function(p){if(p.id&&!bCache[p.id])allP.push(p);});
+    g.homeLineup.forEach(function(p){if(p.id&&!bCache[p.id])allP.push(p);});
+  });
+  for(var j=0;j<allP.length;j++){
+    if(j%5===0)setProgress('Batters: '+(j+1)+'/'+allP.length+'...');
+    var pl=allP[j];
+    bCache[pl.id]=await loadBatter(pl.id,season);
+    await sleep(200);
+  }
+
+  setProgress('Scoring...');
+  var batters=[],eliminated=[];
+  games.forEach(function(g){
+    [{lineup:g.awayLineup,team:g.awayTeam,pId:g.homePitcher.id,pName:g.homePitcher.name,game:g},
+     {lineup:g.homeLineup,team:g.homeTeam,pId:g.awayPitcher.id,pName:g.awayPitcher.name,game:g}]
+    .forEach(function(mu){
+      var pitcher=pCache[mu.pId];
+      if(!pitcher)return;
+      if(pitcher.isAce){eliminated.push({team:mu.team,pitcher:mu.pName,reason:'ACE ('+pitcher.era+' ERA, '+pitcher.gs+' GS)'});return;}
+      mu.lineup.forEach(function(player){
+        if(player.pos==='P')return;
+        var b=bCache[player.id];
+        if(!b)return;
+        var vuln=pitcher.vulnScore,park=mu.game.park;
+        var hriScore=sHRI(b,player.spot,vuln,park);
+        var hitScore=sHit(b,player.spot,vuln,park);
+        var tbScore=sTB(b,player.spot,vuln,park);
+        var hrScore=sHR(b,vuln,park);
+        var overall=Math.max(hriScore,hitScore,tbScore,hrScore);
+        if(overall<20)return;
+        var isNexus=player.spot<=2,passV=b.obp>=0.320;
+        var cores=(isNexus?1:0)+(passV?1:0)+(pitcher.isVuln?1:0);
+        var grade=cores===3?'A':cores===2?'B':'C';
+        batters.push({
+          name:player.name,pos:player.pos,spot:player.spot,
+          team:mu.team,game:mu.game.awayTeam+' @ '+mu.game.homeTeam,
+          time:mu.game.time,venue:mu.game.venue,park,
+          pitcher:mu.pName,pitcherERA:pitcher.era,pitcherWHIP:pitcher.whip,
+          pitcherFlags:pitcher.flags,isVulnPitcher:pitcher.isVuln,vulnScore:vuln,
+          grade,overall,hriScore,hitScore,tbScore,hrScore,
+          avg:b.avg,obp:b.obp,slg:b.slg,hpg:b.hpg,hrpg:b.hrpg,tbpg:b.tbpg,
+          runspg:b.runspg,rbipg:b.rbipg,xbhpg:b.xbhpg,bbRate:b.bbRate,hotCold:b.hotCold
+        });
+      });
+    });
+  });
+  batters.sort(function(a,b){
+    if(a.grade!==b.grade)return a.grade<b.grade?-1:1;
+    return b.overall-a.overall;
+  });
+
+  var pitchers=[];
+  games.forEach(function(g){
+    [{id:g.awayPitcher.id,name:g.awayPitcher.name,team:g.awayTeam,opp:g.homeTeam,time:g.time},
+     {id:g.homePitcher.id,name:g.homePitcher.name,team:g.homeTeam,opp:g.awayTeam,time:g.time}]
+    .forEach(function(p){
+      var stats=pCache[p.id];if(!stats)return;
+      var score=0;
+      if(stats.avgK>=7.5)score+=35;else if(stats.avgK>=6.0)score+=25;else if(stats.avgK>=4.5)score+=10;
+      if(stats.k9>=9.0)score+=20;else if(stats.k9>=7.5)score+=12;
+      if(stats.avgH<=5.0)score+=15;else if(stats.avgH<=6.5)score+=8;
+      if(stats.gs>=8)score+=10;else if(stats.gs>=4)score+=5;
+      if(stats.bb9<=2.5)score+=10;
+      var l3=parseFloat(stats.last3ERA);
+      if(!isNaN(l3)){if(l3<=2.0)score+=15;else if(l3>=6.0)score-=10;}
+      score=Math.max(0,Math.min(100,score));
+      pitchers.push(Object.assign({},p,stats,{score:score}));
+    });
+  });
+  pitchers.sort(function(a,b){return b.score-a.score;});
+
+  var totals=games.map(function(g){
+    var ap=pCache[g.awayPitcher.id],hp=pCache[g.homePitcher.id];
+    var aERA=ap&&ap.era||4.5,hERA=hp&&hp.era||4.5;
+    var aWHIP=ap&&ap.whip||1.3,hWHIP=hp&&hp.whip||1.3;
+    var overScore=sGame(aERA,hERA,aWHIP,hWHIP,ap&&ap.isAce,hp&&hp.isAce,ap&&ap.isVuln,hp&&hp.isVuln,g.park);
+    var underScore=100-overScore;
+    var dir=overScore>=60?'OVER':underScore>=60?'UNDER':'SKIP';
+    var score=dir==='OVER'?overScore:dir==='UNDER'?underScore:50;
+    return{
+      game:g.awayTeam+' @ '+g.homeTeam,time:g.time,venue:g.venue,park:g.park,
+      awayPitcher:g.awayPitcher.name,homePitcher:g.homePitcher.name,
+      awayERA:aERA,homeERA:hERA,direction:dir,score:score,overScore:overScore,underScore:underScore,
+      rec:dir==='OVER'?'⬆ BET OVER ('+overScore+'/100)':dir==='UNDER'?'⬇ BET UNDER ('+underScore+'/100)':'SKIP'
+    };
+  });
+  totals.sort(function(a,b){return b.score-a.score;});
+
+  D={games,batters,pitchers,totals,eliminated:eliminated,date:getToday(),loadedAt:new Date().toLocaleTimeString()};
+  renderAll();
+}
+
+function renderAll(){
+  setProgress('Updated '+D.loadedAt);
+  updatePnLHdr();
+  renderGuide();
+  renderBatters();
+  renderPitchers();
+  renderTotals();
+  renderPnL();
+}
+
+function updatePnLHdr(){
+  var total=BETS.reduce(function(a,b){return a+(b.profit||0);},0);
+  var el=document.getElementById('pnl-hdr');
+  el.textContent=(total>=0?'+':'')+' $'+Math.abs(total).toFixed(2);
+  el.style.color=total>=0?'var(--grn)':'var(--red)';
+}
+
+function makeSect(key,cls,icon,label,items,renderFn){
+  var isOpen=OPEN[key],cnt=items.length;
+  var cntStr=cnt>0?cnt+(cnt===1?' pick':' picks'):'No picks';
+  var html='<div class="sect s-'+cls+'">';
+  html+='<div class="shdr" onclick="tog(\''+key+'\')">';
+  html+='<div class="stit"><span style="font-size:16px">'+icon+'</span> '+label+' <span class="scnt">'+cntStr+'</span></div>';
+  html+='<span class="sarr'+(isOpen?' open':'')+'" id="sa-'+key+'">▼</span>';
+  html+='</div>';
+  html+='<div class="sbdy'+(isOpen?' open':'')+'" id="sb-'+key+'">';
+  if(cnt===0)html+='<div class="empty">No picks yet — lineups post 2-4 hrs before first pitch.</div>';
+  else items.forEach(function(it){html+=renderFn(it);});
+  html+='</div></div>';
+  return html;
+}
+
+function tog(k){
+  OPEN[k]=!OPEN[k];
+  var b=document.getElementById('sb-'+k),a=document.getElementById('sa-'+k);
+  if(b)b.classList.toggle('open',OPEN[k]);
+  if(a)a.classList.toggle('open',OPEN[k]);
+}
+
+function renderGuide(){
+  if(!D){return;}
+  var t=D.batters||[],pi=D.pitchers||[],g=D.totals||[];
+  var aG=t.filter(function(x){return x.grade==='A';}).length;
+  var bG=t.filter(function(x){return x.grade==='B';}).length;
+  var html='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:11px">';
+  html+='<div style="font-size:11px;color:var(--mut)">'+D.date+' · '+aG+' A-Grade · '+bG+' B-Grade</div>';
+  html+='<button class="rbtn" onclick="reload()">↻ Refresh</button></div>';
+
+  html+=makeSect('hri','hri','🟢','Over 1.5 H+R+RBI',
+    t.slice().sort(function(a,b){return b.hriScore-a.hriScore;}),
+    function(b){return bCard(b,'hri',b.hriScore,'var(--grn)','OVER 1.5 H+R+RBI','Over 1.5 H+R+RBI',b.obp,'OBP',b.avg,'AVG',b.hpg,'H/G','');});
+
+  html+=makeSect('hit','hit','🩵','Over 1.5 Hits',
+    t.slice().sort(function(a,b){return b.hitScore-a.hitScore;}),
+    function(b){return bCard(b,'hit',b.hitScore,'var(--tel)','OVER 1.5 HITS','Over 1.5 Hits',b.avg,'AVG',b.hpg,'H/G',b.obp,'OBP','');});
+
+  html+=makeSect('tb','tb','🔷','Over 1.5 Total Bases',
+    t.slice().sort(function(a,b){return b.tbScore-a.tbScore;}),
+    function(b){
+      var wc=b.bbRate>=0.09?'var(--red)':'var(--mut)';
+      var wt=b.bbRate>=0.09?'⚠️ High walks':'✓ Low walks';
+      return bCard(b,'tb',b.tbScore,'var(--nvy)','OVER 1.5 TOTAL BASES','Over 1.5 Total Bases',b.slg,'SLG',b.tbpg,'TB/G',b.xbhpg,'XBH/G',
+        '<div style="font-size:11px;color:'+wc+';margin-bottom:5px">Walk Rate: '+b.bbRate+' — '+wt+'</div>');
+    });
+
+  html+=makeSect('hr','hr','🟣','Over 0.5 HR',
+    t.slice().sort(function(a,b){return b.hrScore-a.hrScore;}),
+    function(b){return bCard(b,'hr',b.hrScore,'var(--pur)','OVER 0.5 HR','Over 0.5 HR',b.hrpg,'HR/G',b.slg,'SLG',b.xbhpg,'XBH/G','');});
+
+  html+=makeSect('ok','ok','🔵','Over Strikeouts',
+    pi.filter(function(p){return p.avgK>=6.0;}),
+    function(p){var lr=p.avgK>=7.5?'Over 6.5 Ks':p.avgK>=6.0?'Over 5.5 Ks':'Over 4.5 Ks';return pCard(p,'ok','var(--blu)','🔵 OVER Ks',lr);});
+
+  html+=makeSect('uk','uk','🔴','Under Strikeouts',
+    pi.filter(function(p){return p.avgK<4.5;}),
+    function(p){var lr=p.avgK<=3.0?'Under 3.5 Ks':'Under 4.5 Ks';return pCard(p,'uk','var(--red)','🔴 UNDER Ks',lr);});
+
+  html+=makeSect('ha','ha','🟣','Over HR Allowed',
+    pi.filter(function(p){return p.avgHR>=1.0;}),
+    function(p){var lr=p.avgHR>=1.5?'Over 1.5 HR Allowed':'Over 0.5 HR Allowed';return pCard(p,'ha','var(--pur)','🟣 OVER HR ALLOWED',lr);});
+
+  html+=makeSect('go','go','⬆️','Game Total OVER',
+    g.filter(function(x){return x.direction==='OVER';}),gameCard);
+
+  html+=makeSect('gu','gu','⬇️','Game Total UNDER',
+    g.filter(function(x){return x.direction==='UNDER';}),gameCard);
+
+  html+='<div class="card" style="margin-top:10px">';
+  html+='<div style="font-size:14px;font-weight:700;margin-bottom:4px">🤖 AI Analysis</div>';
+  html+='<div style="font-size:12px;color:var(--mut);margin-bottom:10px">Free AI analysis — uses OpenRouter (free tier, no credit card needed)</div>';
+  if(!AI_KEY){
+    html+='<div style="background:var(--abg);border:1px solid var(--amb);border-radius:8px;padding:10px;font-size:12px;color:var(--amb);margin-bottom:8px">⚙️ One-time setup: Get a free key at <strong>openrouter.ai</strong> → Sign up free → Keys → Create key</div>';
+    html+='<input class="inp" id="ai-key-input" placeholder="Paste your OpenRouter key here (sk-or-...)" style="margin-bottom:6px">';
+    html+='<button class="btn" onclick="saveKey()">Save Key & Analyze</button>';
+  } else {
+    html+='<button class="btn'+(AI_LOAD?' btn-disabled':'')+'" onclick="runAI()" '+(AI_LOAD?'disabled':'')+'>'+( AI_LOAD?'⏳ Analyzing...':'Analyze Today\'s Picks →')+'</button>';
+    html+='<button class="btn-s" onclick="clearKey()" style="margin-top:4px;font-size:11px">Change API Key</button>';
+  }
+  if(AI_OUT)html+='<div class="ai-out" id="ai-output">'+formatAI(AI_OUT)+'</div>';
+  html+='</div>';
+
+  document.getElementById('pg-guide').innerHTML=html;
+}
+
+function bCard(b,cls,score,color,typeLabel,betLine,v1,l1,v2,l2,v3,l3,extra){
+  var cid='c'+Math.random().toString(36).substr(2,7);
+  window['_d'+cid]={player:b.name,market:betLine,team:b.team,pitcher:b.pitcher,spot:'#'+b.spot+' vs '+b.pitcher,time:b.time};
+  var s='<div class="gc '+cls+'">';
+  s+='<div class="gtyp" style="color:'+color+'">'+typeLabel+' &nbsp;'+gradeBadge(b.grade)+'</div>';
+  s+='<div class="gnm">'+b.name+hotBadge(b.hotCold)+'</div>';
+  s+='<div class="gmt">#'+b.spot+' '+b.team+' vs '+b.pitcher+' · '+b.time+'</div>';
+  s+=bar(score,color);
+  s+=s4([[v1,l1,color],[v2,l2,color],[v3,l3,color],[score,'Score','var(--gld)']]);
+  s+='<div class="gln"><div style="font-size:10px;color:var(--mut)">Recommended</div><div style="font-size:13px;font-weight:700;color:var(--gld)">'+betLine+'</div></div>';
+  if(extra)s+=extra;
+  s+='<button class="btn" onclick="logFG(\''+cid+'\')">+ Log This Bet</button>';
+  s+='<button class="btn-s" onclick="addLeg(\''+cid+'\')">+ Add to Parlay</button>';
+  s+='</div>';
+  return s;
+}
+
+function pCard(p,cls,color,typeLabel,betLine){
+  var cid='p'+Math.random().toString(36).substr(2,7);
+  window['_d'+cid]={player:p.name,market:betLine,team:p.team,pitcher:p.name,spot:p.team+' vs '+p.opp,time:p.time};
+  var s='<div class="gc '+cls+'">';
+  s+='<div class="gtyp" style="color:'+color+'">'+typeLabel+' — '+p.name+'</div>';
+  s+='<div class="gmt">'+p.team+' vs '+p.opp+' · '+p.time+'</div>';
+  s+=bar(p.score,color);
+  s+=s4([[p.avgK,'K/Start',color],[p.k9,'K/9',color],[p.avgH,'H/Start','var(--mut)'],[p.score,'Score','var(--gld)']]);
+  if(p.last3ERA!=='N/A')s+='<div style="font-size:11px;color:var(--amb);margin-bottom:6px">Last 3 starts: '+p.last3ERA+' ERA</div>';
+  s+='<div class="gln"><div style="font-size:10px;color:var(--mut)">Recommended</div><div style="font-size:13px;font-weight:700;color:var(--gld)">'+betLine+'</div></div>';
+  s+='<button class="btn" onclick="logFG(\''+cid+'\')">+ Log This Bet</button>';
+  s+='<button class="btn-s" onclick="addLeg(\''+cid+'\')">+ Add to Parlay</button>';
+  s+='</div>';
+  return s;
+}
+
+function gameCard(g){
+  var isO=g.direction==='OVER',col=isO?'var(--grn)':'var(--blu)',cls=isO?'go':'gu';
+  var cid='g'+Math.random().toString(36).substr(2,7);
+  window['_d'+cid]={player:g.game,market:isO?'Over Game Total':'Under Game Total',team:'',pitcher:'',spot:g.time,time:g.time};
+  var s='<div class="gc '+cls+'">';
+  s+='<div class="gtyp" style="color:'+col+'">'+(isO?'⬆️ BET OVER':'⬇️ BET UNDER')+'</div>';
+  s+='<div class="gnm" style="font-size:13px">'+g.game+'</div>';
+  s+='<div class="gmt">'+g.time+'</div>';
+  s+=bar(isO?g.overScore:g.underScore,col);
+  s+=s4([[g.awayERA,'Away ERA','var(--red)'],[g.homeERA,'Home ERA','var(--red)'],[g.awayPitcher.split(' ').pop(),'Away P','var(--amb)'],[g.homePitcher.split(' ').pop(),'Home P','var(--amb)']]);
+  s+='<button class="btn" onclick="logFG(\''+cid+'\')">+ Log This Bet</button>';
+  s+='<button class="btn-s" onclick="addLeg(\''+cid+'\')">+ Add to Parlay</button>';
+  s+='</div>';
+  return s;
+}
+
+function renderBatters(){
+  if(!D)return;
+  var targets=(D.batters||[]).filter(function(b){return b.overall>=30;});
+  var aG=targets.filter(function(b){return b.grade==='A';}).length;
+  var bG=targets.filter(function(b){return b.grade==='B';}).length;
+  var cG=targets.filter(function(b){return b.grade==='C';}).length;
+  var html='<div style="display:flex;justify-content:space-between;margin-bottom:10px">';
+  html+='<div style="font-size:11px;color:var(--mut)">'+aG+' A · '+bG+' B · '+cG+' C</div>';
+  html+='<button class="rbtn" onclick="reload()">↻ Refresh</button></div>';
+  if(!targets.length){html+='<div class="empty">No batters yet.<br>Lineups post 2-4 hours before first pitch.</div>';}
+  else targets.forEach(function(b){
+    var bc=b.grade==='A'?'var(--grn)':b.grade==='B'?'var(--amb)':'var(--red)';
+    html+='<div class="card" style="border-left:4px solid '+bc+'">';
+    html+='<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">';
+    html+='<div><div style="font-size:15px;font-weight:700">'+b.name+hotBadge(b.hotCold)+'</div>';
+    html+='<div style="font-size:11px;color:var(--mut);margin-top:2px">#'+b.spot+' '+b.team+' vs '+b.pitcher+' · '+b.time+'</div></div>';
+    html+='<div>'+gradeBadge(b.grade)+'</div></div>';
+    html+=bar(b.overall);
+    html+=s4([[b.hriScore,'H+R+RBI','var(--grn)'],[b.hitScore,'Hits','var(--tel)'],[b.tbScore,'TB','var(--nvy)'],[b.hrScore,'HR','var(--pur)']]);
+    html+='<div style="font-size:11px;color:var(--mut);margin-top:5px">OBP '+b.obp+' · AVG '+b.avg+' · H/G '+b.hpg+' · XBH/G '+b.xbhpg+' · Walk '+b.bbRate+'</div>';
+    if(b.isVulnPitcher)html+='<div style="font-size:11px;color:var(--amb);margin-top:4px">⚠️ Pitcher VULN ('+b.vulnScore+'/4)</div>';
+    html+='</div>';
+  });
+  document.getElementById('pg-batters').innerHTML=html;
+}
+
+function renderPitchers(){
+  if(!D)return;
+  var html='<div style="font-size:11px;color:var(--mut);margin-bottom:10px">All starting pitchers</div>';
+  (D.pitchers||[]).forEach(function(p){
+    var gc=p.score>=70?'var(--grn)':p.score>=50?'var(--amb)':'var(--mut)';
+    var bd=p.avgK>=6.0?'<span style="color:var(--blu);font-weight:700;font-size:12px">🔵 OVER Ks</span>':p.avgK<4.5?'<span style="color:var(--red);font-weight:700;font-size:12px">🔴 UNDER Ks</span>':'<span style="color:var(--mut);font-size:12px">➡ Marginal</span>';
+    var hrd=p.avgHR>=1.0?'<span style="color:var(--pur);font-weight:700;font-size:12px;margin-left:10px">🟣 OVER HR</span>':'';
+    html+='<div class="card">';
+    html+='<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px">';
+    html+='<div><div style="font-size:15px;font-weight:700">'+p.name+'</div>';
+    html+='<div style="font-size:11px;color:var(--mut)">'+p.team+' vs '+p.opp+' · '+p.time+'</div></div>';
+    html+='<div style="font-size:19px;font-weight:700;color:'+gc+'">'+p.score+'</div></div>';
+    html+='<div style="margin-bottom:7px">'+bd+hrd+'</div>';
+    if(p.last3ERA!=='N/A')html+='<div style="font-size:11px;color:var(--amb);margin-bottom:7px">Last 3 starts: '+p.last3ERA+' ERA</div>';
+    html+=s4([[p.avgK,'K/Start'],[p.k9,'K/9'],[p.avgH,'H/Start'],[p.avgHR,'HR/Start']]);
+    html+='</div>';
+  });
+  document.getElementById('pg-pitchers').innerHTML=html;
+}
+
+function renderTotals(){
+  if(!D)return;
+  var html='<div style="font-size:11px;color:var(--mut);margin-bottom:10px">Game over/under recommendations</div>';
+  (D.totals||[]).forEach(function(g){
+    var col=g.direction==='OVER'?'var(--grn)':g.direction==='UNDER'?'var(--blu)':'var(--mut)';
+    html+='<div class="card" style="border-left:4px solid '+col+'">';
+    html+='<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px">';
+    html+='<div><div style="font-size:14px;font-weight:700">'+g.game+'</div>';
+    html+='<div style="font-size:11px;color:var(--mut)">'+g.time+' · '+g.venue+'</div></div>';
+    html+='<div style="font-size:19px;font-weight:700;color:'+col+'">'+g.score+'</div></div>';
+    html+='<div style="font-size:13px;font-weight:700;color:'+col+';margin-bottom:7px">'+g.rec+'</div>';
+    html+=s4([[g.awayERA,'Away ERA','var(--red)'],[g.homeERA,'Home ERA','var(--red)'],[g.awayPitcher.split(' ').pop(),'Away P','var(--amb)'],[g.homePitcher.split(' ').pop(),'Home P','var(--amb)']]);
+    html+='</div>';
+  });
+  document.getElementById('pg-totals').innerHTML=html;
+}
+
+function renderPnL(){
+  var pnl=BETS.reduce(function(a,b){
+    a.total+=(b.profit||0);a.staked+=(b.stake||0);
+    if(b.date===getToday())a.today+=(b.profit||0);
+    if(b.result==='WIN')a.wins++;else if(b.result==='LOSS')a.losses++;else a.pend++;
+    return a;
+  },{total:0,today:0,staked:0,wins:0,losses:0,pend:0});
+  var roi=pnl.staked>0?Math.round((pnl.total/pnl.staked)*100):0;
+  var html='<div class="pnl-grid">';
+  html+='<div class="pnl-box"><div style="font-size:20px;font-weight:700;color:'+(pnl.today>=0?'var(--grn)':'var(--red)')+'">'+(pnl.today>=0?'+':'')+' $'+Math.abs(pnl.today).toFixed(2)+'</div><div style="font-size:10px;color:var(--mut);margin-top:3px;text-transform:uppercase">Today</div></div>';
+  html+='<div class="pnl-box"><div style="font-size:20px;font-weight:700;color:'+(pnl.total>=0?'var(--grn)':'var(--red)')+'">'+(pnl.total>=0?'+':'')+' $'+Math.abs(pnl.total).toFixed(2)+'</div><div style="font-size:10px;color:var(--mut);margin-top:3px;text-transform:uppercase">All Time</div></div>';
+  html+='<div class="pnl-box"><div style="font-size:20px;font-weight:700">'+pnl.wins+'W / '+pnl.losses+'L</div><div style="font-size:10px;color:var(--mut);margin-top:3px;text-transform:uppercase">Record</div></div>';
+  html+='<div class="pnl-box"><div style="font-size:20px;font-weight:700;color:'+(roi>=0?'var(--grn)':'var(--red)')+'">'+roi+'%</div><div style="font-size:10px;color:var(--mut);margin-top:3px;text-transform:uppercase">ROI</div></div>';
+  html+='</div>';
+  if(!BETS.length){html+='<div class="empty">No bets logged yet.</div>';}
+  else{
+    html+='<div class="stl">Bet History</div>';
+    BETS.forEach(function(b){
+      var pc=b.result==='WIN'?'var(--grn)':b.result==='LOSS'?'var(--red)':'var(--mut)';
+      var pl=b.result==='WIN'?'+$'+b.profit.toFixed(2):b.result==='LOSS'?'-$'+Math.abs(b.profit||0).toFixed(2):'PENDING';
+      var rb=b.result==='WIN'?'<span class="badge bw">WIN</span>':b.result==='LOSS'?'<span class="badge bl2">LOSS</span>':'<span class="badge bpend">PENDING</span>';
+      var isP=b.player.indexOf('PARLAY')>-1;
+      html+='<div class="bet-row" style="border-color:'+(isP?'var(--gld)':'var(--bdr)')+'">'+
+        '<div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+(isP?'🎰 ':'')+b.player+'</div>'+
+        '<div style="font-size:10px;color:var(--mut);margin-top:2px">'+b.date+' · '+b.market+' · $'+b.stake+' @ '+b.odds+'</div>';
+      if(b.result==='PENDING'||!b.result){
+        html+='<div class="rbtns"><button class="btnw" onclick="markR('+b.id+',\'WIN\')">✓ Win</button><button class="btnl" onclick="markR('+b.id+',\'LOSS\')">✗ Loss</button></div>';
+      }
+      html+='</div><div style="text-align:right;flex-shrink:0"><div style="font-size:14px;font-weight:700;color:'+pc+'">'+pl+'</div>'+rb+'</div></div>';
+    });
+  }
+  document.getElementById('pg-pnl').innerHTML=html;
+  updatePnLHdr();
+}
+
+function renderLog(){
+  var tabs='<div class="tab-row">';
+  tabs+='<div class="tab-b'+(LM==='single'?' active':'')+'" onclick="setLM(\'single\')">Single Bet</div>';
+  tabs+='<div class="tab-b'+(LM==='parlay'?' active':'')+'" onclick="setLM(\'parlay\')">Parlay</div>';
+  tabs+='<div class="tab-b'+(LM==='tracker'?' active':'')+'" onclick="setLM(\'tracker\')">My Players</div>';
+  tabs+='</div>';
+  var body='';
+  if(LM==='single')body=renderSingleForm();
+  else if(LM==='parlay')body=renderParlayForm();
+  else body=renderTracker();
+  document.getElementById('pg-log').innerHTML=tabs+body;
+}
+function setLM(m){LM=m;renderLog();}
+
+function renderSingleForm(){
+  var mkts=['Over 1.5 H+R+RBI','Over 1.5 Hits','Over 1.5 Total Bases','Over 0.5 HR','Over 4.5 Ks','Over 5.5 Ks','Over 6.5 Ks','Under 3.5 Ks','Under 4.5 Ks','Over 0.5 HR Allowed','Over 1.5 HR Allowed','Over Game Total','Under Game Total','Other'];
+  var html='<div class="card">';
+  html+='<label class="lbl">Player / Pitcher</label><input class="inp" id="fp" value="'+LOG_FORM.player+'" placeholder="e.g. Freddie Freeman" oninput="LOG_FORM.player=this.value">';
+  html+='<label class="lbl">Team</label><input class="inp" id="ft" value="'+LOG_FORM.team+'" placeholder="e.g. Los Angeles Dodgers" oninput="LOG_FORM.team=this.value">';
+  html+='<label class="lbl">Market</label><select class="inp" onchange="LOG_FORM.market=this.value">';
+  mkts.forEach(function(m){html+='<option'+(m===LOG_FORM.market?' selected':'')+'>'+m+'</option>';});
+  html+='</select>';
+  html+='<label class="lbl">Odds (American)</label><input class="inp" type="number" value="'+LOG_FORM.odds+'" oninput="LOG_FORM.odds=this.value">';
+  html+='<label class="lbl">Stake ($)</label><input class="inp" type="number" value="'+LOG_FORM.stake+'" oninput="LOG_FORM.stake=this.value">';
+  html+='<label class="lbl">Result</label><select class="inp" onchange="LOG_FORM.result=this.value">';
+  ['PENDING','WIN','LOSS'].forEach(function(r){html+='<option'+(r===LOG_FORM.result?' selected':'')+'>'+r+'</option>';});
+  html+='</select>';
+  html+='<label class="lbl">Notes</label><input class="inp" value="'+LOG_FORM.notes+'" placeholder="Optional..." oninput="LOG_FORM.notes=this.value">';
+  html+='<button class="btn" onclick="subBet()">Save Bet</button></div>';
+  return html;
+}
+
+function renderParlayForm(){
+  var html='<div class="card">';
+  html+='<label class="lbl">Parlay Legs ('+LEGS.length+')</label>';
+  if(!LEGS.length){
+    html+='<div style="text-align:center;padding:13px;color:var(--mut);font-size:12px;border:1px dashed var(--bdr);border-radius:8px;margin-bottom:10px">Go to Guide and tap "+ Add to Parlay"</div>';
+  }else{
+    LEGS.forEach(function(l,i){
+      html+='<div class="leg"><div><div style="font-size:10px;color:var(--mut)">Leg '+(i+1)+'</div><div style="font-size:13px;font-weight:600">'+l.player+'</div><div style="font-size:11px;color:var(--mut)">'+l.market+'</div></div><button class="leg-rm" onclick="rmLeg('+i+')">✕</button></div>';
+    });
+  }
+  html+='<div style="border:1px dashed var(--bdr);border-radius:8px;padding:10px;margin-bottom:10px">';
+  html+='<div style="font-size:10px;color:var(--mut);margin-bottom:7px;text-transform:uppercase">Add Leg Manually</div>';
+  html+='<input class="inp" placeholder="Player name" value="'+MAN_LEG.player+'" oninput="MAN_LEG.player=this.value">';
+  html+='<select class="inp" onchange="MAN_LEG.market=this.value">';
+  ['Over 1.5 H+R+RBI','Over 1.5 Hits','Over 1.5 Total Bases','Over 0.5 HR','Over 5.5 Ks','Under 4.5 Ks','Over 0.5 HR Allowed','Over Game Total','Under Game Total','Other'].forEach(function(m){html+='<option>'+m+'</option>';});
+  html+='</select>';
+  html+='<button class="btn-s" onclick="addManLeg()" style="margin-top:0">+ Add Leg</button></div>';
+  html+='<label class="lbl">Combined Odds</label><input class="inp" type="number" placeholder="e.g. +350" value="'+PAR_FORM.odds+'" oninput="PAR_FORM.odds=this.value">';
+  html+='<label class="lbl">Stake ($)</label><input class="inp" type="number" value="'+PAR_FORM.stake+'" oninput="PAR_FORM.stake=this.value">';
+  html+='<label class="lbl">Result</label><select class="inp" onchange="PAR_FORM.result=this.value">';
+  ['PENDING','WIN','LOSS'].forEach(function(r){html+='<option'+(r===PAR_FORM.result?' selected':'')+'>'+r+'</option>';});
+  html+='</select>';
+  if(LEGS.length>=2)html+='<button class="btn" onclick="subParlay()">Save Parlay ('+LEGS.length+' legs)</button>';
+  else html+='<div style="text-align:center;padding:8px;color:var(--mut);font-size:12px">Need at least 2 legs</div>';
+  html+='<button class="btn-s" style="background:var(--rbg);color:var(--red);border-color:var(--red)" onclick="clrLegs()">Clear All Legs</button>';
+  html+='</div>';
+  return html;
+}
+
+function renderTracker(){
+  var pm={};
+  BETS.filter(function(b){return b.player.indexOf('PARLAY')===-1;}).forEach(function(b){
+    if(!pm[b.player])pm[b.player]={name:b.player,wins:0,losses:0,profit:0,bets:0};
+    pm[b.player].bets++;pm[b.player].profit+=(b.profit||0);
+    if(b.result==='WIN')pm[b.player].wins++;else if(b.result==='LOSS')pm[b.player].losses++;
+  });
+  var players=Object.values(pm).sort(function(a,b){return b.profit-a.profit;});
+  if(!players.length)return'<div class="empty">No player data yet.<br>Log some bets first.</div>';
+  var html='<div class="stl" style="color:var(--grn)">Best Performers</div>';
+  players.filter(function(p){return p.profit>0;}).slice(0,5).forEach(function(p){html+=prRow(p,'best');});
+  html+='<div class="stl" style="color:var(--red)">Costing You Most</div>';
+  var losers=players.filter(function(p){return p.profit<0;}).slice(-5).reverse();
+  if(!losers.length)html+='<div style="padding:12px;color:var(--mut);font-size:13px;text-align:center">No losses yet.</div>';
+  else losers.forEach(function(p){html+=prRow(p,'worst');});
+  html+='<div class="stl">All Players</div>';
+  players.forEach(function(p){html+=prRow(p,'');});
+  return html;
+}
+
+function prRow(p,cls){
+  var pct=Math.round((p.wins/Math.max(p.wins+p.losses,1))*100);
+  var pc=p.profit>0?'var(--grn)':p.profit<0?'var(--red)':'var(--mut)';
+  var ptc=pct>=55?'var(--grn)':pct>=45?'var(--amb)':'var(--red)';
+  var s='<div class="pr-row'+(cls?' '+cls:'')+'">';
+  s+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px">';
+  s+='<div style="font-size:14px;font-weight:700">'+p.name+'</div>';
+  s+='<div style="font-size:15px;font-weight:700;color:'+pc+'">'+(p.profit>0?'+':'')+' $'+Math.abs(p.profit).toFixed(2)+'</div></div>';
+  s+='<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:5px">';
+  [[pct+'%','Win Rate',ptc],[p.wins,'Wins','var(--grn)'],[p.losses,'Losses','var(--red)'],[p.bets,'Bets','var(--txt)']].forEach(function(item){
+    s+='<div style="text-align:center"><div style="font-size:14px;font-weight:700;color:'+item[2]+'">'+item[0]+'</div><div style="font-size:9px;color:var(--mut);text-transform:uppercase">'+item[1]+'</div></div>';
+  });
+  s+='</div></div>';
+  return s;
+}
+
+function logFG(cid){
+  var d=window['_d'+cid];if(!d){toast('Could not read pick');return;}
+  LOG_FORM.player=d.player;LOG_FORM.market=d.market;LOG_FORM.team=d.team||'';
+  LOG_FORM.notes='vs '+d.pitcher+' | '+d.spot;
+  LM='single';sp('log');toast('Pre-filled — adjust odds and save');
+}
+
+function addLeg(cid){
+  var d=window['_d'+cid];if(!d){toast('Could not read pick');return;}
+  LEGS.push({player:d.player,market:d.market});
+  toast('Added — '+LEGS.length+' legs');
+  if(LM==='parlay')renderLog();
+}
+
+function addManLeg(){
+  if(!MAN_LEG.player){toast('Enter a player name');return;}
+  LEGS.push({player:MAN_LEG.player,market:MAN_LEG.market});
+  MAN_LEG.player='';toast('Leg added — '+LEGS.length+' legs');renderLog();
+}
+
+function rmLeg(i){LEGS.splice(i,1);renderLog();}
+function clrLegs(){LEGS=[];renderLog();toast('Cleared');}
+
+function subBet(){
+  if(!LOG_FORM.player){toast('Enter a player name');return;}
+  var stake=parseFloat(LOG_FORM.stake)||25,odds=parseInt(LOG_FORM.odds)||-115;
+  var payout=0,profit=0;
+  if(LOG_FORM.result==='WIN'){payout=odds>0?stake+(stake*odds/100):stake+(stake*100/Math.abs(odds));profit=payout-stake;}
+  else if(LOG_FORM.result==='LOSS'){profit=-stake;}
+  var bet={id:Date.now(),date:getToday(),player:LOG_FORM.player,team:LOG_FORM.team,market:LOG_FORM.market,odds:odds,stake:stake,result:LOG_FORM.result,payout:Math.round(payout*100)/100,profit:Math.round(profit*100)/100,notes:LOG_FORM.notes};
+  BETS.unshift(bet);sset('bets',BETS);
+  LOG_FORM={player:'',team:'',market:'Over 1.5 H+R+RBI',odds:'-115',stake:'25',result:'PENDING',notes:''};
+  toast('Bet saved!');renderLog();renderPnL();
+}
+
+function subParlay(){
+  if(LEGS.length<2){toast('Need at least 2 legs');return;}
+  if(!PAR_FORM.odds){toast('Enter combined odds');return;}
+  var stake=parseFloat(PAR_FORM.stake)||25,odds=parseInt(PAR_FORM.odds)||0;
+  var payout=0,profit=0;
+  if(PAR_FORM.result==='WIN'){payout=odds>0?stake+(stake*odds/100):stake+(stake*100/Math.abs(odds));profit=payout-stake;}
+  else if(PAR_FORM.result==='LOSS'){profit=-stake;}
+  var bet={id:Date.now(),date:getToday(),player:'🎰 PARLAY ('+LEGS.length+' legs)',team:'',market:'Parlay',odds:odds,stake:stake,result:PAR_FORM.result,payout:Math.round(payout*100)/100,profit:Math.round(profit*100)/100,notes:LEGS.map(function(l,i){return (i+1)+'. '+l.player+' — '+l.market;}).join(' | ')};
+  BETS.unshift(bet);sset('bets',BETS);
+  LEGS=[];PAR_FORM={odds:'',stake:'25',result:'PENDING'};
+  toast('Parlay saved!');renderLog();renderPnL();
+}
+
+function markR(id,result){
+  var idx=BETS.findIndex(function(b){return b.id===id;});
+  if(idx===-1)return;
+  var b=BETS[idx],stake=b.stake,odds=b.odds;
+  var payout=0,profit=0;
+  if(result==='WIN'){payout=odds>0?stake+(stake*odds/100):stake+(stake*100/Math.abs(odds));profit=payout-stake;}
+  else if(result==='LOSS'){profit=-stake;}
+  BETS[idx]=Object.assign({},b,{result:result,payout:Math.round(payout*100)/100,profit:Math.round(profit*100)/100});
+  sset('bets',BETS);toast(result==='WIN'?'Marked WIN!':'Marked LOSS');renderPnL();
+}
+
+function saveKey(){
+  var k=document.getElementById('ai-key-input');
+  if(!k||!k.value.trim()){toast('Paste your OpenRouter key first');return;}
+  AI_KEY=k.value.trim();
+  sset('ai_key',AI_KEY);
+  toast('Key saved!');
+  renderGuide();
+  runAI();
+}
+
+function clearKey(){
+  AI_KEY='';
+  sset('ai_key','');
+  AI_OUT='';
+  renderGuide();
+}
+
+function buildPrompt(){
+  var t=D.batters||[],pi=D.pitchers||[],g=D.totals||[];
+  var aG=t.filter(function(b){return b.grade==='A';});
+  var bG=t.filter(function(b){return b.grade==='B';}).slice(0,5);
+  var overK=pi.filter(function(p){return p.avgK>=6.0;}).slice(0,3);
+  var overs=g.filter(function(x){return x.direction==='OVER';}).slice(0,3);
+  var wins=BETS.filter(function(b){return b.result==='WIN';}).length;
+  var total=BETS.filter(function(b){return b.result!=='PENDING';}).length;
+
+  var p='You are an expert MLB prop betting analyst. Today is '+D.date+'.\n\n';
+  p+='MY RECORD: '+wins+'W / '+(total-wins)+'L'+(total>0?' ('+Math.round((wins/total)*100)+'%)':' (no history yet)')+' \n\n';
+  p+='A-GRADE PICKS (highest confidence — all 3 protocol checks passed):\n';
+  if(!aG.length){p+='None today\n';}
+  else aG.forEach(function(b){
+    p+='- '+b.name+' (#'+b.spot+' '+b.team+' vs '+b.pitcher+')\n';
+    p+='  Score: '+b.overall+'/100 | H+R+RBI: '+b.hriScore+' | Hits: '+b.hitScore+' | TB: '+b.tbScore+' | HR: '+b.hrScore+'\n';
+    p+='  AVG: '+b.avg+' OBP: '+b.obp+' H/G: '+b.hpg+' XBH/G: '+b.xbhpg+' Walk Rate: '+b.bbRate+'\n';
+    p+='  Hot/Cold: '+b.hotCold+' | Pitcher ERA: '+b.pitcherERA+' VULN: '+b.vulnScore+'/4\n';
+  });
+  p+='\nB-GRADE PICKS:\n';
+  if(!bG.length){p+='None\n';}
+  else bG.forEach(function(b){
+    p+='- '+b.name+' | Score: '+b.overall+'/100 | '+b.team+' vs '+b.pitcher+' | '+b.hotCold+'\n';
+  });
+  p+='\nPITCHER K OVERS:\n';
+  if(!overK.length){p+='None\n';}
+  else overK.forEach(function(x){
+    p+='- '+x.name+' ('+x.team+' vs '+x.opp+') avg '+x.avgK+' K/start | Last 3: '+x.last3ERA+' ERA\n';
+  });
+  p+='\nGAME TOTAL OVERS:\n';
+  if(!overs.length){p+='None\n';}
+  else overs.forEach(function(x){
+    p+='- '+x.game+' | Score: '+x.score+'/100 | ERAs: '+x.awayERA+'/'+x.homeERA+'\n';
+  });
+  p+='\nSYSTEM NOTES:\n';
+  p+='A-Grade = lineup spot 1-2 + OBP >= .320 + vulnerable pitcher\n';
+  p+='TB score penalizes walk-heavy hitters (walks = 0 total bases)\n';
+  p+='Hot = .050+ above season avg last 14 days\n\n';
+  p+='Provide analysis in EXACTLY this format:\n\n';
+  p+='TOP PICK TODAY:\n[specific player, prop, and why]\n\n';
+  p+='BEST PARLAY COMBO:\n[2-3 picks that align or why not today]\n\n';
+  p+='PICKS TO AVOID:\n[red flags, cold players, walk-heavy hitters]\n\n';
+  p+='OVERALL ASSESSMENT:\n[strong or weak day, how many bets]\n\n';
+  p+='Be direct. No hedging. Real recommendations only.';
+  return p;
+}
+
+async function runAI(){
+  if(!D||AI_LOAD)return;
+  if(!AI_KEY){renderGuide();return;}
+  AI_LOAD=true;AI_OUT='';renderGuide();
+
+  try{
+    var res=await fetch('https://openrouter.ai/api/v1/chat/completions',{
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json',
+        'Authorization':'Bearer '+AI_KEY,
+        'HTTP-Referer':'https://hitters-edge.github.io',
+        'X-Title':'Hitters Edge MLB'
+      },
+      body:JSON.stringify({
+        model:'meta-llama/llama-3.3-70b-instruct:free',
+        messages:[
+          {role:'system',content:'You are a sharp MLB prop betting analyst. Give direct, specific, actionable recommendations. You know high walk rate hurts TB props, lineup spot matters for H+R+RBI, and 14-day hot streaks are meaningful.'},
+          {role:'user',content:buildPrompt()}
+        ],
+        max_tokens:800
+      })
+    });
+    var json=await res.json();
+    if(json.error){
+      AI_OUT='Error: '+json.error.message;
+    } else {
+      AI_OUT=json.choices&&json.choices[0]&&json.choices[0].message&&json.choices[0].message.content||'No response.';
+    }
+  }catch(e){
+    AI_OUT='Error: '+e.message;
+  }
+  AI_LOAD=false;renderGuide();
+  // Scroll to AI output
+  setTimeout(function(){
+    var el=document.getElementById('ai-output');
+    if(el)el.scrollIntoView({behavior:'smooth',block:'start'});
+  },200);
+}
+
+function formatAI(text){
+  var html='';
+  var inSec='';
+  text.split('\n').forEach(function(line){
+    if(line.indexOf('TOP PICK TODAY')>-1){
+      if(inSec)html+='</div>';
+      html+='<div class="ai-sec" style="background:var(--gbg);border:1px solid rgba(34,197,94,.2)"><div class="ai-sec-lbl" style="color:var(--grn)">⭐ Top Pick Today</div>';
+      inSec='top';
+    }else if(line.indexOf('BEST PARLAY')>-1){
+      if(inSec)html+='</div>';
+      html+='<div class="ai-sec" style="background:var(--abg);border:1px solid rgba(245,158,11,.2)"><div class="ai-sec-lbl" style="color:var(--amb)">🎰 Best Parlay Combo</div>';
+      inSec='par';
+    }else if(line.indexOf('PICKS TO AVOID')>-1){
+      if(inSec)html+='</div>';
+      html+='<div class="ai-sec" style="background:var(--rbg);border:1px solid rgba(239,68,68,.2)"><div class="ai-sec-lbl" style="color:var(--red)">🚫 Picks to Avoid</div>';
+      inSec='avoid';
+    }else if(line.indexOf('OVERALL ASSESSMENT')>-1){
+      if(inSec)html+='</div>';
+      html+='<div class="ai-sec" style="background:var(--sur2);border:1px solid var(--bdr)"><div class="ai-sec-lbl" style="color:var(--mut)">📊 Overall Assessment</div>';
+      inSec='overall';
+    }else if(line.trim()){
+      var col=inSec==='top'?'var(--grn)':inSec==='par'?'var(--amb)':inSec==='avoid'?'var(--red)':'var(--txt)';
+      html+='<div style="margin-bottom:4px;color:'+col+'">'+line+'</div>';
+    }
+  });
+  if(inSec)html+='</div>';
+  return html;
+}
+
+
+function reload(){D=null;OPEN={hri:true,hit:false,tb:false,hr:false,ok:false,uk:false,ha:false,go:false,gu:false};loadAll();}
+loadAll();
+</script>
+</body>
+</html>
