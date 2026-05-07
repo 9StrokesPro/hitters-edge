@@ -435,7 +435,7 @@ async function loadAll(){
         var tbScore=sTB(b,player.spot,vuln,park);
         var hrScore=sHR(b,vuln,park);
         var overall=Math.max(hriScore,hitScore,tbScore,hrScore);
-        if(overall<20)return;
+        if(overall<40)return;
         var isNexus=player.spot<=2,passV=b.obp>=0.320;
         var cores=(isNexus?1:0)+(passV?1:0)+(pitcher.isVuln?1:0);
         var grade=cores===3?'A':cores===2?'B':'C';
@@ -541,21 +541,21 @@ function renderGuide(){
   if(!D){return;}
   var t=D.batters||[],pi=D.pitchers||[],g=D.totals||[];
   var aG=t.filter(function(x){return x.grade==='A';}).length;
-  var bG=t.filter(function(x){return x.grade==='B';}).length;
+  var bG=t.filter(function(x){return x.grade==='B'&&x.overall>=50;}).length;
   var html='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:11px">';
-  html+='<div style="font-size:11px;color:var(--mut)">'+D.date+' · '+aG+' A-Grade · '+bG+' B-Grade</div>';
+  html+='<div style="font-size:11px;color:var(--mut)">'+D.date+' · <span style="color:var(--grn);font-weight:700">'+aG+' A-Grade</span> · '+bG+' B-Grade (50+)</div>';
   html+='<button class="rbtn" onclick="reload()">↻ Refresh</button></div>';
 
   html+=makeSect('hri','hri','🟢','Over 1.5 H+R+RBI',
-    t.slice().sort(function(a,b){return b.hriScore-a.hriScore;}),
+    t.filter(function(b){return b.grade==='A'||(b.grade==='B'&&b.hriScore>=50);}).sort(function(a,b){if(a.grade!==b.grade)return a.grade<b.grade?-1:1;return b.hriScore-a.hriScore;}),
     function(b){return bCard(b,'hri',b.hriScore,'var(--grn)','OVER 1.5 H+R+RBI','Over 1.5 H+R+RBI',b.obp,'OBP',b.avg,'AVG',b.hpg,'H/G','');});
 
   html+=makeSect('hit','hit','🩵','Over 1.5 Hits',
-    t.slice().sort(function(a,b){return b.hitScore-a.hitScore;}),
+    t.filter(function(b){return b.grade==='A'||(b.grade==='B'&&b.hitScore>=50);}).sort(function(a,b){if(a.grade!==b.grade)return a.grade<b.grade?-1:1;return b.hitScore-a.hitScore;}),
     function(b){return bCard(b,'hit',b.hitScore,'var(--tel)','OVER 1.5 HITS','Over 1.5 Hits',b.avg,'AVG',b.hpg,'H/G',b.obp,'OBP','');});
 
   html+=makeSect('tb','tb','🔷','Over 1.5 Total Bases',
-    t.slice().sort(function(a,b){return b.tbScore-a.tbScore;}),
+    t.filter(function(b){return b.grade==='A'||(b.grade==='B'&&b.tbScore>=50);}).sort(function(a,b){if(a.grade!==b.grade)return a.grade<b.grade?-1:1;return b.tbScore-a.tbScore;}),
     function(b){
       var wc=b.bbRate>=0.09?'var(--red)':'var(--mut)';
       var wt=b.bbRate>=0.09?'⚠️ High walks':'✓ Low walks';
@@ -564,7 +564,7 @@ function renderGuide(){
     });
 
   html+=makeSect('hr','hr','🟣','Over 0.5 HR',
-    t.slice().sort(function(a,b){return b.hrScore-a.hrScore;}),
+    t.filter(function(b){return b.grade==='A'||(b.grade==='B'&&b.hrScore>=50);}).sort(function(a,b){if(a.grade!==b.grade)return a.grade<b.grade?-1:1;return b.hrScore-a.hrScore;}),
     function(b){return bCard(b,'hr',b.hrScore,'var(--pur)','OVER 0.5 HR','Over 0.5 HR',b.hrpg,'HR/G',b.slg,'SLG',b.xbhpg,'XBH/G','');});
 
   html+=makeSect('ok','ok','🔵','Over Strikeouts',
@@ -587,10 +587,10 @@ function renderGuide(){
 
   html+='<div class="card" style="margin-top:10px">';
   html+='<div style="font-size:14px;font-weight:700;margin-bottom:4px">🤖 AI Analysis</div>';
-  html+='<div style="font-size:12px;color:var(--mut);margin-bottom:10px">Free AI analysis — uses OpenRouter (free tier, no credit card needed)</div>';
+  html+='<div style="font-size:12px;color:var(--mut);margin-bottom:10px">Free AI analysis — uses Groq (genuinely free, no credit card needed)</div>';
   if(!AI_KEY){
-    html+='<div style="background:var(--abg);border:1px solid var(--amb);border-radius:8px;padding:10px;font-size:12px;color:var(--amb);margin-bottom:8px">⚙️ One-time setup: Get a free key at <strong>openrouter.ai</strong> → Sign up free → Keys → Create key</div>';
-    html+='<input class="inp" id="ai-key-input" placeholder="Paste your OpenRouter key here (sk-or-...)" style="margin-bottom:6px">';
+    html+='<div style="background:var(--abg);border:1px solid var(--amb);border-radius:8px;padding:10px;font-size:12px;color:var(--amb);margin-bottom:8px">⚙️ One-time setup: Go to <strong>console.groq.com</strong> → Sign up free (no credit card) → API Keys → Create key</div>';
+    html+='<input class="inp" id="ai-key-input" placeholder="Paste your Groq key here (gsk_...)" style="margin-bottom:6px">';
     html+='<button class="btn" onclick="saveKey()">Save Key & Analyze</button>';
   } else {
     html+='<button class="btn'+(AI_LOAD?' btn-disabled':'')+'" onclick="runAI()" '+(AI_LOAD?'disabled':'')+'>'+( AI_LOAD?'⏳ Analyzing...':'Analyze Today\'s Picks →')+'</button>';
@@ -653,14 +653,28 @@ function gameCard(g){
 
 function renderBatters(){
   if(!D)return;
-  var targets=(D.batters||[]).filter(function(b){return b.overall>=30;});
+  var targets=(D.batters||[]).filter(function(b){return b.grade==='A'||(b.grade==='B'&&b.overall>=50);}).sort(function(a,b){if(a.grade!==b.grade)return a.grade<b.grade?-1:1;return b.overall-a.overall;});
   var aG=targets.filter(function(b){return b.grade==='A';}).length;
   var bG=targets.filter(function(b){return b.grade==='B';}).length;
-  var cG=targets.filter(function(b){return b.grade==='C';}).length;
-  var html='<div style="display:flex;justify-content:space-between;margin-bottom:10px">';
-  html+='<div style="font-size:11px;color:var(--mut)">'+aG+' A · '+bG+' B · '+cG+' C</div>';
+  var html='';
+  html+='<div style="background:var(--gbg);border:1px solid rgba(34,197,94,.3);border-radius:10px;padding:10px 12px;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between">';
+  html+='<div><div style="font-size:12px;font-weight:700;color:var(--grn)">★ A-Grade only for real money</div>';
+  html+='<div style="font-size:11px;color:var(--mut);margin-top:2px">$25 max · -140 or better · confirm lineup first</div></div>';
+  html+='<div style="text-align:right"><div style="font-size:20px;font-weight:700;color:var(--grn)">'+aG+'</div><div style="font-size:9px;color:var(--mut);text-transform:uppercase">A-Grade</div></div>';
+  html+='</div>';
+  html+='<div style="display:flex;justify-content:space-between;margin-bottom:10px">';
+  html+='<div style="font-size:11px;color:var(--mut)"><span style="color:var(--grn);font-weight:700">'+aG+' A-Grade</span> · '+bG+' B-Grade (50+)</div>';
   html+='<button class="rbtn" onclick="reload()">↻ Refresh</button></div>';
-  if(!targets.length){html+='<div class="empty">No batters yet.<br>Lineups post 2-4 hours before first pitch.</div>';}
+  if(!targets.length){html+='<div class="empty">No A or B-Grade picks above 50 today.<br>Lineups post 2-4 hours before first pitch.</div>';}
+  // Show eliminated teams
+  if(D.eliminated&&D.eliminated.length){
+    html+='<div style="margin-top:14px;padding:10px 12px;background:var(--rbg);border:1px solid var(--red);border-radius:10px">';
+    html+='<div style="font-size:11px;font-weight:700;color:var(--red);text-transform:uppercase;letter-spacing:.5px;margin-bottom:7px">🚫 Eliminated — Ace Pitchers</div>';
+    D.eliminated.forEach(function(e){
+      html+='<div style="font-size:12px;color:var(--mut);margin-bottom:4px">'+e.team+' vs '+e.pitcher+' — '+e.reason+'</div>';
+    });
+    html+='</div>';
+  }
   else targets.forEach(function(b){
     var bc=b.grade==='A'?'var(--grn)':b.grade==='B'?'var(--amb)':'var(--red)';
     html+='<div class="card" style="border-left:4px solid '+bc+'">';
@@ -969,65 +983,37 @@ function buildPrompt(){
   return p;
 }
 
-// Free models to try in order — falls back if one fails
-var FREE_MODELS=[
-  'meta-llama/llama-3.3-70b-instruct:free',
-  'google/gemma-3-27b-it:free',
-  'mistralai/mistral-7b-instruct:free',
-  'qwen/qwen-2.5-72b-instruct:free'
-];
-
 async function runAI(){
   if(!D||AI_LOAD)return;
   if(!AI_KEY){renderGuide();return;}
   AI_LOAD=true;AI_OUT='';renderGuide();
 
-  var prompt=buildPrompt();
-  var lastError='';
-  var success=false;
-
-  for(var mi=0;mi<FREE_MODELS.length;mi++){
-    var model=FREE_MODELS[mi];
-    console.log('Trying model:',model);
-    try{
-      var res=await fetch('https://openrouter.ai/api/v1/chat/completions',{
-        method:'POST',
-        headers:{
-          'Content-Type':'application/json',
-          'Authorization':'Bearer '+AI_KEY,
-          'HTTP-Referer':'https://9strokespro.github.io/hitters-edge',
-          'X-Title':'Hitters Edge MLB'
-        },
-        body:JSON.stringify({
-          model:model,
-          messages:[
-            {role:'system',content:'You are a sharp MLB prop betting analyst. Give direct, specific, actionable recommendations. You know high walk rate hurts TB props, lineup spot matters for H+R+RBI, and 14-day hot streaks are meaningful.'},
-            {role:'user',content:prompt}
-          ],
-          max_tokens:800
-        })
-      });
-      var json=await res.json();
-      if(json.error){
-        lastError=json.error.message||JSON.stringify(json.error);
-        console.log('Model',model,'failed:',lastError);
-        continue;
-      }
+  try{
+    var res=await fetch('https://api.groq.com/openai/v1/chat/completions',{
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json',
+        'Authorization':'Bearer '+AI_KEY
+      },
+      body:JSON.stringify({
+        model:'llama-3.3-70b-versatile',
+        messages:[
+          {role:'system',content:'You are a sharp MLB prop betting analyst. Give direct, specific, actionable recommendations. You know high walk rate hurts TB props, lineup spot matters for H+R+RBI, and 14-day hot streaks are meaningful. Always name one clear top pick.'},
+          {role:'user',content:buildPrompt()}
+        ],
+        max_tokens:800,
+        temperature:0.3
+      })
+    });
+    var json=await res.json();
+    if(json.error){
+      AI_OUT='GROQ_ERROR: '+json.error.message+'\n\nFix: Go to console.groq.com → check your API key is correct → make sure you copied the full key starting with gsk_';
+    } else {
       var text=json.choices&&json.choices[0]&&json.choices[0].message&&json.choices[0].message.content;
-      if(text){
-        AI_OUT=text;
-        success=true;
-        console.log('Success with model:',model);
-        break;
-      }
-    }catch(e){
-      lastError=e.message;
-      console.log('Model',model,'error:',e.message);
+      AI_OUT=text||'No response received.';
     }
-  }
-
-  if(!success){
-    AI_OUT='ALL_MODELS_FAILED: '+lastError+'\n\nAll free models failed. This usually means:\n1. Your OpenRouter key has no credits — go to openrouter.ai and add $1 credit\n2. Or the free tier is temporarily down\n\nOpenRouter free tier requires at least $1 credit added to use free models reliably.';
+  }catch(e){
+    AI_OUT='GROQ_ERROR: '+e.message+'\n\nMake sure your Groq API key starts with gsk_ and was copied correctly.';
   }
 
   AI_LOAD=false;renderGuide();
