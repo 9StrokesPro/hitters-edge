@@ -969,40 +969,68 @@ function buildPrompt(){
   return p;
 }
 
+// Free models to try in order — falls back if one fails
+var FREE_MODELS=[
+  'meta-llama/llama-3.3-70b-instruct:free',
+  'google/gemma-3-27b-it:free',
+  'mistralai/mistral-7b-instruct:free',
+  'qwen/qwen-2.5-72b-instruct:free'
+];
+
 async function runAI(){
   if(!D||AI_LOAD)return;
   if(!AI_KEY){renderGuide();return;}
   AI_LOAD=true;AI_OUT='';renderGuide();
 
-  try{
-    var res=await fetch('https://openrouter.ai/api/v1/chat/completions',{
-      method:'POST',
-      headers:{
-        'Content-Type':'application/json',
-        'Authorization':'Bearer '+AI_KEY,
-        'HTTP-Referer':'https://hitters-edge.github.io',
-        'X-Title':'Hitters Edge MLB'
-      },
-      body:JSON.stringify({
-        model:'meta-llama/llama-3.3-70b-instruct:free',
-        messages:[
-          {role:'system',content:'You are a sharp MLB prop betting analyst. Give direct, specific, actionable recommendations. You know high walk rate hurts TB props, lineup spot matters for H+R+RBI, and 14-day hot streaks are meaningful.'},
-          {role:'user',content:buildPrompt()}
-        ],
-        max_tokens:800
-      })
-    });
-    var json=await res.json();
-    if(json.error){
-      AI_OUT='Error: '+json.error.message;
-    } else {
-      AI_OUT=json.choices&&json.choices[0]&&json.choices[0].message&&json.choices[0].message.content||'No response.';
+  var prompt=buildPrompt();
+  var lastError='';
+  var success=false;
+
+  for(var mi=0;mi<FREE_MODELS.length;mi++){
+    var model=FREE_MODELS[mi];
+    console.log('Trying model:',model);
+    try{
+      var res=await fetch('https://openrouter.ai/api/v1/chat/completions',{
+        method:'POST',
+        headers:{
+          'Content-Type':'application/json',
+          'Authorization':'Bearer '+AI_KEY,
+          'HTTP-Referer':'https://9strokespro.github.io/hitters-edge',
+          'X-Title':'Hitters Edge MLB'
+        },
+        body:JSON.stringify({
+          model:model,
+          messages:[
+            {role:'system',content:'You are a sharp MLB prop betting analyst. Give direct, specific, actionable recommendations. You know high walk rate hurts TB props, lineup spot matters for H+R+RBI, and 14-day hot streaks are meaningful.'},
+            {role:'user',content:prompt}
+          ],
+          max_tokens:800
+        })
+      });
+      var json=await res.json();
+      if(json.error){
+        lastError=json.error.message||JSON.stringify(json.error);
+        console.log('Model',model,'failed:',lastError);
+        continue;
+      }
+      var text=json.choices&&json.choices[0]&&json.choices[0].message&&json.choices[0].message.content;
+      if(text){
+        AI_OUT=text;
+        success=true;
+        console.log('Success with model:',model);
+        break;
+      }
+    }catch(e){
+      lastError=e.message;
+      console.log('Model',model,'error:',e.message);
     }
-  }catch(e){
-    AI_OUT='Error: '+e.message;
   }
+
+  if(!success){
+    AI_OUT='ALL_MODELS_FAILED: '+lastError+'\n\nAll free models failed. This usually means:\n1. Your OpenRouter key has no credits — go to openrouter.ai and add $1 credit\n2. Or the free tier is temporarily down\n\nOpenRouter free tier requires at least $1 credit added to use free models reliably.';
+  }
+
   AI_LOAD=false;renderGuide();
-  // Scroll to AI output
   setTimeout(function(){
     var el=document.getElementById('ai-output');
     if(el)el.scrollIntoView({behavior:'smooth',block:'start'});
@@ -1010,6 +1038,16 @@ async function runAI(){
 }
 
 function formatAI(text){
+  // Handle error case
+  if(text.indexOf('ALL_MODELS_FAILED')>-1||text.indexOf('Error:')===0){
+    var lines=text.split('\n');
+    var html='<div style="background:var(--rbg);border:1px solid var(--red);border-radius:9px;padding:12px;margin-top:8px">';
+    html+='<div style="font-size:11px;font-weight:700;color:var(--red);text-transform:uppercase;margin-bottom:8px">⚠️ AI Error</div>';
+    lines.forEach(function(l){if(l.trim())html+='<div style="font-size:12px;color:var(--txt);margin-bottom:4px">'+l+'</div>';});
+    html+='</div>';
+    return html;
+  }
+
   var html='';
   var inSec='';
   text.split('\n').forEach(function(line){
