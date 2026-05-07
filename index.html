@@ -116,6 +116,7 @@ select.inp option{background:var(--sur2)}
   <div>
     <div class="logo">⚾ Hitters Edge v7</div>
     <div style="font-size:10px;color:var(--mut)" id="lu">Loading data...</div>
+    <div style="font-size:9px;color:var(--mut)" id="refresh-timer"></div>
   </div>
   <div style="text-align:right">
     <div style="font-size:16px;font-weight:700;color:var(--grn)" id="pnl-hdr">$0.00</div>
@@ -142,6 +143,7 @@ select.inp option{background:var(--sur2)}
 
 <script>
 var D=null,BETS=[],LEGS=[],LM='single',AI_OUT='',AI_LOAD=false,TOAST_T=null,AI_KEY=sget('ai_key','');
+var REFRESH_T=null,COUNTDOWN_T=null,NEXT_REFRESH=null;
 var OPEN={hri:true,hit:false,tb:false,hr:false,ok:false,uk:false,ha:false,go:false,gu:false};
 var LOG_FORM={player:'',team:'',market:'Over 1.5 H+R+RBI',odds:'-115',stake:'25',result:'PENDING',notes:''};
 var PAR_FORM={odds:'',stake:'25',result:'PENDING'};
@@ -227,16 +229,22 @@ async function loadGames(){
   var data=await fetchJ(MLB+'/schedule?sportId=1&date='+today+'&hydrate=lineups,probablePitcher(note),team,venue&language=en');
   if(!data||!data.dates||!data.dates[0])return[];
   return data.dates[0].games.map(function(g){
+    var awayArr=g.lineups&&g.lineups['awayPlayers']||[];
+    var homeArr=g.lineups&&g.lineups['homePlayers']||[];
+    var lineupPosted=awayArr.length>0&&homeArr.length>0;
     return{
       gamePk:g.gamePk,time:fmtTime(g.gameDate),
       venue:g.venue&&g.venue.name||'Unknown',
       park:PF[g.venue&&g.venue.name]||100,
       awayTeam:g.teams&&g.teams.away&&g.teams.away.team&&g.teams.away.team.name||'TBD',
       homeTeam:g.teams&&g.teams.home&&g.teams.home.team&&g.teams.home.team.name||'TBD',
+      awayTeamId:g.teams&&g.teams.away&&g.teams.away.team&&g.teams.away.team.id||null,
+      homeTeamId:g.teams&&g.teams.home&&g.teams.home.team&&g.teams.home.team.id||null,
       awayPitcher:{name:g.teams&&g.teams.away&&g.teams.away.probablePitcher&&g.teams.away.probablePitcher.fullName||'TBD',id:g.teams&&g.teams.away&&g.teams.away.probablePitcher&&g.teams.away.probablePitcher.id||null},
       homePitcher:{name:g.teams&&g.teams.home&&g.teams.home.probablePitcher&&g.teams.home.probablePitcher.fullName||'TBD',id:g.teams&&g.teams.home&&g.teams.home.probablePitcher&&g.teams.home.probablePitcher.id||null},
       awayLineup:extractLineup(g,'away'),
-      homeLineup:extractLineup(g,'home')
+      homeLineup:extractLineup(g,'home'),
+      lineupPosted:lineupPosted
     };
   });
 }
@@ -244,8 +252,24 @@ async function loadGames(){
 function extractLineup(g,side){
   var arr=g.lineups&&g.lineups[side+'Players']||[];
   return arr.map(function(p,i){
-    return{spot:i+1,name:p.fullName||'Unknown',id:p.id||null,pos:p.primaryPosition&&p.primaryPosition.abbreviation||'?'};
+    return{spot:i+1,name:p.fullName||'Unknown',id:p.id||null,pos:p.primaryPosition&&p.primaryPosition.abbreviation||'?',confirmed:true};
   });
+}
+
+async function fetchRoster(teamId,season){
+  var data=await fetchJ(MLB+'/teams/'+teamId+'/roster?rosterType=active&season='+season);
+  if(!data||!data.roster)return[];
+  return data.roster
+    .filter(function(p){return p.position&&p.position.type==='Hitter';})
+    .map(function(p){
+      return{
+        spot:99,
+        name:p.person&&p.person.fullName||'Unknown',
+        id:p.person&&p.person.id||null,
+        pos:p.position&&p.position.abbreviation||'?',
+        confirmed:false
+      };
+    });
 }
 
 async function loadPitcher(id,season){
@@ -403,6 +427,24 @@ async function loadAll(){
     await sleep(300);
   }
 
+  // For games without lineups use active roster so we can project picks
+  setProgress('Checking lineups...');
+  var gamesNoLineup=games.filter(function(g){return !g.lineupPosted;});
+  for(var gi=0;gi<gamesNoLineup.length;gi++){
+    var gg=gamesNoLineup[gi];
+    setProgress('No lineup yet — '+gg.awayTeam+' @ '+gg.homeTeam+' ('+gg.time+') — fetching rosters...');
+    if(gg.awayTeamId&&!gg.awayLineup.length){
+      var ar=await fetchRoster(gg.awayTeamId,season);
+      if(ar.length)gg.awayLineup=ar;
+      await sleep(300);
+    }
+    if(gg.homeTeamId&&!gg.homeLineup.length){
+      var hr=await fetchRoster(gg.homeTeamId,season);
+      if(hr.length)gg.homeLineup=hr;
+      await sleep(300);
+    }
+  }
+
   setProgress('Fetching batter stats...');
   var bCache={},allP=[];
   games.forEach(function(g){
@@ -436,11 +478,16 @@ async function loadAll(){
         var hrScore=sHR(b,vuln,park);
         var overall=Math.max(hriScore,hitScore,tbScore,hrScore);
         if(overall<40)return;
-        var isNexus=player.spot<=2,passV=b.obp>=0.320;
+        var lineupConfirmed=player.confirmed||false;
+        // If lineup confirmed use actual spot, else use OBP proxy for nexus
+        var isNexus=lineupConfirmed?(player.spot<=2):(b.obp>=0.350);
+        var passV=b.obp>=0.320;
         var cores=(isNexus?1:0)+(passV?1:0)+(pitcher.isVuln?1:0);
         var grade=cores===3?'A':cores===2?'B':'C';
         batters.push({
-          name:player.name,pos:player.pos,spot:player.spot,
+          name:player.name,pos:player.pos,
+          spot:lineupConfirmed?player.spot:null,
+          confirmed:lineupConfirmed,
           team:mu.team,game:mu.game.awayTeam+' @ '+mu.game.homeTeam,
           time:mu.game.time,venue:mu.game.venue,park,
           pitcher:mu.pName,pitcherERA:pitcher.era,pitcherWHIP:pitcher.whip,
@@ -506,6 +553,8 @@ function renderAll(){
   renderPitchers();
   renderTotals();
   renderPnL();
+  // Start hourly auto-refresh if not already running
+  if(!REFRESH_T)startAutoRefresh();
 }
 
 function updatePnLHdr(){
@@ -608,7 +657,11 @@ function bCard(b,cls,score,color,typeLabel,betLine,v1,l1,v2,l2,v3,l3,extra){
   var s='<div class="gc '+cls+'">';
   s+='<div class="gtyp" style="color:'+color+'">'+typeLabel+' &nbsp;'+gradeBadge(b.grade)+'</div>';
   s+='<div class="gnm">'+b.name+hotBadge(b.hotCold)+'</div>';
-  s+='<div class="gmt">#'+b.spot+' '+b.team+' vs '+b.pitcher+' · '+b.time+'</div>';
+  var sb=b.confirmed
+    ?'<span style="font-size:10px;font-weight:700;color:var(--grn);margin-left:5px">✅</span>'
+    :'<span style="font-size:10px;font-weight:700;color:var(--amb);margin-left:5px">⏳</span>';
+  var spTxt=b.spot?'#'+b.spot+' ':'';
+  s+='<div class="gmt">'+spTxt+b.team+' vs '+b.pitcher+' · '+b.time+sb+'</div>';
   s+=bar(score,color);
   s+=s4([[v1,l1,color],[v2,l2,color],[v3,l3,color],[score,'Score','var(--gld)']]);
   s+='<div class="gln"><div style="font-size:10px;color:var(--mut)">Recommended</div><div style="font-size:13px;font-weight:700;color:var(--gld)">'+betLine+'</div></div>';
@@ -720,7 +773,11 @@ function renderBatters(){
     html+='<div class="card" style="border-left:4px solid '+bc+'">';
     html+='<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">';
     html+='<div><div style="font-size:15px;font-weight:700">'+b.name+hotBadge(b.hotCold)+'</div>';
-    html+='<div style="font-size:11px;color:var(--mut);margin-top:2px">#'+b.spot+' '+b.team+' vs '+b.pitcher+' · '+b.time+'</div></div>';
+    var statusBadge=b.confirmed
+    ?'<span style="background:var(--gbg);color:var(--grn);font-size:10px;font-weight:700;padding:1px 6px;border-radius:10px;margin-left:6px">✅ CONFIRMED</span>'
+    :'<span style="background:var(--abg);color:var(--amb);font-size:10px;font-weight:700;padding:1px 6px;border-radius:10px;margin-left:6px">⏳ PROJECTED</span>';
+  var spotTxt=b.spot?'#'+b.spot+' ':'';
+  html+='<div style="font-size:11px;color:var(--mut);margin-top:2px">'+spotTxt+b.team+' vs '+b.pitcher+' · '+b.time+statusBadge+'</div></div>';
     html+='<div>'+gradeBadge(b.grade)+'</div></div>';
     html+=bar(b.overall);
     html+=s4([[b.hriScore,'H+R+RBI','var(--grn)'],[b.hitScore,'Hits','var(--tel)'],[b.tbScore,'TB','var(--nvy)'],[b.hrScore,'HR','var(--pur)']]);
@@ -1103,7 +1160,51 @@ function formatAI(text){
 }
 
 
-function reload(){D=null;OPEN={hri:true,hit:false,tb:false,hr:false,ok:false,uk:false,ha:false,go:false,gu:false};loadAll();}
+function reload(){
+  D=null;
+  OPEN={hri:true,hit:false,tb:false,hr:false,ok:false,uk:false,ha:false,go:false,gu:false};
+  loadAll();
+}
+
+function startAutoRefresh(){
+  stopAutoRefresh();
+  REFRESH_T=setInterval(function(){
+    console.log('Auto refresh at',new Date().toLocaleTimeString());
+    var prevConfirmed=D?D.batters.filter(function(b){return b.confirmed&&b.grade==='A';}).map(function(b){return b.name;}).join(','):'';
+    loadAll().then(function(){
+      if(!D)return;
+      var newConfirmed=D.batters.filter(function(b){return b.confirmed&&b.grade==='A';}).map(function(b){return b.name;}).join(',');
+      if(newConfirmed!==prevConfirmed&&newConfirmed){
+        var newPicks=D.batters.filter(function(b){
+          return b.confirmed&&b.grade==='A'&&prevConfirmed.indexOf(b.name)===-1;
+        });
+        if(newPicks.length>0){
+          toast('🔔 '+newPicks.length+' new confirmed A-Grade pick'+(newPicks.length>1?'s':'')+'!');
+        }
+      }
+      scheduleCountdown();
+    });
+  },60*60*1000);
+  scheduleCountdown();
+}
+
+function stopAutoRefresh(){
+  if(REFRESH_T){clearInterval(REFRESH_T);REFRESH_T=null;}
+  if(COUNTDOWN_T){clearInterval(COUNTDOWN_T);COUNTDOWN_T=null;}
+}
+
+function scheduleCountdown(){
+  NEXT_REFRESH=Date.now()+60*60*1000;
+  if(COUNTDOWN_T)clearInterval(COUNTDOWN_T);
+  COUNTDOWN_T=setInterval(function(){
+    var el=document.getElementById('refresh-timer');
+    if(!el)return;
+    var diff=NEXT_REFRESH-Date.now();
+    if(diff<=0){el.textContent='Refreshing...';return;}
+    var m=Math.floor(diff/60000),s=Math.floor((diff%60000)/1000);
+    el.textContent='Auto refresh in '+m+'m '+('0'+s).slice(-2)+'s';
+  },1000);
+}
 loadAll();
 </script>
 </body>
