@@ -197,11 +197,11 @@ function s4(items){
 }
 
 function hotBadge(hc){
-  if(!hc||hc==='Neutral')return '';
-  if(hc==='HOT')return '<span class="hot" style="background:var(--gbg);color:var(--grn)">🔥 HOT</span>';
-  if(hc==='Warming')return '<span class="hot" style="background:var(--abg);color:var(--amb)">📈</span>';
-  if(hc==='COLD')return '<span class="hot" style="background:var(--rbg);color:var(--red)">🥶 COLD</span>';
-  if(hc==='Cooling')return '<span class="hot" style="background:var(--abg);color:var(--amb)">📉</span>';
+  if(!hc||hc==='Neutral') return '';
+  if(hc==='HOT')     return '<span class="hot" style="background:var(--gbg);color:var(--grn);font-size:13px;padding:1px 5px;border-radius:8px">🔥🔥🔥</span>';
+  if(hc==='Warming') return '<span class="hot" style="background:var(--gbg);color:var(--grn);font-size:13px;padding:1px 5px;border-radius:8px">🔥🔥</span>';
+  if(hc==='COLD')    return '<span class="hot" style="background:var(--rbg);color:var(--red);font-size:13px;padding:1px 5px;border-radius:8px">🧊🧊🧊</span>';
+  if(hc==='Cooling') return '<span class="hot" style="background:var(--rbg);color:var(--red);font-size:13px;padding:1px 5px;border-radius:8px">🧊</span>';
   return '';
 }
 
@@ -661,6 +661,46 @@ function renderBatters(){
   html+='<div><div style="font-size:12px;font-weight:700;color:var(--grn)">★ A-Grade only for real money</div>';
   html+='<div style="font-size:11px;color:var(--mut);margin-top:2px">$25 max · -140 or better · confirm lineup first</div></div>';
   html+='<div style="text-align:right"><div style="font-size:20px;font-weight:700;color:var(--grn)">'+aG+'</div><div style="font-size:9px;color:var(--mut);text-transform:uppercase">A-Grade</div></div>';
+  html+='</div>';
+
+  // LEGEND CARD
+  html+='<div style="background:var(--sur);border:1px solid var(--bdr);border-radius:10px;padding:12px;margin-bottom:10px">';
+  html+='<div style="font-size:11px;font-weight:700;color:var(--mut);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px">📖 How to Read the Picks</div>';
+
+  // Grade legend
+  html+='<div style="font-size:10px;font-weight:700;color:var(--mut);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Grade</div>';
+  html+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:12px">';
+  html+='<div style="background:var(--gbg);border:1px solid rgba(34,197,94,.3);border-radius:8px;padding:8px"><div style="font-size:12px;font-weight:700;color:var(--grn)">★ A-Grade</div><div style="font-size:11px;color:var(--mut);margin-top:2px">All 3 checks passed — real money</div></div>';
+  html+='<div style="background:var(--abg);border:1px solid rgba(245,158,11,.3);border-radius:8px;padding:8px"><div style="font-size:12px;font-weight:700;color:var(--amb)">⚡ B-Grade</div><div style="font-size:11px;color:var(--mut);margin-top:2px">2 of 3 checks — bonus bets only</div></div>';
+  html+='</div>';
+
+  // Hot cold legend
+  html+='<div style="font-size:10px;font-weight:700;color:var(--mut);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Streak (last 14 days vs season avg)</div>';
+  html+='<div style="display:flex;flex-direction:column;gap:5px;margin-bottom:12px">';
+  html+='<div style="display:flex;align-items:center;gap:10px"><span style="font-size:15px;min-width:50px">🔥🔥🔥</span><div><div style="font-size:12px;font-weight:700;color:var(--grn)">HOT</div><div style="font-size:11px;color:var(--mut)">Batting .050+ above season avg — best time to bet</div></div></div>';
+  html+='<div style="display:flex;align-items:center;gap:10px"><span style="font-size:15px;min-width:50px">🔥🔥</span><div><div style="font-size:12px;font-weight:700;color:var(--grn)">WARM</div><div style="font-size:11px;color:var(--mut)">Batting .020+ above season avg — trending up</div></div></div>';
+  html+='<div style="display:flex;align-items:center;gap:10px"><span style="font-size:15px;min-width:50px;color:var(--mut)">—</span><div><div style="font-size:12px;font-weight:700;color:var(--mut)">NEUTRAL</div><div style="font-size:11px;color:var(--mut)">Within .020 of season avg — no streak factor</div></div></div>';
+  html+='<div style="display:flex;align-items:center;gap:10px"><span style="font-size:15px;min-width:50px">🧊</span><div><div style="font-size:12px;font-weight:700;color:var(--red)">COOLING</div><div style="font-size:11px;color:var(--mut)">Batting .020+ below season avg — use caution</div></div></div>';
+  html+='<div style="display:flex;align-items:center;gap:10px"><span style="font-size:15px;min-width:50px">🧊🧊🧊</span><div><div style="font-size:12px;font-weight:700;color:var(--red)">COLD</div><div style="font-size:11px;color:var(--mut)">Batting .050+ below season avg — skip entirely</div></div></div>';
+  html+='</div>';
+
+  // Protocol checks legend  
+  html+='<div style="font-size:10px;font-weight:700;color:var(--mut);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">A-Grade Protocol (all 3 required)</div>';
+  html+='<div style="display:flex;flex-direction:column;gap:5px;margin-bottom:12px">';
+  html+='<div style="display:flex;align-items:flex-start;gap:8px"><span style="color:var(--grn);font-weight:700;min-width:18px">1</span><div style="font-size:11px;color:var(--mut)"><span style="color:var(--txt);font-weight:600">Lineup spot #1 or #2</span> — top of order sees most at-bats and run opportunities</div></div>';
+  html+='<div style="display:flex;align-items:flex-start;gap:8px"><span style="color:var(--grn);font-weight:700;min-width:18px">2</span><div style="font-size:11px;color:var(--mut)"><span style="color:var(--txt);font-weight:600">OBP .320 or higher</span> — gets on base consistently</div></div>';
+  html+='<div style="display:flex;align-items:flex-start;gap:8px"><span style="color:var(--grn);font-weight:700;min-width:18px">3</span><div style="font-size:11px;color:var(--mut)"><span style="color:var(--txt);font-weight:600">Facing vulnerable pitcher</span> — ERA 4.50+, WHIP 1.40+, or K/9 below 7.0</div></div>';
+  html+='</div>';
+
+  // Prop type legend
+  html+='<div style="font-size:10px;font-weight:700;color:var(--mut);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Prop Types</div>';
+  html+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:5px">';
+  html+='<div style="background:rgba(0,0,0,.2);border-radius:7px;padding:8px"><div style="font-size:11px;font-weight:700;color:var(--grn)">🟢 H+R+RBI</div><div style="font-size:10px;color:var(--mut);margin-top:2px">Best for lineup spots 1-4. Needs run production.</div></div>';
+  html+='<div style="background:rgba(0,0,0,.2);border-radius:7px;padding:8px"><div style="font-size:11px;font-weight:700;color:var(--tel)">🩵 Hits</div><div style="font-size:10px;color:var(--mut);margin-top:2px">High AVG + low walk rate. Walks ≠ hits.</div></div>';
+  html+='<div style="background:rgba(0,0,0,.2);border-radius:7px;padding:8px"><div style="font-size:11px;font-weight:700;color:var(--nvy)">🔷 Total Bases</div><div style="font-size:10px;color:var(--mut);margin-top:2px">High SLG + low walks. Walks = 0 TB always.</div></div>';
+  html+='<div style="background:rgba(0,0,0,.2);border-radius:7px;padding:8px"><div style="font-size:11px;font-weight:700;color:var(--pur)">🟣 Home Run</div><div style="font-size:10px;color:var(--mut);margin-top:2px">HR/G rate + hitter-friendly park. Coors is best.</div></div>';
+  html+='</div>';
+
   html+='</div>';
   html+='<div style="display:flex;justify-content:space-between;margin-bottom:10px">';
   html+='<div style="font-size:11px;color:var(--mut)"><span style="color:var(--grn);font-weight:700">'+aG+' A-Grade</span> · '+bG+' B-Grade (50+)</div>';
