@@ -232,8 +232,20 @@ async function loadGames(){
     var awayArr=g.lineups&&g.lineups['awayPlayers']||[];
     var homeArr=g.lineups&&g.lineups['homePlayers']||[];
     var lineupPosted=awayArr.length>0&&homeArr.length>0;
+    var status=g.status&&g.status.abstractGameState||'Preview';
+    var gameStartTime=g.gameDate?new Date(g.gameDate):null;
+    // Game is bettable if Preview (not started) and start time is in the future
+    var now=new Date();
+    var isUpcoming=status==='Preview'&&gameStartTime&&gameStartTime>now;
+    var isLive=status==='Live';
+    var isFinal=status==='Final';
     return{
       gamePk:g.gamePk,time:fmtTime(g.gameDate),
+      gameStartTime:gameStartTime,
+      status:status,
+      isUpcoming:isUpcoming,
+      isLive:isLive,
+      isFinal:isFinal,
       venue:g.venue&&g.venue.name||'Unknown',
       park:PF[g.venue&&g.venue.name]||100,
       awayTeam:g.teams&&g.teams.away&&g.teams.away.team&&g.teams.away.team.name||'TBD',
@@ -608,6 +620,8 @@ async function loadAll(){
   setProgress('Scoring...');
   var batters=[],eliminated=[];
   games.forEach(function(g){
+    // Skip games that are live or finished — no point betting these
+    if(g.isFinal){return;}
     [{lineup:g.awayLineup,team:g.awayTeam,pId:g.homePitcher.id,pName:g.homePitcher.name,game:g},
      {lineup:g.homeLineup,team:g.homeTeam,pId:g.awayPitcher.id,pName:g.awayPitcher.name,game:g}]
     .forEach(function(mu){
@@ -651,7 +665,9 @@ async function loadAll(){
           avg:b.avg,obp:b.obp,slg:b.slg,hpg:b.hpg,hrpg:b.hrpg,tbpg:b.tbpg,
           runspg:b.runspg,rbipg:b.rbipg,xbhpg:b.xbhpg,bbRate:b.bbRate,
           sbpg:b.sbpg,dbpg:b.dbpg,singpg:b.singpg,kpct:b.kpct,
-          hotCold:b.hotCold
+          hotCold:b.hotCold,
+          isLive:mu.game.isLive,
+          isUpcoming:mu.game.isUpcoming
         });
       });
     });
@@ -662,7 +678,7 @@ async function loadAll(){
   });
 
   var pitchers=[];
-  games.forEach(function(g){
+  games.filter(function(g){return !g.isFinal;}).forEach(function(g){
     [{id:g.awayPitcher.id,name:g.awayPitcher.name,team:g.awayTeam,opp:g.homeTeam,time:g.time},
      {id:g.homePitcher.id,name:g.homePitcher.name,team:g.homeTeam,opp:g.awayTeam,time:g.time}]
     .forEach(function(p){
@@ -688,7 +704,7 @@ async function loadAll(){
   });
   pitchers.sort(function(a,b){return b.score-a.score;});
 
-  var totals=games.map(function(g){
+  var totals=games.filter(function(g){return !g.isFinal&&!g.isLive;}).map(function(g){
     var ap=pCache[g.awayPitcher.id],hp=pCache[g.homePitcher.id];
     var aERA=ap&&ap.era||4.5,hERA=hp&&hp.era||4.5;
     var aWHIP=ap&&ap.whip||1.3,hWHIP=hp&&hp.whip||1.3;
@@ -754,10 +770,20 @@ function renderGuide(){
   if(!D){return;}
   var t=D.batters||[],pi=D.pitchers||[],g=D.totals||[];
   var aG=t.filter(function(x){return x.grade==='A';}).length;
-  var bG=t.filter(function(x){return x.grade==='B'&&x.overall>=50;}).length;
-  var html='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:11px">';
-  html+='<div style="font-size:11px;color:var(--mut)">'+D.date+' · <span style="color:var(--grn);font-weight:700">'+aG+' A-Grade</span> · '+bG+' B-Grade (50+)</div>';
-  html+='<button class="rbtn" onclick="reload()">↻ Refresh</button></div>';
+  var html='';
+  var gUpcoming=(D.games||[]).filter(function(g){return g.isUpcoming;}).length;
+  var gLive=(D.games||[]).filter(function(g){return g.isLive;}).length;
+  var gFinal=(D.games||[]).filter(function(g){return g.isFinal;}).length;
+  html+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">';
+  html+='<div style="font-size:11px;color:var(--mut)">'+D.date+' · <span style="color:var(--grn);font-weight:700">'+aG+' A-Grade</span> · '+bG+' B</div>';
+  html+='<button class="rbtn" onclick="reload()">&#8635; Refresh</button></div>';
+  html+='<div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap">';
+  if(gUpcoming>0) html+='<span style="background:var(--gbg);color:var(--grn);font-size:11px;font-weight:700;padding:4px 10px;border-radius:20px">&#9200; '+gUpcoming+' upcoming</span>';
+  if(gLive>0)     html+='<span style="background:#1a0a00;color:#ff9800;font-size:11px;font-weight:700;padding:4px 10px;border-radius:20px">&#128308; '+gLive+' live - no betting</span>';
+  if(gFinal>0)    html+='<span style="background:var(--sur2);color:var(--mut);font-size:11px;padding:4px 10px;border-radius:20px">&#10003; '+gFinal+' final</span>';
+  html+='</div>';
+  if(gUpcoming===0&&gLive>0){html+='<div style="background:#1a0a00;border:1px solid #ff9800;border-radius:9px;padding:10px 12px;margin-bottom:10px;font-size:12px;color:#ff9800;text-align:center">All remaining games are live. No new bets available.</div>';}
+  if(gUpcoming===0&&gLive===0){html+='<div style="background:var(--sur2);border:1px solid var(--bdr);border-radius:9px;padding:10px 12px;margin-bottom:10px;font-size:12px;color:var(--mut);text-align:center">All games finished today. Check back tomorrow morning.</div>';}
 
   html+=makeSect('hri','hri','🟢','Over 1.5 H+R+RBI',
     t.filter(function(b){return b.grade==='A'||(b.grade==='B'&&b.hriScore>=50);}).sort(function(a,b){if(a.grade!==b.grade)return a.grade<b.grade?-1:1;return b.hriScore-a.hriScore;}),
@@ -1017,8 +1043,11 @@ function renderBatters(){
     var statusBadge=b.confirmed
     ?'<span style="background:var(--gbg);color:var(--grn);font-size:10px;font-weight:700;padding:1px 6px;border-radius:10px;margin-left:6px">✅ CONFIRMED</span>'
     :'<span style="background:var(--abg);color:var(--amb);font-size:10px;font-weight:700;padding:1px 6px;border-radius:10px;margin-left:6px">⏳ PROJECTED</span>';
+  var gameBadge=b.isLive
+    ?'<span style="background:#1a0a00;color:#ff9800;font-size:10px;font-weight:700;padding:1px 6px;border-radius:10px;margin-left:6px">🔴 LIVE</span>'
+    :'';
   var spotTxt=b.spot?'#'+b.spot+' ':'';
-  html+='<div style="font-size:11px;color:var(--mut);margin-top:2px">'+spotTxt+b.team+' vs '+b.pitcher+' · '+b.time+statusBadge+'</div></div>';
+  html+='<div style="font-size:11px;color:var(--mut);margin-top:2px">'+spotTxt+b.team+' vs '+b.pitcher+' · '+b.time+statusBadge+gameBadge+'</div></div>';
     html+='<div>'+gradeBadge(b.grade)+'</div></div>';
     html+=bar(b.overall);
     html+=s4([[b.hriScore,'H+R+RBI','var(--grn)'],[b.hitScore,'Hits','var(--tel)'],[b.tbScore,'TB','var(--nvy)'],[b.hrScore,'HR','var(--pur)']]);
