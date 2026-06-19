@@ -144,7 +144,7 @@ select.inp option{background:var(--sur2)}
 <script>
 var D=null,BETS=[],LEGS=[],LM='single',AI_OUT='',AI_LOAD=false,TOAST_T=null,AI_KEY=sget('ai_key','');
 var REFRESH_T=null,COUNTDOWN_T=null,NEXT_REFRESH=null;
-var OPEN={hri:true,hit:false,tb:false,hr:false,ok:false,uk:false,ha:false,go:false,gu:false};
+var OPEN={hri:true,hit:false,tb:false,hr:false,runs:false,rbi:false,sb:false,dbl:false,sgl:false,wlk:false,bk:false,ok:false,uk:false,ha:false,pha:false,pwa:false,per:false,pip:false,go:false,gu:false};
 var LOG_FORM={player:'',team:'',market:'Over 1.5 H+R+RBI',odds:'-115',stake:'25',result:'PENDING',notes:''};
 var PAR_FORM={odds:'',stake:'25',result:'PENDING'};
 var MAN_LEG={player:'',market:'Over 1.5 H+R+RBI'};
@@ -334,7 +334,15 @@ async function loadBatter(id,season){
     else if(l14.avg<=avg-0.050)hotCold='COLD';
     else if(l14.avg<=avg-0.020)hotCold='Cooling';
   }
-  return{avg,obp,slg,hpg,hrpg,tbpg,runspg,rbipg,xbhpg,bbRate,hotCold,l14avg:l14.avg};
+  var sb=parseInt(s.stolenBases)||0;
+  var doubles=parseInt(s.doubles)||0;
+  var singles=hits-hrs-(parseInt(s.triples)||0)-doubles;
+  var kpct=parseInt(s.strikeOuts)>0?(parseInt(s.strikeOuts)/Math.max(parseInt(s.plateAppearances)||games*4,1)):0;
+  var sbpg=Math.round((sb/games)*100)/100;
+  var dbpg=Math.round((doubles/games)*100)/100;
+  var singpg=Math.round((Math.max(singles,0)/games)*100)/100;
+  return{avg,obp,slg,hpg,hrpg,tbpg,runspg,rbipg,xbhpg,bbRate,hotCold,l14avg:l14.avg,
+         sbpg,dbpg,singpg,kpct,sb,doubles,singles:Math.max(singles,0)};
 }
 
 async function loadL14(id,season){
@@ -393,6 +401,145 @@ function sHR(b,vuln,park){
   if(b.slg>=0.500)s+=10;else if(b.slg>=0.450)s+=6;
   if(vuln>=4)s+=10;else if(vuln>=3)s+=7;else if(vuln>=2)s+=4;
   if(park>=112)s+=15;else if(park>=108)s+=10;else if(park>=104)s+=5;else if(park<96)s-=10;
+  return Math.max(0,Math.min(100,s));
+}
+
+// ── NEW PROP SCORING FUNCTIONS ────────────────────────────────────────────
+function sRuns(b,spot,vuln,park){
+  // Runs scored — needs to get on base AND score
+  var s=0;
+  if(spot===1)s+=30;else if(spot===2)s+=25;else if(spot===3)s+=15;else if(spot===4)s+=10;else s+=2;
+  if(b.obp>=0.380)s+=20;else if(b.obp>=0.350)s+=14;else if(b.obp>=0.320)s+=8;
+  if(b.runspg>=0.80)s+=20;else if(b.runspg>=0.60)s+=14;else if(b.runspg>=0.45)s+=8;
+  if(vuln>=4)s+=15;else if(vuln>=3)s+=10;else if(vuln>=2)s+=5;
+  if(park>=108)s+=8;else if(park<96)s-=5;
+  if(b.hotCold==='HOT')s+=8;else if(b.hotCold==='Warming')s+=4;
+  else if(b.hotCold==='COLD')s-=10;else if(b.hotCold==='Cooling')s-=5;
+  return Math.max(0,Math.min(100,s));
+}
+
+function sRBI(b,spot,vuln,park){
+  // RBI — needs lineup spot with runners + power
+  var s=0;
+  if(spot===3)s+=30;else if(spot===4)s+=28;else if(spot===5)s+=22;
+  else if(spot===2)s+=15;else if(spot===6)s+=10;else s+=2;
+  if(b.rbipg>=0.80)s+=25;else if(b.rbipg>=0.60)s+=18;else if(b.rbipg>=0.45)s+=10;
+  if(b.slg>=0.500)s+=15;else if(b.slg>=0.450)s+=10;else if(b.slg>=0.400)s+=5;
+  if(vuln>=4)s+=15;else if(vuln>=3)s+=10;else if(vuln>=2)s+=5;
+  if(park>=108)s+=5;else if(park<96)s-=5;
+  if(b.hotCold==='HOT')s+=8;else if(b.hotCold==='COLD')s-=10;
+  return Math.max(0,Math.min(100,s));
+}
+
+function sSB(b,vuln){
+  // Stolen bases — needs speed + SB rate + pitcher who cant hold runners
+  var s=0;
+  if(b.sbpg>=0.25)s+=40;else if(b.sbpg>=0.15)s+=28;else if(b.sbpg>=0.08)s+=15;else if(b.sbpg>=0.04)s+=5;
+  if(b.obp>=0.370)s+=15;else if(b.obp>=0.340)s+=10;else if(b.obp>=0.310)s+=5;
+  // Fast guys at top of order get more chances
+  if(b.spot<=2)s+=15;else if(b.spot===3)s+=8;
+  if(b.hotCold==='HOT')s+=8;else if(b.hotCold==='COLD')s-=12;
+  return Math.max(0,Math.min(100,s));
+}
+
+function sDoubles(b,spot,vuln,park){
+  // Doubles — line drive hitters in gap-friendly parks
+  var s=0;
+  if(b.dbpg>=0.20)s+=35;else if(b.dbpg>=0.14)s+=25;else if(b.dbpg>=0.09)s+=15;else if(b.dbpg>=0.05)s+=5;
+  if(b.avg>=0.290)s+=15;else if(b.avg>=0.270)s+=10;else if(b.avg>=0.250)s+=5;
+  if(b.slg>=0.470)s+=15;else if(b.slg>=0.420)s+=10;else if(b.slg>=0.380)s+=5;
+  if(vuln>=4)s+=10;else if(vuln>=3)s+=7;else if(vuln>=2)s+=4;
+  // Doubles parks
+  if(park===108)s+=12;else if(park>=104)s+=8;else if(park>=100)s+=4;else if(park<96)s-=5;
+  if(b.hotCold==='HOT')s+=8;else if(b.hotCold==='COLD')s-=10;
+  return Math.max(0,Math.min(100,s));
+}
+
+function sSingles(b,spot,vuln,park){
+  // Singles — pure contact hitters, low HR rate
+  var s=0;
+  if(b.avg>=0.310)s+=30;else if(b.avg>=0.290)s+=22;else if(b.avg>=0.270)s+=14;else if(b.avg>=0.250)s+=7;
+  if(b.hpg>=1.2)s+=20;else if(b.hpg>=1.0)s+=14;else if(b.hpg>=0.8)s+=8;
+  // Low HR rate = more singles
+  if(b.hrpg<=0.05)s+=15;else if(b.hrpg<=0.10)s+=8;else if(b.hrpg>=0.20)s-=10;
+  if(b.bbRate<=0.04)s+=10;else if(b.bbRate>=0.12)s-=8;
+  if(vuln>=4)s+=12;else if(vuln>=3)s+=8;else if(vuln>=2)s+=4;
+  if(b.hotCold==='HOT')s+=8;else if(b.hotCold==='COLD')s-=10;
+  return Math.max(0,Math.min(100,s));
+}
+
+function sWalks(b,pitcher,spot){
+  // Walks — patient hitters vs wild pitchers
+  var s=0;
+  if(b.bbRate>=0.15)s+=30;else if(b.bbRate>=0.12)s+=22;else if(b.bbRate>=0.09)s+=14;else if(b.bbRate>=0.06)s+=7;
+  if(b.obp-b.avg>=0.100)s+=20;else if(b.obp-b.avg>=0.080)s+=14;else if(b.obp-b.avg>=0.060)s+=8;
+  // Wild pitcher is key for walk props
+  if(pitcher&&pitcher.bb9>=4.0)s+=25;else if(pitcher&&pitcher.bb9>=3.0)s+=15;else if(pitcher&&pitcher.bb9>=2.5)s+=8;
+  if(spot<=3)s+=10;else if(spot<=5)s+=5;
+  if(b.hotCold==='HOT')s+=5;else if(b.hotCold==='COLD')s-=8;
+  return Math.max(0,Math.min(100,s));
+}
+
+function sBatterK(b,pitcher){
+  // Batter strikeout UNDER — contact hitters vs low-K pitchers
+  // High score = UNDER is good bet (batter makes contact, pitcher doesnt K much)
+  var s=0;
+  // Low batter K rate is good for under
+  if(b.kpct<=0.10)s+=35;else if(b.kpct<=0.15)s+=25;else if(b.kpct<=0.20)s+=12;
+  else if(b.kpct>=0.30)s-=20;else if(b.kpct>=0.25)s-=10;
+  // Low pitcher K rate = under friendly
+  if(pitcher&&pitcher.k9<=5.0)s+=30;else if(pitcher&&pitcher.k9<=6.5)s+=20;
+  else if(pitcher&&pitcher.k9>=9.0)s-=20;else if(pitcher&&pitcher.k9>=8.0)s-=10;
+  if(b.avg>=0.300)s+=10;else if(b.avg>=0.275)s+=6;
+  if(b.hotCold==='HOT')s+=5;else if(b.hotCold==='COLD')s-=8;
+  return Math.max(0,Math.min(100,s));
+}
+
+// Pitcher props scoring
+function sPHitsAllowed(p,lineupStrength){
+  // Pitcher hits allowed — high = over, low = under
+  var s=0;
+  if(p.avgH>=9.0)s+=30;else if(p.avgH>=8.0)s+=22;else if(p.avgH>=7.0)s+=14;
+  else if(p.avgH<=5.0)s-=20;else if(p.avgH<=6.0)s-=10;
+  if(p.whip>=1.40)s+=20;else if(p.whip>=1.25)s+=12;else if(p.whip<=1.00)s-=15;
+  if(lineupStrength==='strong')s+=15;else if(lineupStrength==='weak')s-=15;
+  var l3=parseFloat(p.last3ERA);
+  if(!isNaN(l3)){if(l3>=6.0)s+=12;else if(l3<=2.5)s-=12;}
+  return Math.max(0,Math.min(100,s));
+}
+
+function sPWalksAllowed(p){
+  // Pitcher walks allowed over/under
+  var s=0;
+  if(p.bb9>=4.0)s+=35;else if(p.bb9>=3.0)s+=22;else if(p.bb9>=2.5)s+=12;
+  else if(p.bb9<=1.5)s-=20;else if(p.bb9<=2.0)s-=10;
+  var l3=parseFloat(p.last3ERA);
+  if(!isNaN(l3)){if(l3>=6.0)s+=10;else if(l3<=2.5)s-=10;}
+  return Math.max(0,Math.min(100,s));
+}
+
+function sPEarnedRuns(p,park){
+  // Pitcher earned runs over/under
+  var s=0;
+  if(p.era>=5.50)s+=30;else if(p.era>=4.50)s+=20;else if(p.era>=4.00)s+=10;
+  else if(p.era<=2.50)s-=20;else if(p.era<=3.25)s-=10;
+  if(p.whip>=1.40)s+=15;else if(p.whip>=1.25)s+=8;else if(p.whip<=1.00)s-=12;
+  if(park>=112)s+=15;else if(park>=108)s+=10;else if(park>=104)s+=5;else if(park<96)s-=10;
+  var l3=parseFloat(p.last3ERA);
+  if(!isNaN(l3)){if(l3>=6.0)s+=12;else if(l3<=2.5)s-=12;}
+  return Math.max(0,Math.min(100,s));
+}
+
+function sPInnings(p){
+  // Pitcher innings pitched over 4.5 — needs good control + track record
+  var s=0;
+  if(p.gs>=10)s+=15;else if(p.gs>=6)s+=8;
+  if(p.era<=3.50)s+=20;else if(p.era<=4.25)s+=12;else if(p.era>=5.50)s-=15;
+  if(p.whip<=1.15)s+=20;else if(p.whip<=1.30)s+=10;else if(p.whip>=1.50)s-=15;
+  if(p.bb9<=2.5)s+=15;else if(p.bb9<=3.0)s+=8;else if(p.bb9>=4.0)s-=15;
+  if(p.k9>=8.0)s+=10;else if(p.k9>=7.0)s+=5;
+  var l3=parseFloat(p.last3ERA);
+  if(!isNaN(l3)){if(l3<=2.5)s+=15;else if(l3>=6.0)s-=15;}
   return Math.max(0,Math.min(100,s));
 }
 function sGame(aERA,hERA,aWHIP,hWHIP,aAce,hAce,aVuln,hVuln,park){
@@ -476,7 +623,14 @@ async function loadAll(){
         var hitScore=sHit(b,player.spot,vuln,park);
         var tbScore=sTB(b,player.spot,vuln,park);
         var hrScore=sHR(b,vuln,park);
-        var overall=Math.max(hriScore,hitScore,tbScore,hrScore);
+        var runsScore=sRuns(b,player.spot,vuln,park);
+        var rbiScore=sRBI(b,player.spot,vuln,park);
+        var sbScore=sSB(b,vuln);
+        var dblScore=sDoubles(b,player.spot,vuln,park);
+        var sglScore=sSingles(b,player.spot,vuln,park);
+        var wlkScore=sWalks(b,pitcher,player.spot);
+        var bkScore=sBatterK(b,pitcher);
+        var overall=Math.max(hriScore,hitScore,tbScore,hrScore,runsScore,rbiScore);
         if(overall<40)return;
         var lineupConfirmed=player.confirmed||false;
         // If lineup confirmed use actual spot, else use OBP proxy for nexus
@@ -493,8 +647,11 @@ async function loadAll(){
           pitcher:mu.pName,pitcherERA:pitcher.era,pitcherWHIP:pitcher.whip,
           pitcherFlags:pitcher.flags,isVulnPitcher:pitcher.isVuln,vulnScore:vuln,
           grade,overall,hriScore,hitScore,tbScore,hrScore,
+          runsScore,rbiScore,sbScore,dblScore,sglScore,wlkScore,bkScore,
           avg:b.avg,obp:b.obp,slg:b.slg,hpg:b.hpg,hrpg:b.hrpg,tbpg:b.tbpg,
-          runspg:b.runspg,rbipg:b.rbipg,xbhpg:b.xbhpg,bbRate:b.bbRate,hotCold:b.hotCold
+          runspg:b.runspg,rbipg:b.rbipg,xbhpg:b.xbhpg,bbRate:b.bbRate,
+          sbpg:b.sbpg,dbpg:b.dbpg,singpg:b.singpg,kpct:b.kpct,
+          hotCold:b.hotCold
         });
       });
     });
@@ -519,7 +676,14 @@ async function loadAll(){
       var l3=parseFloat(stats.last3ERA);
       if(!isNaN(l3)){if(l3<=2.0)score+=15;else if(l3>=6.0)score-=10;}
       score=Math.max(0,Math.min(100,score));
-      pitchers.push(Object.assign({},p,stats,{score:score}));
+      var hitsScore=sPHitsAllowed(stats,'neutral');
+      var hitsDir=stats.avgH>=8.0?'Over Hits Allowed':'Under Hits Allowed';
+      var walksScore=sPWalksAllowed(stats);
+      var walksDir=stats.bb9>=3.0?'Over Walks Allowed':'Under Walks Allowed';
+      var erScore=sPEarnedRuns(stats,g.park);
+      var erDir=erScore>=55?'Over Earned Runs':'Under Earned Runs';
+      var ipScore=sPInnings(stats);
+      pitchers.push(Object.assign({},p,stats,{score,hitsScore,hitsDir,walksScore,walksDir,erScore,erDir,ipScore}));
     });
   });
   pitchers.sort(function(a,b){return b.score-a.score;});
@@ -627,6 +791,83 @@ function renderGuide(){
   html+=makeSect('ha','ha','🟣','Over HR Allowed',
     pi.filter(function(p){return p.avgHR>=1.0;}),
     function(p){var lr=p.avgHR>=1.5?'Over 1.5 HR Allowed':'Over 0.5 HR Allowed';return pCard(p,'ha','var(--pur)','🟣 OVER HR ALLOWED',lr);});
+
+  // New batter prop sections
+  html+=makeSect('runs','runs','🏃','Runs Scored Over 0.5',
+    t.filter(function(b){return b.grade==='A'||(b.grade==='B'&&b.runsScore>=50);}).sort(function(a,b){if(a.grade!==b.grade)return a.grade<b.grade?-1:1;return b.runsScore-a.runsScore;}),
+    function(b){return bCard(b,'hri',b.runsScore,'var(--grn)','🏃 RUNS OVER 0.5','Over 0.5 Runs Scored',b.runspg,'R/G',b.obp,'OBP',b.spot||'?','Spot');});
+
+  html+=makeSect('rbi','rbi','💪','RBI Over 0.5',
+    t.filter(function(b){return b.grade==='A'||(b.grade==='B'&&b.rbiScore>=50);}).sort(function(a,b){if(a.grade!==b.grade)return a.grade<b.grade?-1:1;return b.rbiScore-a.rbiScore;}),
+    function(b){return bCard(b,'hri',b.rbiScore,'#e91e63','💪 RBI OVER 0.5','Over 0.5 RBI',b.rbipg,'RBI/G',b.slg,'SLG',b.spot||'?','Spot');});
+
+  html+=makeSect('sb','sb','💨','Stolen Base Over 0.5',
+    t.filter(function(b){return b.sbScore>=40&&(b.grade==='A'||b.grade==='B');}).sort(function(a,b){return b.sbScore-a.sbScore;}),
+    function(b){return bCard(b,'hit',b.sbScore,'var(--tel)','💨 SB OVER 0.5','Over 0.5 Stolen Bases',b.sbpg,'SB/G',b.obp,'OBP',b.spot||'?','Spot');});
+
+  html+=makeSect('dbl','dbl','2️⃣','Doubles Over 0.5',
+    t.filter(function(b){return b.dblScore>=40&&(b.grade==='A'||b.grade==='B');}).sort(function(a,b){return b.dblScore-a.dblScore;}),
+    function(b){return bCard(b,'tb',b.dblScore,'var(--nvy)','2️⃣ DOUBLES OVER 0.5','Over 0.5 Doubles',b.dbpg,'2B/G',b.slg,'SLG',b.avg,'AVG');});
+
+  html+=makeSect('sgl','sgl','1️⃣','Singles Over 0.5',
+    t.filter(function(b){return b.sglScore>=40&&(b.grade==='A'||b.grade==='B');}).sort(function(a,b){return b.sglScore-a.sglScore;}),
+    function(b){return bCard(b,'hit',b.sglScore,'var(--tel)','1️⃣ SINGLES OVER 0.5','Over 0.5 Singles',b.singpg,'1B/G',b.avg,'AVG',b.bbRate,'Walk%');});
+
+  html+=makeSect('wlk','wlk','👁️','Walks Over 0.5',
+    t.filter(function(b){return b.wlkScore>=40&&(b.grade==='A'||b.grade==='B');}).sort(function(a,b){return b.wlkScore-a.wlkScore;}),
+    function(b){return bCard(b,'hit',b.wlkScore,'var(--blu)','👁️ WALKS OVER 0.5','Over 0.5 Walks',b.bbRate,'Walk%',b.obp,'OBP',b.spot||'?','Spot');});
+
+  html+=makeSect('bk','bk','🎯','Batter K Under',
+    t.filter(function(b){return b.bkScore>=40&&(b.grade==='A'||b.grade==='B');}).sort(function(a,b){return b.bkScore-a.bkScore;}),
+    function(b){
+      var kLine=b.kpct<=0.12?'Under 0.5 Ks':'Under 1.5 Ks';
+      return bCard(b,'hit',b.bkScore,'var(--amb)','🎯 BATTER K UNDER',kLine,b.kpct?Math.round(b.kpct*100)+'%':'—','K%',b.avg,'AVG',b.spot||'?','Spot');
+    });
+
+  // New pitcher prop sections
+  html+=makeSect('pha','pha','📊','Pitcher Hits Allowed',
+    (D.pitchers||[]).filter(function(p){return p.hitsScore>=40;}),
+    function(p){
+      var dir=p.hitsDir;
+      return '<div class="gc ok"><div class="gtyp" style="color:var(--blu)">📊 HITS ALLOWED — '+p.name+'</div>'+
+        '<div class="gmt">'+p.team+' vs '+p.opp+' · '+p.time+'</div>'+
+        bar(p.hitsScore,'var(--blu)')+
+        s4([[p.avgH,'H/Start','var(--blu)'],[p.whip,'WHIP','var(--blu)'],[p.last3ERA,'Last 3 ERA','var(--mut)'],[p.hitsScore,'Score','var(--gld)'] ])+
+        '<div class="gln"><div style="font-size:10px;color:var(--mut)">Recommended</div><div style="font-size:13px;font-weight:700;color:var(--gld)">'+dir+'</div></div></div>';
+    });
+
+  html+=makeSect('pwa','pwa','🚶','Pitcher Walks Allowed',
+    (D.pitchers||[]).filter(function(p){return p.walksScore>=40;}),
+    function(p){
+      var dir=p.walksDir;
+      return '<div class="gc ok"><div class="gtyp" style="color:var(--blu)">🚶 WALKS ALLOWED — '+p.name+'</div>'+
+        '<div class="gmt">'+p.team+' vs '+p.opp+' · '+p.time+'</div>'+
+        bar(p.walksScore,'var(--blu)')+
+        s4([[p.bb9,'BB/9','var(--red)'],[p.avgK,'K/Start','var(--grn)'],[p.last3ERA,'Last 3 ERA','var(--mut)'],[p.walksScore,'Score','var(--gld)']])+
+        '<div class="gln"><div style="font-size:10px;color:var(--mut)">Recommended</div><div style="font-size:13px;font-weight:700;color:var(--gld)">'+dir+'</div></div></div>';
+    });
+
+  html+=makeSect('per','per','💥','Pitcher Earned Runs',
+    (D.pitchers||[]).filter(function(p){return p.erScore>=40;}),
+    function(p){
+      var dir=p.erDir;
+      return '<div class="gc ok"><div class="gtyp" style="color:var(--red)">💥 EARNED RUNS — '+p.name+'</div>'+
+        '<div class="gmt">'+p.team+' vs '+p.opp+' · '+p.time+'</div>'+
+        bar(p.erScore,'var(--red)')+
+        s4([[p.era,'ERA','var(--red)'],[p.whip,'WHIP','var(--red)'],[p.last3ERA,'Last 3 ERA','var(--mut)'],[p.erScore,'Score','var(--gld)']])+
+        '<div class="gln"><div style="font-size:10px;color:var(--mut)">Recommended</div><div style="font-size:13px;font-weight:700;color:var(--gld)">'+dir+'</div></div></div>';
+    });
+
+  html+=makeSect('pip','pip','⏱️','Innings Pitched',
+    (D.pitchers||[]).filter(function(p){return p.ipScore>=40;}),
+    function(p){
+      var dir=p.ipScore>=60?'Over 4.5 IP':'Under 4.5 IP';
+      return '<div class="gc ok"><div class="gtyp" style="color:var(--pur)">⏱️ INNINGS PITCHED — '+p.name+'</div>'+
+        '<div class="gmt">'+p.team+' vs '+p.opp+' · '+p.time+'</div>'+
+        bar(p.ipScore,'var(--pur)')+
+        s4([[p.era,'ERA','var(--red)'],[p.bb9,'BB/9','var(--amb)'],[p.gs,'GS','var(--mut)'],[p.ipScore,'Score','var(--gld)']])+
+        '<div class="gln"><div style="font-size:10px;color:var(--mut)">Recommended</div><div style="font-size:13px;font-weight:700;color:var(--gld)">'+dir+'</div></div></div>';
+    });
 
   html+=makeSect('go','go','⬆️','Game Total OVER',
     g.filter(function(x){return x.direction==='OVER';}),gameCard);
@@ -1162,7 +1403,7 @@ function formatAI(text){
 
 function reload(){
   D=null;
-  OPEN={hri:true,hit:false,tb:false,hr:false,ok:false,uk:false,ha:false,go:false,gu:false};
+  OPEN={hri:true,hit:false,tb:false,hr:false,runs:false,rbi:false,sb:false,dbl:false,sgl:false,wlk:false,bk:false,ok:false,uk:false,ha:false,pha:false,pwa:false,per:false,pip:false,go:false,gu:false};
   loadAll();
 }
 
