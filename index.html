@@ -809,6 +809,14 @@ function rGuide(){
   if(gUp===0&&gLv>0)  h+='<div class="live-warn">All remaining games are live. No new bets available.</div>';
   if(gUp===0&&gLv===0)h+='<div class="card" style="text-align:center;color:var(--mut);font-size:13px">All games finished. Check back tomorrow morning.</div>';
 
+  // Analysis card
+  h+='<div class="card" style="margin-bottom:10px">';
+  h+='<div style="font-size:14px;font-weight:700;margin-bottom:4px">&#129302; Analyze with Claude</div>';
+  h+='<div style="font-size:12px;color:var(--mut);margin-bottom:10px">Copy today's picks and paste into Claude chat for a full breakdown — free with your Claude Max subscription</div>';
+  h+='<button class="btn" onclick="copyPicks()">&#128203; Copy Today's Picks for Claude</button>';
+  h+='<div id="copy-ok" style="display:none;background:var(--gbg);border:1px solid rgba(34,197,94,.3);border-radius:8px;padding:10px;margin-top:8px;font-size:12px;color:var(--grn)">&#10003; Copied! Now paste into Claude and I will analyze your best bets.</div>';
+  h+='</div>';
+
   // Batter sections
   function bSect(key,cls,icon,label,betLine,sKey,color,v1k,l1,v2k,l2,v3k,l3,extraFn){
     var items=t.filter(function(b){return b.grade==='A'||(b.grade==='B'&&b[sKey]>=50);}).sort(function(a,b){if(a.grade!==b.grade)return a.grade<b.grade?-1:1;return b[sKey]-a[sKey];});
@@ -1117,6 +1125,8 @@ function rParlay(){
   h+='</select>';
   if(LEGS.length>=2)h+='<button class="btn" onclick="subParlay()">Save Parlay ('+LEGS.length+' legs)</button>';
   else h+='<div style="text-align:center;padding:8px;color:var(--mut);font-size:12px">Need at least 2 legs</div>';
+  if(LEGS.length>=2) h+='<button class="btn-s" onclick="copyParlay()" style="margin-top:6px">&#129302; Analyze This Parlay with Claude</button>';
+  h+='<div id="parlay-ok" style="display:none;background:var(--gbg);border:1px solid rgba(34,197,94,.3);border-radius:8px;padding:10px;margin-top:8px;font-size:12px;color:var(--grn)">&#10003; Copied! Paste into Claude for parlay analysis.</div>';
   h+='<button class="btn-s" style="background:var(--rbg);color:var(--red);border-color:var(--red);margin-top:6px" onclick="clrLegs()">Clear All Legs</button>';
   h+='</div>';
   return h;
@@ -1242,6 +1252,209 @@ function startAR(){
     var m=Math.floor(diff/60000),s=Math.floor((diff%60000)/1000);
     el.textContent='Refresh in '+m+'m '+('0'+s).slice(-2)+'s';
   },1000);
+}
+
+// ── COPY ANALYSIS FUNCTIONS ──────────────────────────────────────────────────
+function copyPicks(){
+  if(!D){toast('No data loaded yet');return;}
+  var t=D.batters||[],pi=D.pitchers||[],g=D.totals||[];
+  var aG=t.filter(function(b){return b.grade==='A';});
+  var bG=t.filter(function(b){return b.grade==='B'&&b.overall>=50;}).slice(0,5);
+  var overK=pi.filter(function(p){return p.avgK>=6.0;}).slice(0,3);
+  var overs=g.filter(function(x){return x.direction==='OVER';}).slice(0,3);
+  var wins=BETS.filter(function(b){return b.result==='WIN';}).length;
+  var total=BETS.filter(function(b){return b.result!=='PENDING';}).length;
+
+  var txt='HITTERS EDGE — '+D.date+'
+';
+  txt+='My record: '+wins+'W / '+(total-wins)+'L'+(total>0?' ('+Math.round((wins/total)*100)+'% win rate)':' (no history yet)')+'
+
+';
+
+  txt+='A-GRADE PICKS (all 3 protocol checks passed):
+';
+  if(!aG.length){txt+='None today
+';}
+  else aG.forEach(function(b){
+    txt+='- '+b.name+(b.spot?' (#'+b.spot+')':' (spot unknown)')+' '+b.team+' vs '+b.pitcher+' '+b.time+'
+';
+    txt+='  Status: '+(b.confirmed?'CONFIRMED LINEUP':'PROJECTED')+'
+';
+    txt+='  Score: '+b.overall+'/100 | H+R+RBI: '+b.hriS+' | Hits: '+b.hitS+' | TB: '+b.tbS+' | HR: '+b.hrS+'
+';
+    txt+='  Runs: '+b.runS+' | RBI: '+b.rbiS+' | SB: '+b.sbS+' | 2B: '+b.dblS+'
+';
+    txt+='  AVG: '+b.avg+' OBP: '+b.obp+' H/G: '+b.hpg+' XBH/G: '+b.xbhpg+' Walk Rate: '+b.bbRate+'
+';
+    txt+='  Streak: '+b.hotCold+' | Pitcher ERA: '+b.pitcherERA+' VULN: '+b.vulnScore+'/4
+';
+    if(b.pitcherFlags&&b.pitcherFlags.length) txt+='  Pitcher flags: '+b.pitcherFlags.join(', ')+'
+';
+    txt+='
+';
+  });
+
+  txt+='B-GRADE PICKS (score 50+):
+';
+  if(!bG.length){txt+='None
+';}
+  else bG.forEach(function(b){
+    txt+='- '+b.name+' | '+b.overall+'/100 | '+b.team+' vs '+b.pitcher+' | '+b.hotCold+' | '+(b.confirmed?'CONFIRMED':'PROJECTED')+'
+';
+  });
+
+  txt+='
+PITCHER K OVERS:
+';
+  if(!overK.length){txt+='None
+';}
+  else overK.forEach(function(p){
+    txt+='- '+p.name+' ('+p.team+' vs '+p.opp+') avg '+p.avgK+' K/start | K/9: '+p.k9+' | Last 3: '+p.last3ERA+' ERA
+';
+  });
+
+  txt+='
+GAME TOTAL OVERS:
+';
+  if(!overs.length){txt+='None
+';}
+  else overs.forEach(function(g){
+    txt+='- '+g.game+' | Score: '+g.score+'/100 | Away ERA: '+g.awayERA+' | Home ERA: '+g.homeERA+'
+';
+  });
+
+  txt+='
+ELIMINATED (ace pitchers):
+';
+  (D.eliminated||[]).forEach(function(e){txt+='- '+e.team+' vs '+e.pitcher+' ('+e.reason+')
+';});
+
+  txt+='
+SYSTEM RULES:
+';
+  txt+='A-Grade = lineup spot 1-2 + OBP .320+ + vulnerable pitcher (2+ flags)
+';
+  txt+='TB score penalizes high walk rate — walks = 0 total bases
+';
+  txt+='HOT = batting .050+ above season avg last 14 days
+';
+  txt+='Confirmed = official lineup posted | Projected = roster-based estimate
+';
+  txt+='Only bet CONFIRMED A-Grade picks with real money
+';
+  txt+='
+PLEASE ANALYZE:
+';
+  txt+='1. What is your TOP PICK today and which prop type
+';
+  txt+='2. Is there a strong PARLAY COMBO (2-3 picks that align)
+';
+  txt+='3. Any PICKS TO AVOID and why
+';
+  txt+='4. OVERALL ASSESSMENT — strong or weak betting day';
+
+  copyText(txt,'copy-ok');
+}
+
+function copyParlay(){
+  if(LEGS.length<2){toast('Need at least 2 legs first');return;}
+  var wins=BETS.filter(function(b){return b.result==='WIN';}).length;
+  var total=BETS.filter(function(b){return b.result!=='PENDING';}).length;
+
+  var txt='HITTERS EDGE — PARLAY ANALYSIS REQUEST
+';
+  txt+='Date: '+(D?D.date:new Date().toLocaleDateString())+'
+';
+  txt+='My record: '+wins+'W / '+(total-wins)+'L'+(total>0?' ('+Math.round((wins/total)*100)+'%)':'')+'
+
+';
+  txt+='PARLAY LEGS ('+LEGS.length+' legs):
+';
+
+  LEGS.forEach(function(l,i){
+    txt+=(i+1)+'. '+l.player+' — '+l.market+'
+';
+    // Try to find this player in today's picks for context
+    if(D&&D.batters){
+      var match=D.batters.filter(function(b){return b.name.toLowerCase().indexOf(l.player.toLowerCase())>-1;});
+      if(match.length){
+        var b=match[0];
+        txt+='   Grade: '+b.grade+' | Score: '+b.overall+'/100 | Streak: '+b.hotCold+'
+';
+        txt+='   AVG: '+b.avg+' OBP: '+b.obp+' | Pitcher ERA: '+b.pitcherERA+' VULN: '+b.vulnScore+'/4
+';
+        txt+='   Status: '+(b.confirmed?'CONFIRMED LINEUP':'PROJECTED — confirm before betting')+'
+';
+        // Prop-specific stats
+        if(l.market.indexOf('H+R+RBI')>-1) txt+='   H+R+RBI score: '+b.hriS+'/100 | H/G: '+b.hpg+' R/G: '+b.runspg+' RBI/G: '+b.rbipg+'
+';
+        if(l.market.indexOf('Hit')>-1)     txt+='   Hits score: '+b.hitS+'/100 | AVG: '+b.avg+' H/G: '+b.hpg+' Walk Rate: '+b.bbRate+'
+';
+        if(l.market.indexOf('Total Base')>-1) txt+='   TB score: '+b.tbS+'/100 | SLG: '+b.slg+' TB/G: '+b.tbpg+' Walk Rate: '+b.bbRate+'
+';
+        if(l.market.indexOf('HR')>-1)      txt+='   HR score: '+b.hrS+'/100 | HR/G: '+b.hrpg+' SLG: '+b.slg+'
+';
+        if(l.market.indexOf('Run')>-1)     txt+='   Runs score: '+b.runS+'/100 | R/G: '+b.runspg+' OBP: '+b.obp+'
+';
+        if(l.market.indexOf('RBI')>-1)     txt+='   RBI score: '+b.rbiS+'/100 | RBI/G: '+b.rbipg+' SLG: '+b.slg+'
+';
+        if(l.market.indexOf('Stolen')>-1)  txt+='   SB score: '+b.sbS+'/100 | SB/G: '+b.sbpg+'
+';
+        if(l.market.indexOf('Double')>-1)  txt+='   Doubles score: '+b.dblS+'/100 | 2B/G: '+b.dbpg+'
+';
+        if(l.market.indexOf('Single')>-1)  txt+='   Singles score: '+b.sglS+'/100 | 1B/G: '+b.singpg+'
+';
+        if(l.market.indexOf('Walk')>-1)    txt+='   Walks score: '+b.wlkS+'/100 | Walk Rate: '+b.bbRate+'
+';
+      }
+    }
+    txt+='
+';
+  });
+
+  txt+='WHAT I NEED FROM YOU:
+';
+  txt+='1. Grade each leg — is it a strong or weak pick based on the data
+';
+  txt+='2. Do these legs CORRELATE (happen together naturally) or are they independent
+';
+  txt+='3. What is the WEAKEST LEG I should consider removing
+';
+  txt+='4. Is this a good parlay or should I bet these as singles instead
+';
+  txt+='5. What odds would make this parlay worth the risk
+';
+  txt+='
+SYSTEM RULES REMINDER:
+';
+  txt+='A-Grade = real money | B-Grade = bonus bets only
+';
+  txt+='Never parlay cold streaks (ice emoji) — skip them
+';
+  txt+='Walk rate hurts Hits and TB props — check that stat
+';
+  txt+='Only bet CONFIRMED lineups — not PROJECTED';
+
+  copyText(txt,'parlay-ok');
+}
+
+function copyText(txt,okId){
+  navigator.clipboard.writeText(txt).then(function(){
+    showCopyOK(okId);
+    toast('&#10003; Copied to clipboard!');
+  }).catch(function(){
+    var ta=document.createElement('textarea');
+    ta.value=txt;ta.style.position='fixed';ta.style.opacity='0';
+    document.body.appendChild(ta);ta.select();
+    try{document.execCommand('copy');showCopyOK(okId);toast('&#10003; Copied!');}
+    catch(e){toast('Could not copy — try again');}
+    document.body.removeChild(ta);
+  });
+}
+
+function showCopyOK(id){
+  var el=document.getElementById(id);
+  if(el){el.style.display='block';setTimeout(function(){el.style.display='none';},6000);}
 }
 
 function reload(){
