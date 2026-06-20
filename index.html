@@ -163,15 +163,17 @@ var PARKS = {
 
 // ── PROP SECTIONS CONFIG ──────────────────────────────────────────────────────
 var SECTIONS = [
-  {key:'batter_hits',         label:'Hits',          icon:'&#129337;', col:'var(--tel)'},
-  {key:'batter_total_bases',  label:'Total Bases',   icon:'&#128311;', col:'var(--nvy)'},
-  {key:'batter_home_runs',    label:'Home Runs',     icon:'&#128165;', col:'var(--pur)'},
-  {key:'batter_rbis',         label:'RBI',           icon:'&#128170;', col:'#e91e63'},
-  {key:'batter_runs_scored',  label:'Runs Scored',   icon:'&#127939;', col:'var(--grn)'},
-  {key:'batter_stolen_bases', label:'Stolen Bases',  icon:'&#128168;', col:'var(--tel)'},
-  {key:'batter_doubles',      label:'Doubles',       icon:'2&#65039;', col:'var(--nvy)'},
-  {key:'batter_walks',        label:'Walks',         icon:'&#128065;', col:'var(--blu)'},
-  {key:'pitcher_strikeouts',  label:'Strikeouts',    icon:'&#9917;',   col:'var(--red)'},
+  {key:'batter_hits_runs_rbis',label:'Hits + Runs + RBI', icon:'&#128994;', col:'var(--grn)'},
+  {key:'batter_hits',          label:'Hits',               icon:'&#129337;', col:'var(--tel)'},
+  {key:'batter_singles',       label:'Singles',            icon:'1&#65039;', col:'var(--tel)'},
+  {key:'batter_total_bases',   label:'Total Bases',        icon:'&#128311;', col:'var(--nvy)'},
+  {key:'batter_home_runs',     label:'Home Runs',          icon:'&#128165;', col:'var(--pur)'},
+  {key:'batter_rbis',          label:'RBI',                icon:'&#128170;', col:'#e91e63'},
+  {key:'batter_runs_scored',   label:'Runs Scored',        icon:'&#127939;', col:'var(--grn)'},
+  {key:'batter_stolen_bases',  label:'Stolen Bases',       icon:'&#128168;', col:'var(--tel)'},
+  {key:'batter_doubles',       label:'Doubles',            icon:'2&#65039;', col:'var(--nvy)'},
+  {key:'batter_walks',         label:'Walks',              icon:'&#128065;', col:'var(--blu)'},
+  {key:'pitcher_strikeouts',   label:'Strikeouts',         icon:'&#9917;',   col:'var(--red)'},
 ];
 
 // ── UTILS ─────────────────────────────────────────────────────────────────────
@@ -249,7 +251,7 @@ async function fetchGames(){
 }
 
 async function fetchProps(eventId){
-  var mkts = 'batter_hits,batter_total_bases,batter_home_runs,batter_rbis,batter_runs_scored,batter_stolen_bases,batter_doubles,batter_walks,pitcher_strikeouts';
+  var mkts = 'batter_hits,batter_hits_runs_rbis,batter_singles,batter_total_bases,batter_home_runs,batter_rbis,batter_runs_scored,batter_stolen_bases,batter_doubles,batter_walks,pitcher_strikeouts';
   var url = ODDS_BASE+'/sports/baseball_mlb/events/'+eventId+'/odds?regions=us&markets='+mkts+'&oddsFormat=american&apiKey='+ODDS_KEY;
   try{
     var r = await fetch(url);
@@ -334,6 +336,35 @@ async function getPitcherStats(name, season){
 }
 
 // ── SCORING ───────────────────────────────────────────────────────────────────
+function scoreHRI(b, park){
+  // H+R+RBI combined — best for spots 1-5, needs OBP + run production
+  var s=0;
+  if(b.avg>=0.310)s+=20;else if(b.avg>=0.290)s+=14;else if(b.avg>=0.270)s+=8;else if(b.avg>=0.250)s+=3;
+  if(b.obp>=0.380)s+=20;else if(b.obp>=0.350)s+=14;else if(b.obp>=0.320)s+=8;else if(b.obp>=0.300)s+=3;
+  if(b.hpg>=1.2)s+=15;else if(b.hpg>=1.0)s+=10;else if(b.hpg>=0.8)s+=5;
+  // Run production — runs + RBI per game
+  var rprod = (b.runspg||0)+(b.rbipg||0);
+  if(rprod>=1.5)s+=18;else if(rprod>=1.0)s+=12;else if(rprod>=0.7)s+=6;
+  if(park>=108)s+=8;else if(park>=104)s+=4;else if(park<96)s-=5;
+  if(b.hotCold==='HOT')s+=12;else if(b.hotCold==='Warming')s+=6;
+  else if(b.hotCold==='COLD')s-=15;else if(b.hotCold==='Cooling')s-=7;
+  return Math.max(0,Math.min(100,Math.round(s)));
+}
+
+function scoreSingles(b){
+  // Singles — pure contact, low HR rate, low walk rate
+  var s=0;
+  if(b.avg>=0.310)s+=30;else if(b.avg>=0.290)s+=22;else if(b.avg>=0.270)s+=14;else if(b.avg>=0.250)s+=7;
+  // Low HR rate = more singles (not hitting it over the fence)
+  if(b.hrpg<=0.05)s+=18;else if(b.hrpg<=0.08)s+=10;else if(b.hrpg>=0.20)s-=12;
+  // Low walk rate = more singles (putting ball in play)
+  if(b.bbRate<=0.04)s+=12;else if(b.bbRate<=0.07)s+=6;else if(b.bbRate>=0.12)s-=10;
+  if(b.hpg>=1.2)s+=15;else if(b.hpg>=1.0)s+=10;else if(b.hpg>=0.8)s+=5;
+  if(b.hotCold==='HOT')s+=10;else if(b.hotCold==='Warming')s+=5;
+  else if(b.hotCold==='COLD')s-=12;else if(b.hotCold==='Cooling')s-=6;
+  return Math.max(0,Math.min(100,Math.round(s)));
+}
+
 function scoreHits(b){
   var s=0;
   if(b.avg>=0.320)s+=32;else if(b.avg>=0.300)s+=24;else if(b.avg>=0.280)s+=16;else if(b.avg>=0.260)s+=8;else if(b.avg>=0.240)s+=3;
@@ -416,8 +447,10 @@ function scorePitcherK(p){
 
 function getScore(mktKey, bStats, pStats, park){
   if(!bStats&&mktKey!=='pitcher_strikeouts') return 0;
-  if(mktKey==='batter_hits')         return scoreHits(bStats);
-  if(mktKey==='batter_total_bases')  return scoreTB(bStats,park);
+  if(mktKey==='batter_hits_runs_rbis') return scoreHRI(bStats,park);
+  if(mktKey==='batter_singles')        return scoreSingles(bStats);
+  if(mktKey==='batter_hits')           return scoreHits(bStats);
+  if(mktKey==='batter_total_bases')    return scoreTB(bStats,park);
   if(mktKey==='batter_home_runs')    return scoreHR(bStats,park);
   if(mktKey==='batter_rbis')         return scoreRBI(bStats);
   if(mktKey==='batter_runs_scored')  return scoreRuns(bStats);
@@ -612,7 +645,10 @@ async function loadAll(){
 function buildLabel(mktKey, line, score){
   var side = 'Over';
   if(mktKey==='pitcher_strikeouts'&&score<55) side='Under';
+  // H+R+RBI line is typically 1.5, Singles is 0.5
+  // These are always Over bets
   var labels = {
+    'batter_hits_runs_rbis':'H+R+RBI','batter_singles':'Singles',
     'batter_hits':'Hits','batter_total_bases':'Total Bases',
     'batter_home_runs':'HR','batter_rbis':'RBI',
     'batter_runs_scored':'Runs Scored','batter_stolen_bases':'Stolen Bases',
@@ -728,10 +764,22 @@ function pickCard(p){
   // Stats grid
   if(p.bStats){
     h += '<div class="pgrid">';
-    h += '<div class="pgrid-box"><div class="pgrid-val" style="color:var(--tel)">'+p.bStats.avg+'</div><div class="pgrid-lbl">AVG</div></div>';
-    h += '<div class="pgrid-box"><div class="pgrid-val" style="color:var(--blu)">'+p.bStats.obp+'</div><div class="pgrid-lbl">OBP</div></div>';
-    h += '<div class="pgrid-box"><div class="pgrid-val" style="color:var(--pur)">'+p.bStats.slg+'</div><div class="pgrid-lbl">SLG</div></div>';
-    h += '<div class="pgrid-box"><div class="pgrid-val" style="color:var(--amb)">'+p.bStats.hpg+'</div><div class="pgrid-lbl">H/G</div></div>';
+    if(p.mktKey==='batter_hits_runs_rbis'){
+      h += '<div class="pgrid-box"><div class="pgrid-val" style="color:var(--grn)">'+p.bStats.avg+'</div><div class="pgrid-lbl">AVG</div></div>';
+      h += '<div class="pgrid-box"><div class="pgrid-val" style="color:var(--blu)">'+p.bStats.obp+'</div><div class="pgrid-lbl">OBP</div></div>';
+      h += '<div class="pgrid-box"><div class="pgrid-val" style="color:var(--grn)">'+p.bStats.runspg+'</div><div class="pgrid-lbl">R/G</div></div>';
+      h += '<div class="pgrid-box"><div class="pgrid-val" style="color:var(--red)">'+p.bStats.rbipg+'</div><div class="pgrid-lbl">RBI/G</div></div>';
+    } else if(p.mktKey==='batter_singles'){
+      h += '<div class="pgrid-box"><div class="pgrid-val" style="color:var(--tel)">'+p.bStats.avg+'</div><div class="pgrid-lbl">AVG</div></div>';
+      h += '<div class="pgrid-box"><div class="pgrid-val" style="color:var(--grn)">'+p.bStats.hpg+'</div><div class="pgrid-lbl">H/G</div></div>';
+      h += '<div class="pgrid-box"><div class="pgrid-val" style="color:var(--amb)">'+p.bStats.hrpg+'</div><div class="pgrid-lbl">HR/G</div></div>';
+      h += '<div class="pgrid-box"><div class="pgrid-val" style="color:var(--mut)">'+p.bStats.bbRate+'</div><div class="pgrid-lbl">Walk%</div></div>';
+    } else {
+      h += '<div class="pgrid-box"><div class="pgrid-val" style="color:var(--tel)">'+p.bStats.avg+'</div><div class="pgrid-lbl">AVG</div></div>';
+      h += '<div class="pgrid-box"><div class="pgrid-val" style="color:var(--blu)">'+p.bStats.obp+'</div><div class="pgrid-lbl">OBP</div></div>';
+      h += '<div class="pgrid-box"><div class="pgrid-val" style="color:var(--pur)">'+p.bStats.slg+'</div><div class="pgrid-lbl">SLG</div></div>';
+      h += '<div class="pgrid-box"><div class="pgrid-val" style="color:var(--amb)">'+p.bStats.hpg+'</div><div class="pgrid-lbl">H/G</div></div>';
+    }
     h += '</div>';
     if(p.bStats.hotCold==='COLD'||p.bStats.hotCold==='Cooling'){
       h += '<div style="font-size:11px;color:var(--red);margin-bottom:5px">&#9888; '+p.bStats.hotCold+' — batting below season avg</div>';
@@ -842,6 +890,7 @@ function renderPnL(){
 
 // ── LOG TAB ───────────────────────────────────────────────────────────────────
 var MKTS = [
+  'Over 1.5 H+R+RBI','Over 2.5 H+R+RBI','Over 0.5 Singles',
   'Over 0.5 Hits','Over 1.5 Hits','Over 1.5 Total Bases','Over 2.5 Total Bases',
   'Over 0.5 HR','Over 0.5 RBI','Over 1.5 RBI','Over 0.5 Runs Scored',
   'Over 0.5 Stolen Bases','Over 0.5 Doubles','Over 0.5 Walks',
