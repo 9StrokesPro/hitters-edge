@@ -755,10 +755,31 @@ async function loadAll() {
 }
 
 // ── RENDER PICKS ──────────────────────────────────────────────────────────────
+var SECT_OPEN = {};
+
+var PROP_SECTIONS = [
+  {key:'batter_hits',         label:'Hits',          icon:'&#129337;', color:'var(--tel)'},
+  {key:'batter_total_bases',  label:'Total Bases',   icon:'&#128311;', color:'var(--nvy)'},
+  {key:'batter_home_runs',    label:'Home Runs',     icon:'&#128165;', color:'var(--pur)'},
+  {key:'batter_rbis',         label:'RBI',           icon:'&#128170;', color:'#e91e63'},
+  {key:'batter_runs_scored',  label:'Runs Scored',   icon:'&#127939;', color:'var(--grn)'},
+  {key:'batter_stolen_bases', label:'Stolen Bases',  icon:'&#128168;', color:'var(--tel)'},
+  {key:'batter_doubles',      label:'Doubles',       icon:'2&#65039;&#8419;', color:'var(--nvy)'},
+  {key:'batter_walks',        label:'Walks',         icon:'&#128065;', color:'var(--blu)'},
+  {key:'pitcher_strikeouts',  label:'Strikeouts',    icon:'&#9917;',   color:'var(--red)'},
+];
+
+function togSect(k){
+  SECT_OPEN[k]=!SECT_OPEN[k];
+  var body=document.getElementById('sb-'+k);
+  var arr=document.getElementById('sa-'+k);
+  if(body) body.style.display=SECT_OPEN[k]?'block':'none';
+  if(arr)  arr.style.transform=SECT_OPEN[k]?'rotate(180deg)':'none';
+}
+
 function rPicks() {
   if(!D) return;
   var aG = D.picks.filter(function(p){return p.grade==='A';});
-  var bG = D.picks.filter(function(p){return p.grade==='B';});
 
   var h = '';
 
@@ -769,99 +790,68 @@ function rPicks() {
   if(D.finished>0) h+='<span class="stpill st-fn">&#10003; '+D.finished+' final</span>';
   h += '</div>';
 
-  // Warning if all done
-  if(D.upcoming===0&&D.live===0) {
-    h += '<div class="card" style="text-align:center;color:var(--mut);padding:20px">All games finished. Check back tomorrow morning.</div>';
+  if(D.upcoming===0&&D.live===0){
+    h+='<div class="card" style="text-align:center;color:var(--mut);padding:20px">All games finished. Check back tomorrow.</div>';
   }
 
-  // Protocol reminder
-  h += '<div class="card" style="background:var(--gbg);border-color:rgba(34,197,94,.3)">';
-  h += '<div style="display:flex;justify-content:space-between;align-items:center">';
-  h += '<div><div style="font-size:12px;font-weight:700;color:var(--grn)">&#9733; A-Grade = Real Money</div>';
-  h += '<div style="font-size:11px;color:var(--mut);margin-top:2px">$25 max &middot; -140 or better &middot; confirm lineup</div></div>';
-  h += '<div style="text-align:right"><div style="font-size:22px;font-weight:700;color:var(--grn)">'+aG.length+'</div><div style="font-size:9px;color:var(--mut)">A-Grade</div></div>';
-  h += '</div></div>';
+  // Protocol card
+  h+='<div class="card" style="background:var(--gbg);border-color:rgba(34,197,94,.3);margin-bottom:8px">';
+  h+='<div style="display:flex;justify-content:space-between;align-items:center">';
+  h+='<div><div style="font-size:12px;font-weight:700;color:var(--grn)">&#9733; A-Grade = Real Money Only</div>';
+  h+='<div style="font-size:11px;color:var(--mut);margin-top:2px">$25 max &middot; -140 or better &middot; confirm lineup</div></div>';
+  h+='<div style="text-align:right"><div style="font-size:22px;font-weight:700;color:var(--grn)">'+aG.length+'</div><div style="font-size:9px;color:var(--mut)">A-Grade</div></div>';
+  h+='</div></div>';
 
-  // Copy for Claude button
-  h += '<button class="btn-s" onclick="copyPicks()" style="margin-bottom:8px">&#129302; Copy Picks for Claude Analysis</button>';
-  h += '<div id="copy-ok" style="display:none;background:var(--gbg);border:1px solid rgba(34,197,94,.3);border-radius:8px;padding:8px;margin-bottom:8px;font-size:12px;color:var(--grn)">&#10003; Copied! Paste into Claude chat for deep analysis.</div>';
+  // Copy for Claude
+  h+='<button class="btn-s" onclick="copyPicks()" style="margin-bottom:8px">&#129302; Copy All Picks for Claude</button>';
+  h+='<div id="copy-ok" style="display:none;background:var(--gbg);border:1px solid rgba(34,197,94,.3);border-radius:8px;padding:8px;margin-bottom:8px;font-size:12px;color:var(--grn)">&#10003; Copied! Paste into Claude.</div>';
 
-  if(!D.picks.length) {
-    h += '<div class="empty">No props available yet for today\'s games.<br>Props post 2-3 hours before first pitch.<br><br><button class="rbtn" onclick="loadAll()">&#8635; Refresh</button></div>';
-  } else {
-    // A-Grade picks
-    if(aG.length) {
-      h += '<div class="stl">&#9733; A-Grade Picks</div>';
-      aG.forEach(function(p){h+=pickCard(p);});
-    }
-    // B-Grade picks
-    if(bG.length) {
-      h += '<div class="stl">&#9889; B-Grade Picks</div>';
-      bG.forEach(function(p){h+=pickCard(p);});
-    }
+  if(!D.picks.length){
+    h+='<div class="empty">No props available yet.<br>Props post 2-3 hrs before first pitch.<br><br><button class="rbtn" onclick="loadAll()">&#8635; Refresh</button></div>';
+    document.getElementById('pg-picks').innerHTML=h;
+    return;
   }
 
-  h += '<div style="text-align:center;margin-top:10px"><button class="rbtn" onclick="loadAll()">&#8635; Refresh Props</button></div>';
+  // One section per prop type
+  PROP_SECTIONS.forEach(function(sect){
+    var sp=D.picks.filter(function(p){return p.mktKey===sect.key;});
+    if(!sp.length) return;
 
-  document.getElementById('pg-picks').innerHTML = h;
+    var aC=sp.filter(function(p){return p.grade==='A';}).length;
+    var bC=sp.filter(function(p){return p.grade==='B';}).length;
+
+    // Auto-open sections that have A picks; others closed by default
+    if(SECT_OPEN[sect.key]===undefined) SECT_OPEN[sect.key]=aC>0;
+    var isOpen=SECT_OPEN[sect.key];
+
+    var hdrBg=aC>0?'#071a07':isOpen?'var(--sur2)':'var(--sur)';
+
+    h+='<div style="border:1px solid var(--bdr);border-radius:11px;overflow:hidden;margin-bottom:8px">';
+
+    // Header — clickable
+    h+='<div onclick="togSect(''+sect.key+'')" style="display:flex;align-items:center;justify-content:space-between;padding:11px 13px;cursor:pointer;background:'+hdrBg+';user-select:none">';
+    h+='<div style="display:flex;align-items:center;gap:8px">';
+    h+='<span style="font-size:16px">'+sect.icon+'</span>';
+    h+='<span style="font-size:13px;font-weight:700;color:'+sect.color+'">'+sect.label+'</span>';
+    if(aC>0) h+='<span style="background:var(--gbg);color:var(--grn);font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px;border:1px solid rgba(34,197,94,.3)">'+aC+' &#9733;</span>';
+    if(bC>0) h+='<span style="background:var(--abg);color:var(--amb);font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px;border:1px solid rgba(245,158,11,.3)">'+bC+' &#9889;</span>';
+    h+='</div>';
+    h+='<span id="sa-'+sect.key+'" style="color:var(--mut);font-size:12px;transition:transform .25s;display:inline-block;transform:'+(isOpen?'rotate(180deg)':'none')+'">&#9660;</span>';
+    h+='</div>';
+
+    // Body — collapsible
+    h+='<div id="sb-'+sect.key+'" style="display:'+(isOpen?'block':'none')+';padding:8px">';
+    // A first, then B, sorted by score
+    var sorted=sp.slice().sort(function(a,b){if(a.grade!==b.grade)return a.grade<b.grade?-1:1;return b.score-a.score;});
+    sorted.forEach(function(p){h+=pickCard(p);});
+    h+='</div></div>';
+  });
+
+  h+='<div style="text-align:center;margin:10px 0"><button class="rbtn" onclick="loadAll()">&#8635; Refresh Props</button></div>';
+
+  document.getElementById('pg-picks').innerHTML=h;
 }
 
-function pickCard(p) {
-  var cid = 'c'+Math.random().toString(36).substr(2,7);
-  window['_d'+cid] = {player:p.name, market:p.betLine, team:p.game, time:p.time};
-
-  var isA = p.grade==='A';
-  var col = isA?'var(--grn)':'var(--amb)';
-  var cls = isA?'pick-a':'pick-b';
-
-  var h = '<div class="pick '+cls+'">';
-  // Header
-  h += '<div class="ptop">';
-  h += '<div><div class="pname">'+p.name+' '+(p.stats?hb(p.stats.hotCold):'')+'</div>';
-  h += '<div class="pgame">'+p.game+' &middot; '+p.time+'</div></div>';
-  h += '<span class="pbadge '+(isA?'ba':'bb')+'">'+(isA?'&#9733; A':'&#9889; B')+'</span>';
-  h += '</div>';
-
-  // Score bar
-  h += scoreBar(p.score, col);
-  h += '<div style="font-size:10px;color:'+col+';font-weight:700;margin-bottom:6px">Score: '+p.score+'/100</div>';
-
-  // Stats grid
-  if(p.stats) {
-    h += '<div class="pstat">';
-    h += '<div class="psb"><div class="psv" style="color:var(--tel)">'+p.stats.avg+'</div><div class="psl">AVG</div></div>';
-    h += '<div class="psb"><div class="psv" style="color:var(--blu)">'+p.stats.obp+'</div><div class="psl">OBP</div></div>';
-    h += '<div class="psb"><div class="psv" style="color:var(--pur)">'+p.stats.slg+'</div><div class="psl">SLG</div></div>';
-    h += '<div class="psb"><div class="psv" style="color:var(--amb)">'+p.stats.hpg+'</div><div class="psl">H/G</div></div>';
-    h += '</div>';
-    // Hot/cold note
-    if(p.stats.hotCold==='COLD'||p.stats.hotCold==='Cooling') {
-      h += '<div style="font-size:11px;color:var(--red);margin-bottom:5px">&#9888; '+p.stats.hotCold+' streak — use caution</div>';
-    }
-    if(p.stats.bbRate>=0.09&&(p.mktKey==='batter_hits'||p.mktKey==='batter_total_bases')) {
-      h += '<div style="font-size:11px;color:var(--amb);margin-bottom:5px">&#9888; Walk rate '+p.stats.bbRate+' hurts this prop</div>';
-    }
-  }
-  if(p.pitStats) {
-    h += '<div class="pstat">';
-    h += '<div class="psb"><div class="psv" style="color:var(--red)">'+p.pitStats.era+'</div><div class="psl">ERA</div></div>';
-    h += '<div class="psb"><div class="psv" style="color:var(--blu)">'+p.pitStats.k9+'</div><div class="psl">K/9</div></div>';
-    h += '<div class="psb"><div class="psv" style="color:var(--grn)">'+p.pitStats.avgK+'</div><div class="psl">K/Start</div></div>';
-    h += '<div class="psb"><div class="psv" style="color:var(--pur)">'+p.pitStats.gs+'</div><div class="psl">GS</div></div>';
-    h += '</div>';
-  }
-
-  // Bet line with actual odds
-  h += '<div class="pline">';
-  h += '<div><div class="pline-label">Bet</div><div class="pline-val">'+p.propLabel+'</div></div>';
-  h += '<div style="text-align:right"><div class="pline-label">Odds</div><div class="pline-odds">'+fmtOdds(p.recOdds)+'</div></div>';
-  h += '</div>';
-
-  h += '<button class="btn" onclick="logFG(\''+cid+'\')">+ Log This Bet</button>';
-  h += '<button class="btn-s" onclick="aLeg(\''+cid+'\')">+ Add to Parlay</button>';
-  h += '</div>';
-  return h;
-}
 
 // ── RENDER TOTALS ─────────────────────────────────────────────────────────────
 function rTotals() {
