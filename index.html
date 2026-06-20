@@ -695,6 +695,7 @@ async function loadAll() {
         game: gm.away_team+' @ '+gm.home_team,
         time: fmtTime(gm.commence_time),
         isPitcher: true,
+        mktKey: 'pitcher_strikeouts',
         propLabel: (recSide2==='over'?'Over':'Under')+' '+pitK.line+' Strikeouts',
         betLine: (recSide2==='over'?'Over':'Under')+' '+pitK.line+' Ks',
         line: pitK.line,
@@ -777,6 +778,12 @@ function togSect(k){
   if(arr)  arr.style.transform=SECT_OPEN[k]?'rotate(180deg)':'none';
 }
 
+// Event delegation for section headers — avoids quote escaping issues
+document.addEventListener('click', function(e){
+  var hdr = e.target.closest('.sect-hdr');
+  if(hdr && hdr.dataset.sk) togSect(hdr.dataset.sk);
+});
+
 function rPicks() {
   if(!D) return;
   var aG = D.picks.filter(function(p){return p.grade==='A';});
@@ -829,7 +836,7 @@ function rPicks() {
     h+='<div style="border:1px solid var(--bdr);border-radius:11px;overflow:hidden;margin-bottom:8px">';
 
     // Header — clickable
-    h+='<div onclick="togSect(''+sect.key+'')" style="display:flex;align-items:center;justify-content:space-between;padding:11px 13px;cursor:pointer;background:'+hdrBg+';user-select:none">';
+    h+='<div data-sk="'+sect.key+'" class="sect-hdr" style="display:flex;align-items:center;justify-content:space-between;padding:11px 13px;cursor:pointer;background:'+hdrBg+';user-select:none">';
     h+='<div style="display:flex;align-items:center;gap:8px">';
     h+='<span style="font-size:16px">'+sect.icon+'</span>';
     h+='<span style="font-size:13px;font-weight:700;color:'+sect.color+'">'+sect.label+'</span>';
