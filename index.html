@@ -250,6 +250,60 @@ async function fetchGames(){
   }catch(e){console.error('Games fetch:',e);return null;}
 }
 
+// Fetch today's probable pitchers from MLB schedule API
+// Returns array of {awayTeam, homeTeam, awayPitcherId, homePitcherId, awayPitcherName, homePitcherName}
+async function fetchProbablePitchers(){
+  var now = new Date();
+  var y = now.getFullYear();
+  var m = String(now.getMonth()+1).padStart(2,'0');
+  var d = String(now.getDate()).padStart(2,'0');
+  var today = y+'-'+m+'-'+d;
+  var url = MLB_BASE+'/schedule?sportId=1&date='+today+'&hydrate=probablePitcher,team&language=en';
+  try{
+    var r = await fetch(url);
+    if(!r.ok) throw new Error(r.status);
+    var data = await r.json();
+    var games = data&&data.dates&&data.dates[0]&&data.dates[0].games||[];
+    return games.map(function(g){
+      return {
+        awayTeam: g.teams&&g.teams.away&&g.teams.away.team&&g.teams.away.team.name||'',
+        homeTeam: g.teams&&g.teams.home&&g.teams.home.team&&g.teams.home.team.name||'',
+        awayPitcherId:   g.teams&&g.teams.away&&g.teams.away.probablePitcher&&g.teams.away.probablePitcher.id||null,
+        homePitcherId:   g.teams&&g.teams.home&&g.teams.home.probablePitcher&&g.teams.home.probablePitcher.id||null,
+        awayPitcherName: g.teams&&g.teams.away&&g.teams.away.probablePitcher&&g.teams.away.probablePitcher.fullName||'TBD',
+        homePitcherName: g.teams&&g.teams.home&&g.teams.home.probablePitcher&&g.teams.home.probablePitcher.fullName||'TBD',
+      };
+    });
+  }catch(e){console.warn('Probable pitchers error:',e);return[];}
+}
+
+// Match a team name from Odds API to MLB schedule pitcher data
+// Odds API uses full city+team names like "Los Angeles Dodgers"
+// MLB API also uses full names so this should match well
+function findPitcher(oddsTeam, pitcherGames, side){
+  // side = 'away' or 'home'
+  for(var i=0;i<pitcherGames.length;i++){
+    var pg = pitcherGames[i];
+    var teamName = side==='away'?pg.awayTeam:pg.homeTeam;
+    // Match by last word of team name (e.g. "Dodgers" from "Los Angeles Dodgers")
+    var oddsLast = oddsTeam.split(' ').pop().toLowerCase();
+    var mlbLast  = teamName.split(' ').pop().toLowerCase();
+    if(oddsLast===mlbLast){
+      return {
+        id:   side==='away'?pg.awayPitcherId:pg.homePitcherId,
+        name: side==='away'?pg.awayPitcherName:pg.homePitcherName
+      };
+    }
+  }
+  return null;
+}
+
+// Check if a pitcher is an ace — ERA 2.75 or below AND at least 6 starts
+function isAcePitcher(stats){
+  if(!stats) return false;
+  return stats.era<=2.75&&stats.gs>=6;
+}
+
 async function fetchProps(eventId){
   var mkts = 'batter_hits,batter_hits_runs_rbis,batter_singles,batter_total_bases,batter_home_runs,batter_rbis,batter_runs_scored,batter_stolen_bases,batter_doubles,batter_walks,pitcher_strikeouts';
   var url = ODDS_BASE+'/sports/baseball_mlb/events/'+eventId+'/odds?regions=us&markets='+mkts+'&oddsFormat=american&apiKey='+ODDS_KEY;
@@ -311,9 +365,12 @@ async function getBatterStats(name, season){
   };
 }
 
-async function getPitcherStats(name, season){
-  var s = await mlbFetch(MLB_BASE+'/people/search?names='+encodeURIComponent(name)+'&sportId=1');
-  var pid = s&&s.people&&s.people[0]&&s.people[0].id;
+async function getPitcherStats(name, season, directId){
+  var pid = directId||null;
+  if(!pid&&name){
+    var s = await mlbFetch(MLB_BASE+'/people/search?names='+encodeURIComponent(name)+'&sportId=1');
+    pid = s&&s.people&&s.people[0]&&s.people[0].id;
+  }
   if(!pid) return null;
   var d = await mlbFetch(MLB_BASE+'/people/'+pid+'?hydrate=stats(group=pitching,type=season,season='+season+')&sportId=1');
   var splits = d&&d.people&&d.people[0]&&d.people[0].stats&&d.people[0].stats[0]&&d.people[0].stats[0].splits||[];
@@ -468,13 +525,18 @@ async function loadAll(){
   document.getElementById('pg-totals').innerHTML = '<div class="load"><div class="spnr"></div>Loading game totals...</div>';
   setP('Fetching games...');
 
-  // Step 1: Get today's games + totals
+  // Step 1: Get today's games + totals + probable pitchers
   var gamesData = await fetchGames();
   if(!gamesData){
     document.getElementById('pg-picks').innerHTML = '<div style="padding:10px"><div class="warn">&#9888; Could not reach The Odds API. Check connection or API key.<br><br><button class="btn" onclick="loadAll()">Retry</button></div></div>';
     setP('Error loading data');
     return;
   }
+
+  // Fetch probable pitchers from MLB API (independent of Odds API date issue)
+  setP('Fetching probable pitchers...');
+  var probablePitchers = await fetchProbablePitchers();
+  console.log('Probable pitchers found:', probablePitchers.length);
   if(!gamesData.length){
     document.getElementById('pg-picks').innerHTML = '<div class="empty">No MLB games today.</div>';
     setP('No games today');
@@ -522,6 +584,31 @@ async function loadAll(){
     var game = upcoming[gi];
     var park = PARKS[game.home_team]||100;
     setP('Props '+gi+'/'+upcoming.length+': '+game.away_team.split(' ').pop()+' @ '+game.home_team.split(' ').pop());
+
+    // Find opposing pitchers for each team
+    var awayPit = findPitcher(game.away_team, probablePitchers, 'away');
+    var homePit = findPitcher(game.home_team, probablePitchers, 'home');
+
+    // Load pitcher stats and check for aces
+    // awayPit faces home batters, homePit faces away batters
+    var awayPitStats = null, homePitStats = null;
+    if(homePit&&homePit.id&&!pCache.hasOwnProperty('pit_'+homePit.id)){
+      pCache['pit_'+homePit.id] = await getPitcherStats('', season, homePit.id);
+      await slp(150);
+    }
+    if(awayPit&&awayPit.id&&!pCache.hasOwnProperty('pit_'+awayPit.id)){
+      pCache['pit_'+awayPit.id] = await getPitcherStats('', season, awayPit.id);
+      await slp(150);
+    }
+    homePitStats = homePit&&homePit.id?pCache['pit_'+homePit.id]:null;
+    awayPitStats = awayPit&&awayPit.id?pCache['pit_'+awayPit.id]:null;
+
+    // Flag ace matchups — batters facing aces will be filtered out
+    var homeAce = isAcePitcher(homePitStats); // home pitcher faces away batters
+    var awayAce = isAcePitcher(awayPitStats); // away pitcher faces home batters
+
+    if(homeAce) console.log('ACE detected:', homePit.name, homePitStats.era+' ERA - filtering away batters');
+    if(awayAce) console.log('ACE detected:', awayPit.name, awayPitStats.era+' ERA - filtering home batters');
 
     var pd = await fetchProps(game.id);
     if(!pd||!pd.bookmakers||!pd.bookmakers.length){await slp(300);continue;}
@@ -577,7 +664,22 @@ async function loadAll(){
       var bStats = bCache[pName]||null;
       var pStats = pCache[pName]||null;
 
+      // Determine if this player is facing an ace
+      // We need to know which team the player is on
+      // Players from away team face homePitStats, players from home team face awayPitStats
+      // The Odds API doesn't tell us which team a player is on directly
+      // But we can check: if homeAce, filter all home batters; if awayAce, filter all away batters
+      // Since we don't know team from prop data, we filter if EITHER pitcher is an ace
+      // This is conservative — better to skip a good pick than bet into an ace
+      var facingAce = homeAce||awayAce;
+
       mktKeys.forEach(function(mktKey){
+        // Skip pitcher strikeout markets for ace filter (ace filter is for batters only)
+        if(mktKey!=='pitcher_strikeouts'&&facingAce){
+          console.log('Skipping',pName,'—',mktKey,'— facing ace pitcher');
+          return; // skip all batter props when there is an ace in the game
+        }
+
         var mkt = mkts[mktKey];
         var score = getScore(mktKey, bStats, pStats, park);
         if(score<40) return;
@@ -598,12 +700,15 @@ async function loadAll(){
 
         var propLabel = buildLabel(mktKey, mkt.line, score);
 
+        var oppPitcher = mktKey==='pitcher_strikeouts'?null:(homeAce?homePit:awayAce?awayPit:null)||homePit||awayPit;
+
         picks.push({
           name:     pName,
           game:     game.away_team+' @ '+game.home_team,
           time:     fmtTime(game.commence_time),
           park:     park,
           mktKey:   mktKey,
+          pitcher:  oppPitcher?oppPitcher.name:null,
           propLabel:propLabel,
           line:     mkt.line,
           overOdds: mkt.over,
@@ -753,7 +858,7 @@ function pickCard(p){
   // Name row
   h += '<div class="prow">';
   h += '<div><div class="pname">'+p.name+hotBadge(p.bStats&&p.bStats.hotCold)+'</div>';
-  h += '<div class="pgame">'+p.game+' &middot; '+p.time+'</div></div>';
+  h += '<div class="pgame">'+p.game+' &middot; '+p.time+(p.pitcher?' &middot; vs '+p.pitcher:'')+'</div></div>';
   h += '<span class="pbadge '+(isA?'ba':'bb')+'">'+(isA?'&#9733; A':'&#9889; B')+'</span>';
   h += '</div>';
 
