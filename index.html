@@ -546,14 +546,22 @@ function showLoading(){
     '<div class="spnr"></div>'+
     '<div style="font-size:13px;font-weight:700;margin-bottom:14px;color:var(--txt)">Loading today\'s props...</div>'+
     '<div class="load-steps">'+
-    '<div id="s1" class="load-step">&#9675; Fetching MLB schedule + pitchers</div>'+
-    '<div id="s2" class="load-step">&#9675; Getting Odds API games</div>'+
-    '<div id="s3" class="load-step">&#9675; Checking for ace pitchers</div>'+
-    '<div id="s4" class="load-step">&#9675; Loading prop lines</div>'+
-    '<div id="s5" class="load-step">&#9675; Fetching current player stats</div>'+
-    '<div id="s6" class="load-step">&#9675; Checking hot/cold streaks</div>'+
+    '<div id="s1" class="load-step">&#9675; Fetching MLB schedule</div>'+
+    '<div id="s2" class="load-step">&#9675; Odds API games</div>'+
+    '<div id="s3" class="load-step">&#9675; Ace pitcher check</div>'+
+    '<div id="s4" class="load-step">&#9675; Loading props</div>'+
+    '<div id="s5" class="load-step">&#9675; Player stats</div>'+
+    '<div id="s6" class="load-step">&#9675; Hot/cold streaks</div>'+
     '<div id="s7" class="load-step">&#9675; Scoring picks</div>'+
-    '</div></div>';
+    '</div>'+
+    '<div id="debug-log" style="margin-top:12px;text-align:left;font-size:10px;color:var(--mut);font-family:monospace;line-height:1.6;max-height:150px;overflow-y:auto;padding:0 4px"></div>'+
+    '</div>';
+}
+
+function dbg(msg){
+  var el=document.getElementById('debug-log');
+  if(el){var d=document.createElement('div');d.textContent=msg;el.appendChild(d);el.scrollTop=el.scrollHeight;}
+  console.log('[HE8]',msg);
 }
 
 // ── MAIN LOADER ───────────────────────────────────────────────────────────────
@@ -563,13 +571,26 @@ async function loadAll(){
 
   // ── STEP 1: MLB schedule ──────────────────────────────────────────────────
   setStep('s1','active');
-  var mlbGames=await loadMLBSchedule();
+  dbg('Step 1: MLB schedule...');
+  var mlbGames=[];
+  try{
+    mlbGames=await loadMLBSchedule();
+    dbg('MLB games loaded: '+mlbGames.length);
+  }catch(e){
+    dbg('MLB schedule ERROR: '+e.message);
+  }
   setStep('s1','done');
-  console.log('MLB games:',mlbGames.length);
 
   // ── STEP 2: Odds API games ────────────────────────────────────────────────
   setStep('s2','active');
-  var oddsGames=await loadOddsGames();
+  dbg('Step 2: Odds API...');
+  var oddsGames=null;
+  try{
+    oddsGames=await loadOddsGames();
+    dbg('Odds games: '+(oddsGames?oddsGames.length:'null'));
+  }catch(e){
+    dbg('Odds API ERROR: '+e.message);
+  }
   setStep('s2','done');
 
   if(!oddsGames||!oddsGames.length){
@@ -614,14 +635,21 @@ async function loadAll(){
 
   // ── STEP 3: Bulk pitcher stats + ace detection ────────────────────────────
   setStep('s3','active');
+  dbg('Step 3: Pitcher stats...');
   var pitcherIds=[];
   mlbGames.forEach(function(g){
     if(g.awayPitcher.id)pitcherIds.push(g.awayPitcher.id);
     if(g.homePitcher.id)pitcherIds.push(g.homePitcher.id);
   });
-  // Dedupe
   pitcherIds=pitcherIds.filter(function(id,i){return pitcherIds.indexOf(id)===i;});
-  var pitcherStats=await loadBulkPitcherStats(pitcherIds);
+  dbg('Pitcher IDs to load: '+pitcherIds.length+' '+JSON.stringify(pitcherIds.slice(0,4)));
+  var pitcherStats={};
+  try{
+    pitcherStats=await loadBulkPitcherStats(pitcherIds);
+    dbg('Pitcher stats loaded: '+Object.keys(pitcherStats).length);
+  }catch(e){
+    dbg('Pitcher stats ERROR: '+e.message);
+  }
 
   // Map ace pitchers per game
   // homeAce = home pitcher is ace → away batters are filtered
@@ -668,20 +696,33 @@ async function loadAll(){
 
   // ── STEP 4: Props for bettable games only ────────────────────────────────
   setStep('s4','active');
-  var allPropsData={}; // eventId -> bookmaker data
+  dbg('Step 4: Loading props for '+bettableGames.length+' games...');
+  var allPropsData={};
   for(var gi=0;gi<bettableGames.length;gi++){
     var og=bettableGames[gi];
-    var pd=await loadEventProps(og.id);
-    if(pd&&pd.bookmakers&&pd.bookmakers.length)allPropsData[og.id]=pd;
+    dbg('Props '+og.away_team.split(' ').pop()+' @ '+og.home_team.split(' ').pop()+'...');
+    try{
+      var pd=await loadEventProps(og.id);
+      if(pd&&pd.bookmakers&&pd.bookmakers.length){
+        allPropsData[og.id]=pd;
+        dbg('  Got '+pd.bookmakers.length+' books');
+      } else {
+        dbg('  No props returned');
+      }
+    }catch(e){
+      dbg('  Props error: '+e.message);
+    }
     await slp(250);
   }
   setStep('s4','done');
+  dbg('Props loaded for '+Object.keys(allPropsData).length+' games');
 
   // ── STEP 5: Collect player IDs and bulk load stats ────────────────────────
   setStep('s5','active');
+  dbg('Step 5: Building player index...');
 
-  // Build name→ID index from MLB lineups
   var nameIndex=buildNameIndex(mlbGames);
+  dbg('Name index size: '+Object.keys(nameIndex).length);
 
   // Collect all unique player names from props
   var propPlayerNames={};  // name -> {id or null, mktKeys[]}
@@ -713,15 +754,27 @@ async function loadAll(){
   });
   batterIds=batterIds.filter(function(id,i){return batterIds.indexOf(id)===i;});
 
-  // Bulk load batter stats
-  var batterStats=await loadBulkBatterStats(batterIds);
+  dbg('Batter IDs: '+batterIds.length+' Pitcher prop IDs: '+pitcherPropIds.length);
+  var batterStats={};
+  try{
+    batterStats=await loadBulkBatterStats(batterIds);
+    dbg('Batter stats loaded: '+Object.keys(batterStats).length);
+  }catch(e){
+    dbg('Batter stats ERROR: '+e.message);
+  }
   setStep('s5','done');
 
   // ── STEP 6: Hot/cold for batters ─────────────────────────────────────────
   setStep('s6','active');
-  // Only check hot/cold for players with stats
+  dbg('Step 6: Hot/cold for '+batterIds.filter(function(id){return batterStats[id];}).length+' players...');
   var hcIds=batterIds.filter(function(id){return batterStats[id];});
-  var hotColdMap=await loadHotCold(hcIds,batterStats);
+  var hotColdMap={};
+  try{
+    hotColdMap=await loadHotCold(hcIds,batterStats);
+    dbg('Hot/cold loaded: '+Object.keys(hotColdMap).length);
+  }catch(e){
+    dbg('Hot/cold ERROR: '+e.message);
+  }
   // Apply hot/cold to batter stats
   hcIds.forEach(function(id){
     if(batterStats[id])batterStats[id].hotCold=hotColdMap[id]||'Neutral';
@@ -730,6 +783,7 @@ async function loadAll(){
 
   // ── STEP 7: Score picks ───────────────────────────────────────────────────
   setStep('s7','active');
+  dbg('Step 7: Scoring picks...');
   var picks=[];
 
   Object.entries(allPropsData).forEach(function(entry){
@@ -834,12 +888,12 @@ async function loadAll(){
     });
   });
 
-  // Sort: A before B, then by score
   picks.sort(function(a,b){
     if(a.grade!==b.grade)return a.grade<b.grade?-1:1;
     return b.score-a.score;
   });
   setStep('s7','done');
+  dbg('Done! '+picks.length+' picks scored. A:'+picks.filter(function(p){return p.grade==='A';}).length+' B:'+picks.filter(function(p){return p.grade==='B';}).length);
 
   D={
     picks,totals,aceNotes,
