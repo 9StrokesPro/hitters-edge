@@ -485,14 +485,6 @@ function applyFilters(pick){
       }
     }
 
-    // Career game minimum: under 100 games → Watch List max
-    if(b.games<CAREER_GAME_MIN){
-      if(grade==='A'){
-        grade='B';
-        filters.push('Career floor: '+b.games+' games — Watch List max');
-      }
-    }
-
     // Career avg floor: below .220 → Watch List max (soft penalty)
     if(b.avg<CAREER_AVG_FLOOR){
       if(grade==='A'){
