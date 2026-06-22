@@ -129,13 +129,13 @@ select.inp option{background:var(--sur2)}
 <div class="toast-el" id="toast"></div>
 <script>
 'use strict';
-// ‚îÄ‚îÄ CONFIG ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+// ── CONFIG ────────────────────────────────────────────────────────────────────
 var ODDS_KEY  = 'c662d3af7ba8e40cddf08b0fca0684a9';
 var ODDS_BASE = 'https://api.the-odds-api.com/v4';
 var MLB       = 'https://statsapi.mlb.com/api/v1';
 var SEASON    = 2026;
 
-// ‚îÄ‚îÄ SPEC CONSTANTS ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+// ── SPEC CONSTANTS ────────────────────────────────────────────────────────────
 var ACE_ERA_THRESHOLD    = 2.80;  // ERA at or below = ace
 var ACE_MIN_STARTS       = 6;     // minimum GS to be considered ace
 var MAX_A_PICKS          = 5;     // hard cap on premium card
@@ -155,7 +155,7 @@ var PROP_MAX={
   batter_rbis:76, batter_runs_scored:68, batter_stolen_bases:64, batter_walks:52
 };
 
-// ‚îÄ‚îÄ STATE ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+// ── STATE ─────────────────────────────────────────────────────────────────────
 var D=null,BETS=[],LEGS=[],LOG_MODE='single',TOAST_T=null;
 var REFRESH_T=null,COUNTDOWN_T=null,NEXT_R=null;
 var SECT_OPEN={};
@@ -163,20 +163,20 @@ var LF={player:'',market:'Over 0.5 Hits',odds:'-115',stake:'25',result:'PENDING'
 var PF={odds:'',stake:'25',result:'PENDING'};
 var ML_player='',ML_market='Over 0.5 Hits';
 
-// ‚îÄ‚îÄ STORAGE ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+// ── STORAGE ───────────────────────────────────────────────────────────────────
 function sg(k,d){try{var v=localStorage.getItem('he9_'+k);return v?JSON.parse(v):d;}catch(e){return d;}}
 function ss(k,v){try{localStorage.setItem('he9_'+k,JSON.stringify(v));}catch(e){}}
 BETS=sg('bets',[]);
 
-// ‚îÄ‚îÄ PARKS ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+// ── PARKS ─────────────────────────────────────────────────────────────────────
 var PARKS={'Coors Field':115,'Great American Ball Park':112,'Fenway Park':108,'Globe Life Field':107,'Citizens Bank Park':106,'American Family Field':105,'Wrigley Field':104,'Rogers Centre':104,'Yankee Stadium':103,'Truist Park':102,'Camden Yards':103,'Guaranteed Rate Field':103,'Dodger Stadium':101,'T-Mobile Park':100,'Progressive Field':100,'Nationals Park':100,'Daikin Park':98,'Minute Maid Park':98,'Angel Stadium':99,'Chase Field':99,'loanDepot park':98,'Oracle Park':97,'Citi Field':97,'Comerica Park':97,'Petco Park':96,'Target Field':96,'PNC Park':96,'Busch Stadium':95,'Kauffman Stadium':95,'Tropicana Field':97,'Sutter Health Park':98};
 
-// ‚îÄ‚îÄ PROP SECTIONS ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+// ── PROP SECTIONS ─────────────────────────────────────────────────────────────
 // Ordered by Tier (best edge first)
 var SECTIONS=[
-  // Tier 1 ‚Äî core edge
+  // Tier 1 — core edge
   {key:'batter_singles',       label:'Singles (Tier 1)',    icon:'1&#65039;', col:'var(--grn)', tier:1},
-  // Tier 2 ‚Äî solid plays
+  // Tier 2 — solid plays
   {key:'pitcher_strikeouts',   label:'Strikeouts (Tier 2)', icon:'&#9917;',   col:'var(--blu)', tier:2},
   {key:'batter_hits_runs_rbis',label:'H+R+RBI (Tier 2)',   icon:'&#128994;', col:'var(--tel)', tier:2},
   {key:'batter_hits',          label:'Hits',                icon:'&#129337;', col:'var(--tel)', tier:2},
@@ -190,7 +190,7 @@ var SECTIONS=[
 ];
 // Doubles excluded per spec
 
-// ‚îÄ‚îÄ UTILS ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+// ── UTILS ─────────────────────────────────────────────────────────────────────
 function nav(n){
   document.querySelectorAll('.pg').forEach(function(p){p.classList.remove('on');});
   document.querySelectorAll('.nb').forEach(function(b){b.classList.remove('on');});
@@ -205,7 +205,7 @@ function slp(ms){return new Promise(function(r){setTimeout(r,ms);});}
 function fmtTime(iso){if(!iso)return'TBD';try{return new Date(iso).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York',hour12:true})+' ET';}catch(e){return'TBD';}}
 function fmtOdds(o){if(o===null||o===undefined)return'--';return o>0?'+'+o:String(o);}
 function hotBadge(hc,games){
-  // Hot/cold = last 7 days vs season avg ‚Äî no game count gate
+  // Hot/cold = last 7 days vs season avg — no game count gate
   if(!hc||hc==='Neutral')return'';
   if(hc==='HOT')return' &#128293;&#128293;&#128293;';
   if(hc==='Warming')return' &#128293;&#128293;';
@@ -222,7 +222,7 @@ function toggleSection(key){
   if(a){if(SECT_OPEN[key])a.classList.add('open');else a.classList.remove('open');}
 }
 
-// ‚îÄ‚îÄ API HELPERS ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+// ── API HELPERS ───────────────────────────────────────────────────────────────
 async function apiFetch(url){
   try{var r=await fetch(url);if(!r.ok)throw new Error('HTTP '+r.status);return await r.json();}
   catch(e){console.warn('fetch',e.message,url.slice(0,60));return null;}
@@ -236,7 +236,7 @@ async function loadEventProps(eventId){
   return await apiFetch(ODDS_BASE+'/sports/baseball_mlb/events/'+eventId+'/odds?regions=us&markets='+mkts+'&oddsFormat=american&apiKey='+ODDS_KEY);
 }
 
-// ‚îÄ‚îÄ MLB DATA ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+// ── MLB DATA ──────────────────────────────────────────────────────────────────
 async function loadMLBSchedule(){
   var data=await apiFetch(MLB+'/schedule?sportId=1&date='+todayStr()+'&hydrate=probablePitcher,lineups,team,venue&language=en');
   var games=data&&data.dates&&data.dates[0]&&data.dates[0].games||[];
@@ -330,7 +330,7 @@ async function getBatterStats(name){
   var roll10obp=r10AB>0?Math.round((r10H+r10BB)/(r10AB+r10BB)*1000)/1000:obp;
 
   // Last 14 days for hot/cold
-  // Last 7 days for hot/cold ‚Äî streaks come and go week to week
+  // Last 7 days for hot/cold — streaks come and go week to week
   var cut=new Date();cut.setDate(cut.getDate()-7);
   var tH=0,tAB=0;
   for(var i=gls.length-1;i>=0;i--){if(new Date(gls[i].date)<cut)break;tH+=parseInt(gls[i].stat.hits)||0;tAB+=parseInt(gls[i].stat.atBats)||0;}
@@ -369,9 +369,9 @@ async function getBatterStats(name){
   };
 }
 
-// ‚îÄ‚îÄ SCORING MODELS (split by prop type per spec) ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+// ── SCORING MODELS (split by prop type per spec) ──────────────────────────────
 
-// TIER 1: Singles model ‚Äî floor prop, highest confidence
+// TIER 1: Singles model — floor prop, highest confidence
 // Inputs: rolling AVG, H/G, contact profile, park
 function scoreSingles(b, park){
   var s=0;
@@ -393,7 +393,7 @@ function scoreSingles(b, park){
   return Math.max(0,Math.min(100,Math.round(s)));
 }
 
-// TIER 2: Pitcher K model ‚Äî last-3-start avg vs line is KEY
+// TIER 2: Pitcher K model — last-3-start avg vs line is KEY
 function scorePitcherK(p, l3, line){
   var s=0;
   if(!p||!l3)return 0;
@@ -411,7 +411,7 @@ function scorePitcherK(p, l3, line){
   return Math.max(0,Math.min(100,Math.round(s)));
 }
 
-// TIER 2: H+R+RBI model ‚Äî lineup position weighted heavily
+// TIER 2: H+R+RBI model — lineup position weighted heavily
 function scoreHRI(b, spot, park, line){
   var s=0;
   // Lineup position (spec: leadoff/2-hole get more PA and run opportunities)
@@ -427,7 +427,7 @@ function scoreHRI(b, spot, park, line){
   if(rprod>=1.5)s+=15;else if(rprod>=1.1)s+=10;else if(rprod>=0.8)s+=5;
   // Park factor
   if(park>=108)s+=8;else if(park>=104)s+=4;else if(park<96)s-=6;
-  // 2.5 line is harder (spec says always B-grade ‚Äî handled in filter)
+  // 2.5 line is harder (spec says always B-grade — handled in filter)
   if(line>=2.5)s-=15;
   // Hot/cold (100+ games only)
   if(b.hotCold==='HOT')s+=10;else if(b.hotCold==='Warming')s+=5;
@@ -435,7 +435,7 @@ function scoreHRI(b, spot, park, line){
   return Math.max(0,Math.min(100,Math.round(s)));
 }
 
-// Hits model ‚Äî rolling avg primary input
+// Hits model — rolling avg primary input
 function scoreHits(b, park){
   var s=0;
   // Rolling 10-game avg is primary (spec)
@@ -468,14 +468,14 @@ function pitcherMatchupAdj(p, l3, key){
   var era=(l3&&l3.era>0)?Math.round((p.era*0.5+l3.era*0.5)*100)/100:p.era;
   var whip=p.whip||0, k9=p.k9||0, bb9=p.bb9||0;
 
-  // Run-environment channel (ERA + WHIP) ‚Äî helps every hitter prop
+  // Run-environment channel (ERA + WHIP) — helps every hitter prop
   var env=0;
   if(era>=5.50)env+=10;else if(era>=4.75)env+=7;else if(era>=4.20)env+=4;
   else if(era>=3.60)env+=0;else if(era>=3.00)env-=5;else env-=9;
   if(whip>=1.45)env+=6;else if(whip>=1.32)env+=3;else if(whip>=1.20)env+=0;
   else if(whip>=1.10)env-=3;else env-=6;
 
-  // Strikeout-suppression channel ‚Äî a high-K starter smothers contact props
+  // Strikeout-suppression channel — a high-K starter smothers contact props
   var kSup=0;
   if(k9>=10.5)kSup-=8;else if(k9>=9.3)kSup-=5;else if(k9>=8.3)kSup-=2;
   else if(k9>=7.2)kSup+=2;else kSup+=5;
@@ -502,7 +502,7 @@ function pitcherMatchupAdj(p, l3, key){
   return{adj:adj,tag:tag};
 }
 
-// ‚îÄ‚îÄ APPLY ALL FILTERS AND GRADE (spec) ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+// ── APPLY ALL FILTERS AND GRADE (spec) ────────────────────────────────────────
 function applyFilters(pick){
   var k=pick.mktKey, b=pick.bStats, p=pick.pitSt, l3=pick.l3, line=pick.line;
   var grade=pick.rawGrade;
@@ -514,37 +514,37 @@ function applyFilters(pick){
     return{pass:false,reason:'K line 7.5+ excluded'};
   }
 
-  // Define hitter prop types ‚Äî H/G and career filters only apply to these
+  // Define hitter prop types — H/G and career filters only apply to these
   var hitterProps=['batter_singles','batter_hits','batter_hits_runs_rbis',
     'batter_total_bases','batter_home_runs','batter_rbis',
     'batter_runs_scored','batter_stolen_bases','batter_walks'];
   var isHitterProp=hitterProps.indexOf(k)>-1;
 
-  // 1b. Career floor filters ‚Äî hitter props only, NOT pitcher props
+  // 1b. Career floor filters — hitter props only, NOT pitcher props
   if(b&&isHitterProp){
 
-    // Hard exclude: season avg below .200 ‚Äî excluded from everything
+    // Hard exclude: season avg below .200 — excluded from everything
     // This catches career backup types like Jackson (.153) from ever appearing
     if(b.avg<0.200){
       return{pass:false,reason:'Excluded: avg '+b.avg+' below .200 minimum'};
     }
 
 
-    // FIX 1 & 2: H/G floor ‚Äî only for hitter props, correct operator
-    // Players with H/G below 1.0 ‚Üí Watch List max
+    // FIX 1 & 2: H/G floor — only for hitter props, correct operator
+    // Players with H/G below 1.0 → Watch List max
     // Only applies to hitter props (NOT pitcher Ks)
     if(b.hpg<1.0){
       if(grade==='A'){
         grade='B';
-        filters.push('H/G '+b.hpg+' below 1.0 floor ‚Äî Watch List');
+        filters.push('H/G '+b.hpg+' below 1.0 floor — Watch List');
       }
     }
 
-    // Career avg floor: below .220 ‚Üí Watch List max (soft penalty)
+    // Career avg floor: below .220 → Watch List max (soft penalty)
     if(b.avg<CAREER_AVG_FLOOR){
       if(grade==='A'){
         grade='B';
-        filters.push('Career avg '+b.avg+' below .220 ‚Äî Watch List max');
+        filters.push('Career avg '+b.avg+' below .220 — Watch List max');
       }
     }
   }
@@ -557,11 +557,11 @@ function applyFilters(pick){
     filters.push('2.5 line capped at B');
   }
 
-  // 5. Rookie gate: under 50 games ‚Üí multi-path props capped at B
+  // 5. Rookie gate: under 50 games → multi-path props capped at B
   if(b&&b.games<ROOKIE_GAME_GATE){
     if(k==='batter_hits_runs_rbis'||k==='batter_home_runs'||k==='batter_rbis'||k==='batter_runs_scored'){
       grade='B';
-      filters.push('Rookie gate ('+b.games+' games) ‚Äî B max');
+      filters.push('Rookie gate ('+b.games+' games) — B max');
     }
   }
 
@@ -579,7 +579,7 @@ function applyFilters(pick){
   return{pass:true,grade:grade,filters:filters};
 }
 
-// ‚îÄ‚îÄ PARLAY BUILDER ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+// ── PARLAY BUILDER ────────────────────────────────────────────────────────────
 function impliedProb(odds){
   // Convert American odds to implied probability
   if(odds<0)return Math.abs(odds)/(Math.abs(odds)+100);
@@ -674,7 +674,7 @@ function buildBestParlays(picks){
   return{two:makeParlay(best2),three:makeParlay(best3)};
 }
 
-// ‚îÄ‚îÄ MAIN LOADER ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+// ── MAIN LOADER ───────────────────────────────────────────────────────────────
 async function loadAll(){
   setP('Loading...');
   document.getElementById('pg-picks').innerHTML='<div class="load"><div class="spnr"></div>Loading props...</div>';
@@ -838,7 +838,7 @@ async function loadAll(){
         else if(homeSpot)lineupSpot=homeSpot.spot;
       }
 
-      // Ace filter for batters ‚Äî skip ONLY if THIS batter's opposing SP is an ace
+      // Ace filter for batters — skip ONLY if THIS batter's opposing SP is an ace
       // (spec: the other team's batters in the same game stay eligible). If the
       // batter's side can't be resolved, fall back to the conservative game-level rule.
       if(!isPitcher&&bStats){
@@ -850,7 +850,7 @@ async function loadAll(){
         var mkt=mkts[k];
         if(!mkt)return;
 
-        // FIX 3: Score FIRST using pure stats ‚Äî no odds involved
+        // FIX 3: Score FIRST using pure stats — no odds involved
         // recOdds derived from score after, not before
         var score=0;
         if(k==='batter_singles')            score=scoreSingles(bStats||{},park);
@@ -865,7 +865,7 @@ async function loadAll(){
         else if(k==='batter_walks')         score=scoreWlk(bStats||{});
         else return;
 
-        // Opposing-pitcher matchup adjustment ‚Äî hitter props only, graded on a
+        // Opposing-pitcher matchup adjustment — hitter props only, graded on a
         // spectrum (the binary ace skip above only removes the extreme tail).
         var mAdj=0,mTag='';
         if(!isPitcher){
@@ -879,7 +879,7 @@ async function loadAll(){
         var rawScore=score;
         // Normalize to a common 0-100 scale: 100 = the best this prop can
         // realistically score. Now the displayed number reads the same everywhere
-        // ‚Äî a 90 Singles and a 90 Walks are equally strong FOR THEIR prop.
+        // — a 90 Singles and a 90 Walks are equally strong FOR THEIR prop.
         var propMax=PROP_MAX[k]||100;
         score=Math.max(0,Math.min(100,Math.round(rawScore/propMax*100)));
 
@@ -904,7 +904,7 @@ async function loadAll(){
         var lmap={'batter_hits_runs_rbis':'H+R+RBI','batter_singles':'Singles','batter_hits':'Hits','batter_total_bases':'Total Bases','batter_home_runs':'HR','batter_rbis':'RBI','batter_runs_scored':'Runs Scored','batter_stolen_bases':'SB','batter_walks':'Walks','pitcher_strikeouts':'Strikeouts'};
         var propLabel=sideOver+' '+mkt.line+' '+(lmap[k]||k);
 
-        // True opposing pitcher (this batter's side) ‚Äî used for display and the
+        // True opposing pitcher (this batter's side) — used for display and the
         // per-team premium cap. Empty for pitcher K props.
         var oppPitcher=isPitcher?'':oppPitName;
 
@@ -930,7 +930,7 @@ async function loadAll(){
   rawPicks.forEach(function(p){
     // Conflict check: skip batter props in games with K over
     if(!p.isPitcher&&kPickGames[p.game]){
-      // Per spec: flag conflict but don't exclude entirely ‚Äî just note it
+      // Per spec: flag conflict but don't exclude entirely — just note it
       p.conflictFlag=true;
     }
     var result=applyFilters(p);
@@ -953,7 +953,7 @@ async function loadAll(){
   picks.forEach(function(p){
     if(p.grade==='A'&&!p.isPitcher&&p.bStats){
       // Determine team from game string and pitcher
-      // Use pitcher as proxy for team grouping ‚Äî same pitcher = same opposing team
+      // Use pitcher as proxy for team grouping — same pitcher = same opposing team
       var teamKey=p.game+'|'+(p.pitcher||'unknown');
       if(!teamGameGroups[teamKey])teamGameGroups[teamKey]=[];
       teamGameGroups[teamKey].push(p);
@@ -961,7 +961,7 @@ async function loadAll(){
   });
   Object.values(teamGameGroups).forEach(function(group){
     if(group.length<=1)return;
-    // Sort by score descending ‚Äî keep top 1, push rest to Watch List
+    // Sort by score descending — keep top 1, push rest to Watch List
     group.sort(function(a,b){return b.score-a.score;});
     for(var gi=1;gi<group.length;gi++){
       group[gi].grade='W';
@@ -971,13 +971,13 @@ async function loadAll(){
     }
   });
 
-  // 5-pick cap removed ‚Äî quality filters do the job now
+  // 5-pick cap removed — quality filters do the job now
   // All picks that clear every filter go on the premium card
 
   // Three tiers for display:
   // Premium: all A-grade picks that cleared every filter
   // Watch:   B-grade + overflow A (bonus bets only)
-  // (Research tier is internal ‚Äî not shown)
+  // (Research tier is internal — not shown)
 
   // Build best parlays from premium card
   var bestParlays=buildBestParlays(picks);
@@ -994,7 +994,7 @@ async function loadAll(){
   if(!REFRESH_T)startAR();
 }
 
-// ‚îÄ‚îÄ RENDER PICKS ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+// ── RENDER PICKS ──────────────────────────────────────────────────────────────
 function renderPicks(){
   if(!D)return;
   var premium=D.picks.filter(function(p){return p.grade==='A';});
@@ -1011,8 +1011,8 @@ function renderPicks(){
 
   // Ace notes
   if(D.aceNotes&&D.aceNotes.length){
-    h+='<div class="ace-note"><div style="font-size:11px;font-weight:700;color:var(--red);margin-bottom:4px">&#9940; ACE PITCHERS ‚Äî BATTERS SKIPPED</div>';
-    D.aceNotes.forEach(function(n){h+='<div style="font-size:11px;color:var(--mut)"><span style="color:var(--txt)">'+n.team+'</span> vs <span style="color:var(--amb)">'+n.pitcher+' ('+n.era+' ERA)</span> ‚Äî skipped</div>';});
+    h+='<div class="ace-note"><div style="font-size:11px;font-weight:700;color:var(--red);margin-bottom:4px">&#9940; ACE PITCHERS — BATTERS SKIPPED</div>';
+    D.aceNotes.forEach(function(n){h+='<div style="font-size:11px;color:var(--mut)"><span style="color:var(--txt)">'+n.team+'</span> vs <span style="color:var(--amb)">'+n.pitcher+' ('+n.era+' ERA)</span> — skipped</div>';});
     h+='<div style="font-size:10px;color:var(--mut);margin-top:4px">Other team\'s batters in these games may still appear.</div></div>';
   }
 
@@ -1024,7 +1024,7 @@ function renderPicks(){
   // Premium card header
   h+='<div class="card" style="background:var(--gbg);border-color:rgba(34,197,94,.3)">';
   h+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">';
-  h+='<div><div style="font-size:13px;font-weight:700;color:var(--grn)">&#9733; Premium Card ‚Äî Real Money</div>';
+  h+='<div><div style="font-size:13px;font-weight:700;color:var(--grn)">&#9733; Premium Card — Real Money</div>';
   h+='<div style="font-size:11px;color:var(--mut);margin-top:2px">$25 max &middot; -140 or better &middot; confirm lineup</div>';
   h+='<div style="font-size:11px;color:var(--mut)">All-filter Premium Card &middot; A-Grade only</div></div>';
   h+='<div style="text-align:right"><div style="font-size:22px;font-weight:700;color:var(--grn)">'+premium.length+'</div><div style="font-size:9px;color:var(--mut)">today</div></div></div>';
@@ -1046,7 +1046,7 @@ function renderPicks(){
     document.getElementById('pg-picks').innerHTML=h;return;
   }
 
-  // Render sections ‚Äî Premium only in A sections, watchlist in B sections
+  // Render sections — Premium only in A sections, watchlist in B sections
   SECTIONS.forEach(function(sect){
     var sectPremium=premium.filter(function(p){return p.mktKey===sect.key;});
     var sectWatch=watchlist.filter(function(p){return p.mktKey===sect.key;});
@@ -1074,13 +1074,13 @@ function renderPicks(){
 
   // Watch list separator
   if(watchlist.length){
-    h+='<div class="filter-note" style="margin-top:4px"><div style="font-size:11px;font-weight:700;color:var(--amb);margin-bottom:3px">&#9889; Watch List ‚Äî Bonus Bets Only</div>';
-    h+='<div style="font-size:10px;color:var(--mut)">Passed most filters but did not reach premium bar. Use bonus bets only ‚Äî never real money.</div></div>';
+    h+='<div class="filter-note" style="margin-top:4px"><div style="font-size:11px;font-weight:700;color:var(--amb);margin-bottom:3px">&#9889; Watch List — Bonus Bets Only</div>';
+    h+='<div style="font-size:10px;color:var(--mut)">Passed most filters but did not reach premium bar. Use bonus bets only — never real money.</div></div>';
   }
 
   h+='<div style="text-align:center;margin:10px 0"><button class="rbtn" onclick="loadAll()">&#8635; Refresh</button></div>';
 
-  // ‚îÄ‚îÄ BEST PARLAYS SECTION ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+  // ── BEST PARLAYS SECTION ─────────────────────────────────────────────────
   if(D.bestParlays&&(D.bestParlays.two||D.bestParlays.three)){
     h+='<div class="card" style="border-color:var(--gld);background:var(--sur)">';
     h+='<div style="font-size:13px;font-weight:700;color:var(--gld);margin-bottom:4px">&#127920; Best Parlays</div>';
@@ -1120,14 +1120,14 @@ function renderPicks(){
       h+='</div>';
     }
 
-    h+='<div style="font-size:10px;color:var(--mut);margin-top:4px">Parlay odds use standard math. These are suggestions ‚Äî if you already bet the singles, skip the parlay.</div>';
+    h+='<div style="font-size:10px;color:var(--mut);margin-top:4px">Parlay odds use standard math. These are suggestions — if you already bet the singles, skip the parlay.</div>';
     h+='</div>';
   }
 
   document.getElementById('pg-picks').innerHTML=h;
 }
 
-// ‚îÄ‚îÄ PICK CARD ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+// ── PICK CARD ─────────────────────────────────────────────────────────────────
 function sg4(v,l,c){return '<div class="pgrid-box"><div class="pgrid-val" style="color:'+c+'">'+(v!==null&&v!==undefined?v:'--')+'</div><div class="pgrid-lbl">'+l+'</div></div>';}
 
 function pickCard(p){
@@ -1154,14 +1154,14 @@ function pickCard(p){
   h+='<div style="font-size:10px;color:'+col+';font-weight:700;margin-bottom:5px">Score: '+p.score+'/100'+(p.rawScore!=null?' <span style="color:var(--mut);font-weight:600">(raw model '+p.rawScore+'/'+(p.propMax||100)+')</span>':'')+'</div>';
 
   // Conflict flag
-  if(p.conflictFlag)h+='<div style="font-size:10px;color:var(--amb);margin-bottom:4px">&#9888; Same game has a pitcher K over ‚Äî structurally opposed</div>';
+  if(p.conflictFlag)h+='<div style="font-size:10px;color:var(--amb);margin-bottom:4px">&#9888; Same game has a pitcher K over — structurally opposed</div>';
 
   // Filter notes
   if(p.filterNotes&&p.filterNotes.length){
     p.filterNotes.forEach(function(n){h+='<div style="font-size:10px;color:var(--amb);margin-bottom:3px">&#9679; '+n+'</div>';});
   }
 
-  // Stat grid ‚Äî prop specific
+  // Stat grid — prop specific
   if(p.bStats){
     h+='<div class="pgrid">';
     var b=p.bStats;
@@ -1192,9 +1192,9 @@ function pickCard(p){
     // Warnings
     if(b.hotCold==='COLD'||b.hotCold==='Cooling')h+='<div style="font-size:10px;color:var(--red);margin-bottom:4px">&#129704; '+b.hotCold+' last 14 days</div>';
     if(b.bbRate>=0.09&&(p.mktKey==='batter_hits'||p.mktKey==='batter_total_bases'))h+='<div style="font-size:10px;color:var(--amb);margin-bottom:4px">&#9888; High walk rate hurts this prop</div>';
-    if(b.games<CAREER_GAME_MIN)h+='<div style="font-size:10px;color:var(--amb);margin-bottom:4px">&#9675; Career sample: '+b.games+' games ‚Äî rolling avg blended with season avg</div>';
-    if(b.avg<CAREER_AVG_FLOOR)h+='<div style="font-size:10px;color:var(--red);margin-bottom:4px">&#9888; Career avg '+b.avg+' below .220 floor ‚Äî score penalized</div>';
-    if(b.games<ROOKIE_GAME_GATE)h+='<div style="font-size:10px;color:var(--amb);margin-bottom:4px">&#9675; Rookie ('+b.games+' games) ‚Äî multi-path props capped at B</div>';
+    if(b.games<CAREER_GAME_MIN)h+='<div style="font-size:10px;color:var(--amb);margin-bottom:4px">&#9675; Career sample: '+b.games+' games — rolling avg blended with season avg</div>';
+    if(b.avg<CAREER_AVG_FLOOR)h+='<div style="font-size:10px;color:var(--red);margin-bottom:4px">&#9888; Career avg '+b.avg+' below .220 floor — score penalized</div>';
+    if(b.games<ROOKIE_GAME_GATE)h+='<div style="font-size:10px;color:var(--amb);margin-bottom:4px">&#9675; Rookie ('+b.games+' games) — multi-path props capped at B</div>';
   }
 
   // Pitcher K stats
@@ -1211,7 +1211,7 @@ function pickCard(p){
   h+='</div>';return h;
 }
 
-// ‚îÄ‚îÄ RENDER TOTALS ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+// ── RENDER TOTALS ─────────────────────────────────────────────────────────────
 function renderTotals(){
   if(!D)return;
   var h='<div style="font-size:11px;color:var(--mut);margin-bottom:8px">Game over/under from DraftKings</div>';
@@ -1226,7 +1226,7 @@ function renderTotals(){
   document.getElementById('pg-totals').innerHTML=h;
 }
 
-// ‚îÄ‚îÄ P&L ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+// ── P&L ───────────────────────────────────────────────────────────────────────
 function updPnLHdr(){var tot=BETS.reduce(function(a,b){return a+(b.profit||0);},0);var el=document.getElementById('pnl-hdr');el.textContent=(tot>=0?'+$':'-$')+Math.abs(tot).toFixed(2);el.style.color=tot>=0?'var(--grn)':'var(--red)';}
 function renderPnL(){
   var today=new Date().toLocaleDateString();
@@ -1261,7 +1261,7 @@ function renderPnL(){
   document.getElementById('pg-pnl').innerHTML=h;updPnLHdr();
 }
 
-// ‚îÄ‚îÄ LOG ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+// ── LOG ───────────────────────────────────────────────────────────────────────
 var MKTS=['Over 1.5 H+R+RBI','Over 2.5 H+R+RBI','Over 0.5 Singles','Over 0.5 Hits','Over 1.5 Hits','Over 1.5 Total Bases','Over 2.5 Total Bases','Over 0.5 HR','Over 0.5 RBI','Over 1.5 RBI','Over 0.5 Runs Scored','Over 0.5 Stolen Bases','Over 0.5 Walks','Over 4.5 Strikeouts','Over 5.5 Strikeouts','Over 6.5 Strikeouts','Under 3.5 Strikeouts','Under 4.5 Strikeouts','Over Game Total','Under Game Total','Other'];
 function renderLog(){
   var tabs='<div class="tabrow"><div class="tabb'+(LOG_MODE==='single'?' on':'')+'" onclick="setLogMode(\'single\')">Single</div><div class="tabb'+(LOG_MODE==='parlay'?' on':'')+'" onclick="setLogMode(\'parlay\')">Parlay</div></div>';
@@ -1283,7 +1283,7 @@ function renderParlay(){
   h+='<button class="btn-s" style="background:var(--rbg);color:var(--red);border-color:var(--red);margin-top:6px" onclick="clearLegs()">Clear All</button></div>';
   return h;
 }
-function logFromPick(cid){var d=window['_d'+cid];if(!d)return;LF.player=d.player;LF.market=d.market;LF.notes=d.game+' | '+d.time;LOG_MODE='single';nav('log');toast('Pre-filled ‚Äî set odds then save');}
+function logFromPick(cid){var d=window['_d'+cid];if(!d)return;LF.player=d.player;LF.market=d.market;LF.notes=d.game+' | '+d.time;LOG_MODE='single';nav('log');toast('Pre-filled — set odds then save');}
 function addLeg(cid){var d=window['_d'+cid];if(!d)return;LEGS.push({player:d.player,market:d.market});toast('Leg '+LEGS.length+' added');if(LOG_MODE==='parlay')renderLog();}
 function addManualLeg(){if(!ML_player.trim()){toast('Enter name');return;}LEGS.push({player:ML_player,market:ML_market});ML_player='';toast('Leg '+LEGS.length);renderLog();}
 function removeLeg(i){LEGS.splice(i,1);renderLog();}
@@ -1307,16 +1307,16 @@ function markResult(id,result){
   BETS[idx].result=result;BETS[idx].profit=calcProfit(BETS[idx].odds,BETS[idx].stake,result);
   ss('bets',BETS);toast(result==='WIN'?'&#9989; WIN!':'&#10060; Loss');renderPnL();
 }
-// ‚îÄ‚îÄ COPY ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+// ── COPY ─────────────────────────────────────────────────────────────────────
 function copyPicks(){
   if(!D){toast('No data');return;}
   var premium=D.picks.filter(function(p){return p.grade==='A';});
   var watch=D.picks.filter(function(p){return p.grade==='B'||p.grade==='W';});
   var wins=BETS.filter(function(b){return b.result==='WIN';}).length;
   var tot=BETS.filter(function(b){return b.result!=='PENDING';}).length;
-  var txt='HITTERS EDGE v9 ‚Äî '+D.date+'\nRecord: '+wins+'W/'+(tot-wins)+'L'+(tot?' ('+Math.round(wins/tot*100)+'%)':'')+'\n';
+  var txt='HITTERS EDGE v9 — '+D.date+'\nRecord: '+wins+'W/'+(tot-wins)+'L'+(tot?' ('+Math.round(wins/tot*100)+'%)':'')+'\n';
   txt+='Model: Split scoring by prop type | Rolling 10-game stats | Ace filter | 5-pick cap\n';
-  if(D.aceNotes&&D.aceNotes.length){txt+='\nACE FILTERS:\n';D.aceNotes.forEach(function(n){txt+='  '+n.team+' vs '+n.pitcher+' ('+n.era+' ERA) ‚Äî skipped\n';});}
+  if(D.aceNotes&&D.aceNotes.length){txt+='\nACE FILTERS:\n';D.aceNotes.forEach(function(n){txt+='  '+n.team+' vs '+n.pitcher+' ('+n.era+' ERA) — skipped\n';});}
   txt+='\n=== PREMIUM CARD (real money, all cleared filters) ===\n';
   if(!premium.length)txt+='None today\n';
   premium.forEach(function(p){
@@ -1328,16 +1328,16 @@ function copyPicks(){
     if(p.conflictFlag)txt+='  *** CONFLICT: same game has pitcher K over ***\n';
   });
   txt+='\n=== WATCH LIST (bonus bets only) ===\n';
-  watch.slice(0,5).forEach(function(p){txt+=p.name+' ‚Äî '+p.propLabel+' '+fmtOdds(p.recOdds)+' ('+p.score+')\n';});
+  watch.slice(0,5).forEach(function(p){txt+=p.name+' — '+p.propLabel+' '+fmtOdds(p.recOdds)+' ('+p.score+')\n';});
   txt+='\n=== GAME TOTALS ===\n';
   D.totals.filter(function(t){return t.isUpcoming;}).forEach(function(t){txt+=t.game+' Line:'+t.line+' O:'+fmtOdds(t.overOdds)+' U:'+fmtOdds(t.underOdds)+'\n';});
-  txt+='\nANALYZE:\n1. Best pick + tier breakdown\n2. Best 2-3 leg parlay from premium card\n3. Any picks to avoid\n4. Conflict flags ‚Äî should any be skipped?\n';
+  txt+='\nANALYZE:\n1. Best pick + tier breakdown\n2. Best 2-3 leg parlay from premium card\n3. Any picks to avoid\n4. Conflict flags — should any be skipped?\n';
   txt+='\nRULES: Premium only for real money $25. Watch=bonus. -140 or better. No aces. No doubles. 7.5+ K lines excluded.';
   copyText(txt,'copy-ok');
 }
 function copyParlay(){
   var txt='PARLAY ANALYSIS\n\n';
-  LEGS.forEach(function(l,i){txt+=(i+1)+'. '+l.player+' ‚Äî '+l.market+'\n';if(D){var m=D.picks.find(function(p){return p.name.toLowerCase().indexOf(l.player.toLowerCase())>-1;});if(m)txt+='   Score:'+m.score+' Odds:'+fmtOdds(m.recOdds)+(m.bStats?' 10G:'+m.bStats.roll10avg:'')+'\n';}});
+  LEGS.forEach(function(l,i){txt+=(i+1)+'. '+l.player+' — '+l.market+'\n';if(D){var m=D.picks.find(function(p){return p.name.toLowerCase().indexOf(l.player.toLowerCase())>-1;});if(m)txt+='   Score:'+m.score+' Odds:'+fmtOdds(m.recOdds)+(m.bStats?' 10G:'+m.bStats.roll10avg:'')+'\n';}});
   txt+='\n1. Grade each leg\n2. Any structural conflicts?\n3. Weakest leg to cut\n4. Singles vs parlay?';
   copyText(txt,'parlay-ok');
 }
@@ -1345,7 +1345,7 @@ function copyText(txt,okId){
   navigator.clipboard.writeText(txt).then(function(){showOk(okId);toast('&#10003; Copied!');}).catch(function(){var ta=document.createElement('textarea');ta.value=txt;ta.style.cssText='position:fixed;opacity:0;top:0;left:0';document.body.appendChild(ta);ta.select();try{document.execCommand('copy');showOk(okId);toast('&#10003; Copied!');}catch(e){toast('Copy failed');}document.body.removeChild(ta);});
 }
 function showOk(id){var el=document.getElementById(id);if(el){el.style.display='block';setTimeout(function(){el.style.display='none';},5000);}}
-// ‚îÄ‚îÄ AUTO REFRESH ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+// ── AUTO REFRESH ──────────────────────────────────────────────────────────────
 function startAR(){
   if(REFRESH_T)return;
   NEXT_R=Date.now()+60*60*1000;
