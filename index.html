@@ -469,11 +469,11 @@ function applyFilters(pick){
   // 1b. Career floor filters — hitter props only, NOT pitcher props
   if(b&&isHitterProp){
 
-    // Hard exclude — career avg below .220 AND under 30 games
-    // Only excludes players with both a terrible avg AND almost no sample
-    if(b.avg<CAREER_AVG_FLOOR&&b.games<30){
-      return{pass:false,reason:'Career excluded: avg '+b.avg+' / '+b.games+' games'};
+    // Hard exclude: season avg below .180 — too far below league minimum
+    if(b.avg<0.180){
+      return{pass:false,reason:'Excluded: season avg '+b.avg+' below .180 floor'};
     }
+
 
     // FIX 1 & 2: H/G floor — only for hitter props, correct operator
     // Players with H/G below 1.0 → Watch List max
@@ -754,15 +754,31 @@ async function loadAll(){
     return b.score-a.score;
   });
 
-  // Apply 5-pick A-grade cap (spec)
-  var aCount=0;
+  // BUG 1: Same-game cap — max 2 premium picks per game
+  var gameCount={};
   picks.forEach(function(p){
     if(p.grade==='A'){
-      aCount++;
-      if(aCount>MAX_A_PICKS){
-        p.grade='W'; // Watch list — overflow
+      if(!gameCount[p.game])gameCount[p.game]=0;
+      gameCount[p.game]++;
+      if(gameCount[p.game]>2){
+        p.grade='W';
         p.isWatchList=true;
+        if(!p.filterNotes)p.filterNotes=[];
+        p.filterNotes.push('Same-game cap: max 2 per game');
       }
+    }
+  });
+
+  // BUG 3: 5-pick cap — sort by score DESCENDING before applying cap
+  // This ensures the highest-scored picks stay on premium, not insertion order
+  var aPicks=picks.filter(function(p){return p.grade==='A';});
+  aPicks.sort(function(a,b){return b.score-a.score;});
+  aPicks.forEach(function(p,i){
+    if(i>=MAX_A_PICKS){
+      p.grade='W';
+      p.isWatchList=true;
+      if(!p.filterNotes)p.filterNotes=[];
+      p.filterNotes.push('5-pick cap — Watch List');
     }
   });
 
