@@ -145,6 +145,7 @@ var K_LINE_MAX           = 7.0;   // 7.5+ K lines excluded from card
 var HRI_25_LINE          = 2.5;   // 2.5 H+R+RBI hard capped at B
 var CAREER_GAME_MIN      = 30;    // under 30 games = capped at Watch List
 var CAREER_AVG_FLOOR     = 0.220; // career avg below .220 = score penalty applied
+var MATCHUP_MAX_ADJ      = 14;    // max +/- points the opposing-pitcher matchup can move a hitter score
 
 // ── STATE ─────────────────────────────────────────────────────────────────────
 var D=null,BETS=[],LEGS=[],LOG_MODE='single',TOAST_T=null;
@@ -294,9 +295,10 @@ async function getBatterStats(name){
   var person=s&&s.people&&s.people[0];
   var pid=person&&person.id;
   if(!pid)return null;
-  var d=await apiFetch(MLB+'/people/'+pid+'?hydrate=stats(group=hitting,type=season,season='+SEASON+')&sportId=1');
+  var d=await apiFetch(MLB+'/people/'+pid+'?hydrate=stats(group=hitting,type=season,season='+SEASON+'),currentTeam&sportId=1');
   var splits=d&&d.people&&d.people[0]&&d.people[0].stats&&d.people[0].stats[0]&&d.people[0].stats[0].splits||[];
   if(!splits.length)return null;
+  var team=d&&d.people&&d.people[0]&&d.people[0].currentTeam&&d.people[0].currentTeam.name||'';
   var st=splits[0].stat;
   var g=Math.max(parseInt(st.gamesPlayed)||1,1);
   var hits=parseInt(st.hits)||0,hrs=parseInt(st.homeRuns)||0,tb=parseInt(st.totalBases)||0;
@@ -340,6 +342,7 @@ async function getBatterStats(name){
 
   return{
     playerId:pid,
+    team:team,
     games:g,
     avg,obp,slg,
     roll10avg:adjRoll10avg,
@@ -447,6 +450,49 @@ function scoreRBI(b){var s=0;if(b.rbipg>=0.80)s+=28;else if(b.rbipg>=0.60)s+=18;
 function scoreRuns(b){var s=0;if(b.runspg>=0.80)s+=28;else if(b.runspg>=0.60)s+=18;else if(b.runspg>=0.45)s+=9;if(b.obp>=0.380)s+=18;else if(b.obp>=0.350)s+=12;else if(b.obp>=0.320)s+=6;if(b.hotCold==='HOT')s+=8;else if(b.hotCold==='COLD')s-=10;return Math.max(0,Math.min(100,Math.round(s)));}
 function scoreSB(b){var s=0;if(b.sbpg>=0.25)s+=42;else if(b.sbpg>=0.15)s+=28;else if(b.sbpg>=0.08)s+=14;else if(b.sbpg>=0.04)s+=5;if(b.obp>=0.370)s+=12;else if(b.obp>=0.340)s+=7;if(b.hotCold==='HOT')s+=7;else if(b.hotCold==='COLD')s-=14;return Math.max(0,Math.min(100,Math.round(s)));}
 function scoreWlk(b){var s=0;if(b.bbRate>=0.15)s+=33;else if(b.bbRate>=0.12)s+=22;else if(b.bbRate>=0.09)s+=13;else if(b.bbRate>=0.06)s+=6;if(b.hotCold==='HOT')s+=5;else if(b.hotCold==='COLD')s-=7;return Math.max(0,Math.min(100,Math.round(s)));}
+
+// Opposing-pitcher matchup adjustment for hitter props.
+// Returns a score delta in [-MATCHUP_MAX_ADJ, +MATCHUP_MAX_ADJ]: positive = favorable
+// for the hitter (weak / hittable SP), negative = tough draw. Blends season ERA with
+// last-3-start ERA so a slumping or locked-in starter actually moves the number.
+function pitcherMatchupAdj(p, l3, key){
+  if(!p||!p.era)return{adj:0,tag:''};
+  var era=(l3&&l3.era>0)?Math.round((p.era*0.5+l3.era*0.5)*100)/100:p.era;
+  var whip=p.whip||0, k9=p.k9||0, bb9=p.bb9||0;
+
+  // Run-environment channel (ERA + WHIP) — helps every hitter prop
+  var env=0;
+  if(era>=5.50)env+=10;else if(era>=4.75)env+=7;else if(era>=4.20)env+=4;
+  else if(era>=3.60)env+=0;else if(era>=3.00)env-=5;else env-=9;
+  if(whip>=1.45)env+=6;else if(whip>=1.32)env+=3;else if(whip>=1.20)env+=0;
+  else if(whip>=1.10)env-=3;else env-=6;
+
+  // Strikeout-suppression channel — a high-K starter smothers contact props
+  var kSup=0;
+  if(k9>=10.5)kSup-=8;else if(k9>=9.3)kSup-=5;else if(k9>=8.3)kSup-=2;
+  else if(k9>=7.2)kSup+=2;else kSup+=5;
+
+  var adj=0;
+  if(key==='batter_singles'||key==='batter_hits'||key==='batter_total_bases'){
+    adj=env*0.8+kSup*1.0;                 // contact: K-rate matters most
+  }else if(key==='batter_hits_runs_rbis'||key==='batter_rbis'||key==='batter_runs_scored'){
+    adj=env*1.0+kSup*0.5;                 // run production: baserunners / run environment
+  }else if(key==='batter_home_runs'){
+    adj=env*0.9+kSup*0.2;                 // power: leans on hittability, K-rate less relevant
+  }else if(key==='batter_walks'){
+    var bbAdj=0;                          // walks: driven by the starter's own control
+    if(bb9>=4.2)bbAdj+=10;else if(bb9>=3.5)bbAdj+=6;else if(bb9>=2.8)bbAdj+=2;else if(bb9<=2.0)bbAdj-=5;
+    adj=bbAdj+env*0.3;
+  }else if(key==='batter_stolen_bases'){
+    adj=env*0.2;                          // steals are ~starter-independent in our data
+  }else{
+    adj=env*0.6+kSup*0.4;
+  }
+
+  adj=Math.max(-MATCHUP_MAX_ADJ,Math.min(MATCHUP_MAX_ADJ,Math.round(adj)));
+  var tag=adj>=6?'JUICY':adj>=2?'soft':adj<=-6?'TOUGH':adj<=-2?'firm':'even';
+  return{adj:adj,tag:tag};
+}
 
 // ── APPLY ALL FILTERS AND GRADE (spec) ────────────────────────────────────────
 function applyFilters(pick){
@@ -758,9 +804,6 @@ async function loadAll(){
       }
       var bStats=isPitcher?null:(batterCache[pName]||null);
 
-      // Ace filter for batters
-      if(!isPitcher&&bStats&&(ai2.homeIsAce||ai2.awayIsAce)) continue;
-
       // Get pitcher stats for K props
       var pitSt=null,pitL3=null;
       if(isPitcher){
@@ -768,14 +811,31 @@ async function loadAll(){
         else if(ai2.awayPitName===pName){pitSt=ai2.awayPitSt;pitL3=ai2.awayPitL3;}
       }
 
-      // Find lineup spot
+      // Resolve this batter's side + opposing probable pitcher.
+      // Team match (from MLB currentTeam) is primary so this works pre-lineup;
+      // lineup membership is the fallback and also gives the batting-order spot.
+      var oppPit=null,oppPitL3=null,oppPitName='',batSide='';
       var lineupSpot=null;
       var lineupConfirmed=ai2.lineupPosted||false;
-      if(ai2.lineupPosted&&bStats){
+      if(!isPitcher&&bStats){
         var awaySpot=(ai2.awayLineup||[]).find(function(p){return p.name===pName;});
         var homeSpot=(ai2.homeLineup||[]).find(function(p){return p.name===pName;});
+        if(bStats.team&&bStats.team===ai2.awayTeam)batSide='away';
+        else if(bStats.team&&bStats.team===ai2.homeTeam)batSide='home';
+        else if(awaySpot)batSide='away';
+        else if(homeSpot)batSide='home';
+        if(batSide==='away'){oppPit=ai2.homePitSt;oppPitL3=ai2.homePitL3;oppPitName=ai2.homePitName||'';}
+        else if(batSide==='home'){oppPit=ai2.awayPitSt;oppPitL3=ai2.awayPitL3;oppPitName=ai2.awayPitName||'';}
         if(awaySpot)lineupSpot=awaySpot.spot;
         else if(homeSpot)lineupSpot=homeSpot.spot;
+      }
+
+      // Ace filter for batters — skip ONLY if THIS batter's opposing SP is an ace
+      // (spec: the other team's batters in the same game stay eligible). If the
+      // batter's side can't be resolved, fall back to the conservative game-level rule.
+      if(!isPitcher&&bStats){
+        if(oppPit){ if(oppPit.isAce) continue; }
+        else if(ai2.homeIsAce||ai2.awayIsAce){ continue; }
       }
 
       mktKeys.forEach(function(k){
@@ -797,6 +857,15 @@ async function loadAll(){
         else if(k==='batter_walks')         score=scoreWlk(bStats||{});
         else return;
 
+        // Opposing-pitcher matchup adjustment — hitter props only, graded on a
+        // spectrum (the binary ace skip above only removes the extreme tail).
+        var mAdj=0,mTag='';
+        if(!isPitcher){
+          var mu=pitcherMatchupAdj(oppPit,oppPitL3,k);
+          mAdj=mu.adj;mTag=mu.tag;
+          score=Math.max(0,Math.min(100,score+mAdj));
+        }
+
         // Derive recommended side from score — score not affected by odds
         var recOdds=(k==='pitcher_strikeouts'&&score<55)?mkt.under:mkt.over;
         if(!recOdds||recOdds<MIN_ODDS)return;
@@ -817,11 +886,9 @@ async function loadAll(){
         var lmap={'batter_hits_runs_rbis':'H+R+RBI','batter_singles':'Singles','batter_hits':'Hits','batter_total_bases':'Total Bases','batter_home_runs':'HR','batter_rbis':'RBI','batter_runs_scored':'Runs Scored','batter_stolen_bases':'SB','batter_walks':'Walks','pitcher_strikeouts':'Strikeouts'};
         var propLabel=sideOver+' '+mkt.line+' '+(lmap[k]||k);
 
-        // Determine opposing pitcher for display and per-pitcher cap
-        var oppPitcher='';
-        if(!isPitcher&&ai2){
-          oppPitcher=ai2.homePitName||'';
-        }
+        // True opposing pitcher (this batter's side) — used for display and the
+        // per-team premium cap. Empty for pitcher K props.
+        var oppPitcher=isPitcher?'':oppPitName;
 
         rawPicks.push({
           name:pName,game:gameStr,time:fmtTime(og2.commence_time),
@@ -830,7 +897,10 @@ async function loadAll(){
           score,rawGrade,bStats,pitSt,pitL3,
           lineupSpot,lineupConfirmed,
           isPitcher,
-          pitcher:oppPitcher
+          pitcher:oppPitcher,
+          matchupAdj:isPitcher?0:mAdj, matchupTag:isPitcher?'':mTag,
+          oppPitName:oppPitcher,
+          oppERA:oppPit&&oppPit.era, oppWHIP:oppPit&&oppPit.whip, oppK9:oppPit&&oppPit.k9
         });
       });
     }
@@ -1091,6 +1161,13 @@ function pickCard(p){
     else
       h+=sg4(b.avg,'AVG','var(--tel)')+sg4(b.obp,'OBP','var(--blu)')+sg4(b.hpg,'H/G','var(--amb)')+sg4(b.bbRate,'Walk%','var(--mut)');
     h+='</div>';
+    // Opposing-pitcher matchup
+    if(p.oppPitName&&p.oppERA!=null){
+      var mc=p.matchupAdj>=2?'var(--grn)':p.matchupAdj<=-2?'var(--red)':'var(--mut)';
+      var ms=(p.matchupAdj>0?'+':'')+p.matchupAdj;
+      var mtag=p.matchupTag?' '+p.matchupTag.toUpperCase():'';
+      h+='<div style="font-size:10px;color:'+mc+';margin-bottom:4px">&#9918; vs '+p.oppPitName+' &middot; '+p.oppERA.toFixed(2)+' ERA, '+(p.oppWHIP!=null?p.oppWHIP.toFixed(2):'--')+' WHIP, '+(p.oppK9!=null?p.oppK9:'--')+' K/9 &middot; matchup '+ms+mtag+'</div>';
+    }
     // Warnings
     if(b.hotCold==='COLD'||b.hotCold==='Cooling')h+='<div style="font-size:10px;color:var(--red);margin-bottom:4px">&#129704; '+b.hotCold+' last 14 days</div>';
     if(b.bbRate>=0.09&&(p.mktKey==='batter_hits'||p.mktKey==='batter_total_bases'))h+='<div style="font-size:10px;color:var(--amb);margin-bottom:4px">&#9888; High walk rate hurts this prop</div>';
