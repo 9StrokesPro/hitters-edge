@@ -460,21 +460,44 @@ function applyFilters(pick){
     return{pass:false,reason:'K line 7.5+ excluded'};
   }
 
-  // 1b. Career floor: under 100 career games OR avg below .220
-  // Rolling window can show hot streaks but career context overrides
-  if(b&&k!=='pitcher_strikeouts'){
-    if(b.games<CAREER_GAME_MIN){
-      // Cap at Watch List — rolling window can't override thin career sample
+  // Define hitter prop types — H/G and career filters only apply to these
+  var hitterProps=['batter_singles','batter_hits','batter_hits_runs_rbis',
+    'batter_total_bases','batter_home_runs','batter_rbis',
+    'batter_runs_scored','batter_stolen_bases','batter_walks'];
+  var isHitterProp=hitterProps.indexOf(k)>-1;
+
+  // 1b. Career floor filters — hitter props only, NOT pitcher props
+  if(b&&isHitterProp){
+
+    // FIX 3: Hard exclude — career avg below .220 AND under 150 games
+    // Rolling window cannot override a career sample this severe
+    if(b.avg<CAREER_AVG_FLOOR&&b.games<150){
+      return{pass:false,reason:'Career excluded: avg '+b.avg+' / '+b.games+' games'};
+    }
+
+    // FIX 1 & 2: H/G floor — only for hitter props, correct operator
+    // Players with H/G below 1.0 → Watch List max
+    // Only applies to hitter props (NOT pitcher Ks)
+    if(b.hpg<1.0){
       if(grade==='A'){
         grade='B';
-        filters.push('Career floor: only '+b.games+' games — Watch List max');
+        filters.push('H/G '+b.hpg+' below 1.0 floor — Watch List');
       }
     }
-    if(b.avg<CAREER_AVG_FLOOR){
-      // Below .220 career avg = score penalty + B cap
+
+    // Career game minimum: under 100 games → Watch List max
+    if(b.games<CAREER_GAME_MIN){
       if(grade==='A'){
         grade='B';
-        filters.push('Career avg '+b.avg+' below .220 floor — Watch List max');
+        filters.push('Career floor: '+b.games+' games — Watch List max');
+      }
+    }
+
+    // Career avg floor: below .220 → Watch List max (soft penalty)
+    if(b.avg<CAREER_AVG_FLOOR){
+      if(grade==='A'){
+        grade='B';
+        filters.push('Career avg '+b.avg+' below .220 — Watch List max');
       }
     }
   }
