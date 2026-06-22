@@ -526,6 +526,11 @@ function applyFilters(pick){
 }
 
 // ── PARLAY BUILDER ────────────────────────────────────────────────────────────
+function impliedProb(odds){
+  // Convert American odds to implied probability
+  if(odds<0)return Math.abs(odds)/(Math.abs(odds)+100);
+  return 100/(odds+100);
+}
 function americanToDecimal(odds){
   if(odds>0)return 1+(odds/100);
   return 1+(100/Math.abs(odds));
@@ -540,64 +545,79 @@ function parlayOdds(legs){
 }
 
 function buildBestParlays(picks){
-  // Use only premium picks (A-grade)
   var premium=picks.filter(function(p){return p.grade==='A';});
   if(premium.length<2)return null;
 
-  // Get top pick per game (highest score, prefer plus-money)
-  var byGame={};
-  premium.forEach(function(p){
-    if(!byGame[p.game]||p.score>byGame[p.game].score)byGame[p.game]=p;
+  // Rank every premium pick by implied probability descending
+  // Higher implied prob = more likely to hit = better parlay leg
+  var ranked=premium.map(function(p){
+    return{
+      name:p.name,
+      prop:p.propLabel,
+      odds:p.recOdds,
+      game:p.game,
+      team:p.pitcher||p.game, // use pitcher as team proxy
+      isPitcher:p.isPitcher,
+      prob:impliedProb(p.recOdds)
+    };
   });
-  var candidates=Object.values(byGame).sort(function(a,b){return b.score-a.score;});
+  ranked.sort(function(a,b){return b.prob-a.prob;});
 
-  // Build legs array with validation
-  function validPair(a,b){
-    // No same game
+  // Validation: no same game, no same team, no K over + hitter same game
+  function valid(a,b){
     if(a.game===b.game)return false;
-    // No same team
     if(a.team&&b.team&&a.team===b.team)return false;
-    // No K over paired with hitter from same game
-    if(a.isPitcher&&!b.isPitcher&&a.game===b.game)return false;
-    if(b.isPitcher&&!a.isPitcher&&a.game===b.game)return false;
     return true;
   }
 
-  // Build best 2-leg parlay
-  var best2=null,best2Odds=-9999;
-  for(var i=0;i<candidates.length;i++){
-    for(var j=i+1;j<candidates.length;j++){
-      if(!validPair(candidates[i],candidates[j]))continue;
-      var legs=[
-        {name:candidates[i].name,prop:candidates[i].propLabel,odds:candidates[i].recOdds,game:candidates[i].game},
-        {name:candidates[j].name,prop:candidates[j].propLabel,odds:candidates[j].recOdds,game:candidates[j].game}
-      ];
-      var combined=parlayOdds(legs);
-      // Prefer plus-money combinations
-      if(combined>best2Odds){best2Odds=combined;best2=legs;}
-    }
-  }
+  // Select top pick per game by implied probability
+  var byGame={};
+  ranked.forEach(function(p){
+    if(!byGame[p.game]||p.prob>byGame[p.game].prob)byGame[p.game]=p;
+  });
+  var candidates=Object.values(byGame).sort(function(a,b){return b.prob-a.prob;});
 
-  // Build best 3-leg parlay
-  var best3=null,best3Odds=-9999;
+  // Build best 2-leg: top 2 by implied prob from different games
+  var best2=null;
   for(var i=0;i<candidates.length;i++){
     for(var j=i+1;j<candidates.length;j++){
-      for(var kk=j+1;kk<candidates.length;kk++){
-        var a=candidates[i],b=candidates[j],c=candidates[kk];
-        if(!validPair(a,b)||!validPair(b,c)||!validPair(a,c))continue;
-        var legs=[
-          {name:a.name,prop:a.propLabel,odds:a.recOdds,game:a.game},
-          {name:b.name,prop:b.propLabel,odds:b.recOdds,game:b.game},
-          {name:c.name,prop:c.propLabel,odds:c.recOdds,game:c.game}
-        ];
-        var combined=parlayOdds(legs);
-        if(combined>best3Odds){best3Odds=combined;best3=legs;}
+      if(!valid(candidates[i],candidates[j]))continue;
+      if(!best2){
+        best2=[candidates[i],candidates[j]];
       }
+      break; // already sorted by prob so first valid pair is best
     }
+    if(best2)break;
   }
 
-  return{two:best2?{legs:best2,odds:best2Odds}:null,
-         three:best3?{legs:best3,odds:best3Odds}:null};
+  // Build best 3-leg: top 3 by implied prob from different games
+  var best3=null;
+  for(var i=0;i<candidates.length;i++){
+    for(var j=i+1;j<candidates.length;j++){
+      if(!valid(candidates[i],candidates[j]))continue;
+      for(var k=j+1;k<candidates.length;k++){
+        if(!valid(candidates[i],candidates[k]))continue;
+        if(!valid(candidates[j],candidates[k]))continue;
+        if(!best3){
+          best3=[candidates[i],candidates[j],candidates[k]];
+        }
+        break;
+      }
+      if(best3)break;
+    }
+    if(best3)break;
+  }
+
+  function makeParlay(legs){
+    if(!legs)return null;
+    var combined=parlayOdds(legs);
+    return{
+      legs:legs.map(function(l){return{name:l.name,prop:l.prop,odds:l.odds,game:l.game,prob:Math.round(l.prob*1000)/10};}),
+      odds:combined
+    };
+  }
+
+  return{two:makeParlay(best2),three:makeParlay(best3)};
 }
 
 // ── MAIN LOADER ───────────────────────────────────────────────────────────────
@@ -983,10 +1003,11 @@ function renderPicks(){
       h+='<div style="font-size:12px;font-weight:700;color:var(--txt)">2-Leg Parlay</div>';
       h+='<div style="font-size:16px;font-weight:700;color:'+col+'">'+fmtOdds(t.odds)+'</div></div>';
       t.legs.forEach(function(l){
-        h+='<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-top:1px solid var(--bdr)">';
-        h+='<div><div style="font-size:12px;font-weight:600">'+l.name+'</div>';
+        h+='<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-top:1px solid var(--bdr)">';
+        h+='<div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:600">'+l.name+'</div>';
         h+='<div style="font-size:10px;color:var(--mut)">'+l.prop+' &middot; '+l.game+'</div></div>';
-        h+='<div style="font-size:13px;font-weight:700;color:'+(l.odds>0?'var(--grn)':'var(--txt)')+'">'+fmtOdds(l.odds)+'</div></div>';
+        h+='<div style="text-align:right;flex-shrink:0"><div style="font-size:13px;font-weight:700;color:'+(l.odds>0?'var(--grn)':'var(--txt)')+'">'+fmtOdds(l.odds)+'</div>';
+        h+='<div style="font-size:9px;color:var(--mut)">'+l.prob+'% prob</div></div></div>';
       });
       h+='</div>';
     }
@@ -999,10 +1020,11 @@ function renderPicks(){
       h+='<div style="font-size:12px;font-weight:700;color:var(--txt)">3-Leg Parlay</div>';
       h+='<div style="font-size:16px;font-weight:700;color:'+col3+'">'+fmtOdds(t3.odds)+'</div></div>';
       t3.legs.forEach(function(l){
-        h+='<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-top:1px solid var(--bdr)">';
-        h+='<div><div style="font-size:12px;font-weight:600">'+l.name+'</div>';
+        h+='<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-top:1px solid var(--bdr)">';
+        h+='<div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:600">'+l.name+'</div>';
         h+='<div style="font-size:10px;color:var(--mut)">'+l.prop+' &middot; '+l.game+'</div></div>';
-        h+='<div style="font-size:13px;font-weight:700;color:'+(l.odds>0?'var(--grn)':'var(--txt)')+'">'+fmtOdds(l.odds)+'</div></div>';
+        h+='<div style="text-align:right;flex-shrink:0"><div style="font-size:13px;font-weight:700;color:'+(l.odds>0?'var(--grn)':'var(--txt)')+'">'+fmtOdds(l.odds)+'</div>';
+        h+='<div style="font-size:9px;color:var(--mut)">'+l.prob+'% prob</div></div></div>';
       });
       h+='</div>';
     }
