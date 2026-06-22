@@ -469,9 +469,10 @@ function applyFilters(pick){
   // 1b. Career floor filters — hitter props only, NOT pitcher props
   if(b&&isHitterProp){
 
-    // Hard exclude: season avg below .180 — too far below league minimum
-    if(b.avg<0.180){
-      return{pass:false,reason:'Excluded: season avg '+b.avg+' below .180 floor'};
+    // Hard exclude: season avg below .200 — excluded from everything
+    // This catches career backup types like Jackson (.153) from ever appearing
+    if(b.avg<0.200){
+      return{pass:false,reason:'Excluded: avg '+b.avg+' below .200 minimum'};
     }
 
 
@@ -761,23 +762,24 @@ async function loadAll(){
         var mkt=mkts[k];
         if(!mkt)return;
 
-        // Odds gate first
-        var recOdds=(k==='pitcher_strikeouts'&&scorePitcherK(pitSt,pitL3,mkt.line)<55)?mkt.under:mkt.over;
-        if(!recOdds||recOdds<MIN_ODDS)return;
-
-        // Score using prop-specific model
+        // FIX 3: Score FIRST using pure stats — no odds involved
+        // recOdds derived from score after, not before
         var score=0;
-        if(k==='batter_singles')           score=scoreSingles(bStats||{},park);
-        else if(k==='pitcher_strikeouts')  score=scorePitcherK(pitSt,pitL3,mkt.line);
+        if(k==='batter_singles')            score=scoreSingles(bStats||{},park);
+        else if(k==='pitcher_strikeouts')   score=scorePitcherK(pitSt,pitL3,mkt.line);
         else if(k==='batter_hits_runs_rbis')score=scoreHRI(bStats||{},lineupSpot,park,mkt.line);
-        else if(k==='batter_hits')         score=scoreHits(bStats||{},park);
-        else if(k==='batter_total_bases')  score=scoreTB(bStats||{},park);
-        else if(k==='batter_home_runs')    score=scoreHR(bStats||{},park);
-        else if(k==='batter_rbis')         score=scoreRBI(bStats||{});
-        else if(k==='batter_runs_scored')  score=scoreRuns(bStats||{});
-        else if(k==='batter_stolen_bases') score=scoreSB(bStats||{});
-        else if(k==='batter_walks')        score=scoreWlk(bStats||{});
+        else if(k==='batter_hits')          score=scoreHits(bStats||{},park);
+        else if(k==='batter_total_bases')   score=scoreTB(bStats||{},park);
+        else if(k==='batter_home_runs')     score=scoreHR(bStats||{},park);
+        else if(k==='batter_rbis')          score=scoreRBI(bStats||{});
+        else if(k==='batter_runs_scored')   score=scoreRuns(bStats||{});
+        else if(k==='batter_stolen_bases')  score=scoreSB(bStats||{});
+        else if(k==='batter_walks')         score=scoreWlk(bStats||{});
         else return;
+
+        // Derive recommended side from score — score not affected by odds
+        var recOdds=(k==='pitcher_strikeouts'&&score<55)?mkt.under:mkt.over;
+        if(!recOdds||recOdds<MIN_ODDS)return;
 
         if(score<40)return;
 
@@ -836,21 +838,28 @@ async function loadAll(){
     return b.score-a.score;
   });
 
-  // Per-pitcher cap: max 2 premium picks facing the same pitcher
-  // Singles bets are independent but too many vs same pitcher = concentration risk
-  // pitcher key = game + pitcher name (stored on pick as pick.game)
-  var pitcherCount={};
+  // Same-team filter: max 1 premium pick per team per game
+  // When 2+ picks from same team qualify, keep highest score only
+  // Group by team+game, sort by score, push lower ones to Watch List
+  var teamGameGroups={};
   picks.forEach(function(p){
-    if(p.grade==='A'&&!p.isPitcher){
-      var pitKey=p.game+(p.pitcher||'');
-      if(!pitcherCount[pitKey])pitcherCount[pitKey]=0;
-      pitcherCount[pitKey]++;
-      if(pitcherCount[pitKey]>2){
-        p.grade='W';
-        p.isWatchList=true;
-        if(!p.filterNotes)p.filterNotes=[];
-        p.filterNotes.push('Per-pitcher cap: max 2 vs same starter');
-      }
+    if(p.grade==='A'&&!p.isPitcher&&p.bStats){
+      // Determine team from game string and pitcher
+      // Use pitcher as proxy for team grouping — same pitcher = same opposing team
+      var teamKey=p.game+'|'+(p.pitcher||'unknown');
+      if(!teamGameGroups[teamKey])teamGameGroups[teamKey]=[];
+      teamGameGroups[teamKey].push(p);
+    }
+  });
+  Object.values(teamGameGroups).forEach(function(group){
+    if(group.length<=1)return;
+    // Sort by score descending — keep top 1, push rest to Watch List
+    group.sort(function(a,b){return b.score-a.score;});
+    for(var gi=1;gi<group.length;gi++){
+      group[gi].grade='W';
+      group[gi].isWatchList=true;
+      if(!group[gi].filterNotes)group[gi].filterNotes=[];
+      group[gi].filterNotes.push('Same-team filter: kept '+group[0].name+' ('+group[0].score+') over this pick');
     }
   });
 
@@ -858,7 +867,7 @@ async function loadAll(){
   // All picks that clear every filter go on the premium card
 
   // Three tiers for display:
-  // Premium: A-grade (max 5)
+  // Premium: all A-grade picks that cleared every filter
   // Watch:   B-grade + overflow A (bonus bets only)
   // (Research tier is internal — not shown)
 
@@ -906,8 +915,8 @@ function renderPicks(){
   h+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">';
   h+='<div><div style="font-size:13px;font-weight:700;color:var(--grn)">&#9733; Premium Card — Real Money</div>';
   h+='<div style="font-size:11px;color:var(--mut);margin-top:2px">$25 max &middot; -140 or better &middot; confirm lineup</div>';
-  h+='<div style="font-size:11px;color:var(--mut)">Max '+MAX_A_PICKS+' picks/day &middot; A-Grade only</div></div>';
-  h+='<div style="text-align:right"><div style="font-size:22px;font-weight:700;color:var(--grn)">'+premium.length+'</div><div style="font-size:9px;color:var(--mut)">of '+MAX_A_PICKS+' max</div></div></div>';
+  h+='<div style="font-size:11px;color:var(--mut)">All-filter Premium Card &middot; A-Grade only</div></div>';
+  h+='<div style="text-align:right"><div style="font-size:22px;font-weight:700;color:var(--grn)">'+premium.length+'</div><div style="font-size:9px;color:var(--mut)">today</div></div></div>';
   // Prop type breakdown
   h+='<div class="ptype-row">';
   var t1=premium.filter(function(p){return SECTIONS.find(function(s){return s.key===p.mktKey&&s.tier===1;});}).length;
@@ -1188,7 +1197,7 @@ function copyPicks(){
   var txt='HITTERS EDGE v9 — '+D.date+'\nRecord: '+wins+'W/'+(tot-wins)+'L'+(tot?' ('+Math.round(wins/tot*100)+'%)':'')+'\n';
   txt+='Model: Split scoring by prop type | Rolling 10-game stats | Ace filter | 5-pick cap\n';
   if(D.aceNotes&&D.aceNotes.length){txt+='\nACE FILTERS:\n';D.aceNotes.forEach(function(n){txt+='  '+n.team+' vs '+n.pitcher+' ('+n.era+' ERA) — skipped\n';});}
-  txt+='\n=== PREMIUM CARD (real money, max '+MAX_A_PICKS+') ===\n';
+  txt+='\n=== PREMIUM CARD (real money, all cleared filters) ===\n';
   if(!premium.length)txt+='None today\n';
   premium.forEach(function(p){
     txt+='\n'+p.name+(p.lineupConfirmed?' [CONFIRMED':'[PROJECTED')+(p.lineupSpot?' #'+p.lineupSpot:'')+']'+'\n';
