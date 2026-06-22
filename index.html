@@ -194,8 +194,7 @@ function slp(ms){return new Promise(function(r){setTimeout(r,ms);});}
 function fmtTime(iso){if(!iso)return'TBD';try{return new Date(iso).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York',hour12:true})+' ET';}catch(e){return'TBD';}}
 function fmtOdds(o){if(o===null||o===undefined)return'--';return o>0?'+'+o:String(o);}
 function hotBadge(hc,games){
-  // Spec: HOT only counts for 100+ MLB games
-  if(!games||games<100)return'';
+  // Hot/cold = last 7 days vs season avg — no game count gate
   if(!hc||hc==='Neutral')return'';
   if(hc==='HOT')return' &#128293;&#128293;&#128293;';
   if(hc==='Warming')return' &#128293;&#128293;';
@@ -319,11 +318,12 @@ async function getBatterStats(name){
   var roll10obp=r10AB>0?Math.round((r10H+r10BB)/(r10AB+r10BB)*1000)/1000:obp;
 
   // Last 14 days for hot/cold
-  var cut=new Date();cut.setDate(cut.getDate()-14);
+  // Last 7 days for hot/cold — streaks come and go week to week
+  var cut=new Date();cut.setDate(cut.getDate()-7);
   var tH=0,tAB=0;
   for(var i=gls.length-1;i>=0;i--){if(new Date(gls[i].date)<cut)break;tH+=parseInt(gls[i].stat.hits)||0;tAB+=parseInt(gls[i].stat.atBats)||0;}
-  var l14=tAB>0?Math.round(tH/tAB*1000)/1000:0;
-  var diff=l14-avg;
+  var l7=tAB>0?Math.round(tH/tAB*1000)/1000:0;
+  var diff=tAB>=10?l7-avg:0; // need at least 10 ABs in window to call a streak
   var hotCold=diff>=0.050?'HOT':diff>=0.020?'Warming':diff<=-0.050?'COLD':diff<=-0.020?'Cooling':'Neutral';
 
   return{
@@ -362,7 +362,7 @@ function scoreSingles(b, park){
   // Park (not park-dependent but slight edge in hitter parks)
   if(park>=108)s+=5;else if(park<96)s-=3;
   // Hot/cold (only counts with 100+ games per spec)
-  if(b.games>=100){
+  if(b.hotCold){  // streak always counts
     if(b.hotCold==='HOT')s+=12;else if(b.hotCold==='Warming')s+=6;
     else if(b.hotCold==='COLD')s-=15;else if(b.hotCold==='Cooling')s-=7;
   }
@@ -406,7 +406,7 @@ function scoreHRI(b, spot, park, line){
   // 2.5 line is harder (spec says always B-grade — handled in filter)
   if(line>=2.5)s-=15;
   // Hot/cold (100+ games only)
-  if(b.games>=100){
+  if(b.hotCold){  // streak always counts
     if(b.hotCold==='HOT')s+=10;else if(b.hotCold==='Warming')s+=5;
     else if(b.hotCold==='COLD')s-=15;else if(b.hotCold==='Cooling')s-=8;
   }
@@ -425,19 +425,19 @@ function scoreHits(b, park){
   // Walk rate penalty (walks = 0 hits)
   if(b.bbRate>=0.12)s-=14;else if(b.bbRate>=0.09)s-=7;else if(b.bbRate>=0.06)s-=2;else if(b.bbRate<=0.03)s+=5;
   if(park>=108)s+=5;else if(park<96)s-=4;
-  if(b.games>=100){
+  if(b.hotCold){  // streak always counts
     if(b.hotCold==='HOT')s+=10;else if(b.hotCold==='Warming')s+=5;
     else if(b.hotCold==='COLD')s-=14;else if(b.hotCold==='Cooling')s-=7;
   }
   return Math.max(0,Math.min(100,Math.round(s)));
 }
 
-function scoreTB(b,park){var s=0;if(b.slg>=0.500)s+=22;else if(b.slg>=0.450)s+=15;else if(b.slg>=0.400)s+=8;if(b.tbpg>=1.8)s+=18;else if(b.tbpg>=1.5)s+=12;else if(b.tbpg>=1.2)s+=6;if(b.bbRate>=0.12)s-=16;else if(b.bbRate>=0.09)s-=8;else if(b.bbRate>=0.06)s-=3;else if(b.bbRate<=0.03)s+=5;if(park>=108)s+=10;else if(park>=104)s+=6;else if(park>=100)s+=2;else if(park<96)s-=8;if(b.games>=100){if(b.hotCold==='HOT')s+=8;else if(b.hotCold==='COLD')s-=10;}return Math.max(0,Math.min(100,Math.round(s)));}
-function scoreHR(b,park){var s=0;if(b.hrpg>=0.25)s+=32;else if(b.hrpg>=0.18)s+=22;else if(b.hrpg>=0.12)s+=13;else if(b.hrpg>=0.07)s+=5;if(b.slg>=0.500)s+=10;else if(b.slg>=0.450)s+=6;if(park>=112)s+=18;else if(park>=108)s+=12;else if(park>=104)s+=6;else if(park<96)s-=12;if(b.games>=100){if(b.hotCold==='HOT')s+=7;else if(b.hotCold==='COLD')s-=10;}return Math.max(0,Math.min(100,Math.round(s)));}
-function scoreRBI(b){var s=0;if(b.rbipg>=0.80)s+=28;else if(b.rbipg>=0.60)s+=18;else if(b.rbipg>=0.45)s+=9;if(b.slg>=0.500)s+=16;else if(b.slg>=0.450)s+=10;if(b.avg>=0.300)s+=9;else if(b.avg>=0.270)s+=5;if(b.games>=100){if(b.hotCold==='HOT')s+=9;else if(b.hotCold==='COLD')s-=12;}return Math.max(0,Math.min(100,Math.round(s)));}
-function scoreRuns(b){var s=0;if(b.runspg>=0.80)s+=28;else if(b.runspg>=0.60)s+=18;else if(b.runspg>=0.45)s+=9;if(b.obp>=0.380)s+=18;else if(b.obp>=0.350)s+=12;else if(b.obp>=0.320)s+=6;if(b.games>=100){if(b.hotCold==='HOT')s+=8;else if(b.hotCold==='COLD')s-=10;}return Math.max(0,Math.min(100,Math.round(s)));}
-function scoreSB(b){var s=0;if(b.sbpg>=0.25)s+=42;else if(b.sbpg>=0.15)s+=28;else if(b.sbpg>=0.08)s+=14;else if(b.sbpg>=0.04)s+=5;if(b.obp>=0.370)s+=12;else if(b.obp>=0.340)s+=7;if(b.games>=100){if(b.hotCold==='HOT')s+=7;else if(b.hotCold==='COLD')s-=14;}return Math.max(0,Math.min(100,Math.round(s)));}
-function scoreWlk(b){var s=0;if(b.bbRate>=0.15)s+=33;else if(b.bbRate>=0.12)s+=22;else if(b.bbRate>=0.09)s+=13;else if(b.bbRate>=0.06)s+=6;if(b.games>=100){if(b.hotCold==='HOT')s+=5;else if(b.hotCold==='COLD')s-=7;}return Math.max(0,Math.min(100,Math.round(s)));}
+function scoreTB(b,park){var s=0;if(b.slg>=0.500)s+=22;else if(b.slg>=0.450)s+=15;else if(b.slg>=0.400)s+=8;if(b.tbpg>=1.8)s+=18;else if(b.tbpg>=1.5)s+=12;else if(b.tbpg>=1.2)s+=6;if(b.bbRate>=0.12)s-=16;else if(b.bbRate>=0.09)s-=8;else if(b.bbRate>=0.06)s-=3;else if(b.bbRate<=0.03)s+=5;if(park>=108)s+=10;else if(park>=104)s+=6;else if(park>=100)s+=2;else if(park<96)s-=8;if(b.hotCold){  // streak always countsif(b.hotCold==='HOT')s+=8;else if(b.hotCold==='COLD')s-=10;}return Math.max(0,Math.min(100,Math.round(s)));}
+function scoreHR(b,park){var s=0;if(b.hrpg>=0.25)s+=32;else if(b.hrpg>=0.18)s+=22;else if(b.hrpg>=0.12)s+=13;else if(b.hrpg>=0.07)s+=5;if(b.slg>=0.500)s+=10;else if(b.slg>=0.450)s+=6;if(park>=112)s+=18;else if(park>=108)s+=12;else if(park>=104)s+=6;else if(park<96)s-=12;if(b.hotCold){  // streak always countsif(b.hotCold==='HOT')s+=7;else if(b.hotCold==='COLD')s-=10;}return Math.max(0,Math.min(100,Math.round(s)));}
+function scoreRBI(b){var s=0;if(b.rbipg>=0.80)s+=28;else if(b.rbipg>=0.60)s+=18;else if(b.rbipg>=0.45)s+=9;if(b.slg>=0.500)s+=16;else if(b.slg>=0.450)s+=10;if(b.avg>=0.300)s+=9;else if(b.avg>=0.270)s+=5;if(b.hotCold){  // streak always countsif(b.hotCold==='HOT')s+=9;else if(b.hotCold==='COLD')s-=12;}return Math.max(0,Math.min(100,Math.round(s)));}
+function scoreRuns(b){var s=0;if(b.runspg>=0.80)s+=28;else if(b.runspg>=0.60)s+=18;else if(b.runspg>=0.45)s+=9;if(b.obp>=0.380)s+=18;else if(b.obp>=0.350)s+=12;else if(b.obp>=0.320)s+=6;if(b.hotCold){  // streak always countsif(b.hotCold==='HOT')s+=8;else if(b.hotCold==='COLD')s-=10;}return Math.max(0,Math.min(100,Math.round(s)));}
+function scoreSB(b){var s=0;if(b.sbpg>=0.25)s+=42;else if(b.sbpg>=0.15)s+=28;else if(b.sbpg>=0.08)s+=14;else if(b.sbpg>=0.04)s+=5;if(b.obp>=0.370)s+=12;else if(b.obp>=0.340)s+=7;if(b.hotCold){  // streak always countsif(b.hotCold==='HOT')s+=7;else if(b.hotCold==='COLD')s-=14;}return Math.max(0,Math.min(100,Math.round(s)));}
+function scoreWlk(b){var s=0;if(b.bbRate>=0.15)s+=33;else if(b.bbRate>=0.12)s+=22;else if(b.bbRate>=0.09)s+=13;else if(b.bbRate>=0.06)s+=6;if(b.hotCold){  // streak always countsif(b.hotCold==='HOT')s+=5;else if(b.hotCold==='COLD')s-=7;}return Math.max(0,Math.min(100,Math.round(s)));}
 
 // ── APPLY ALL FILTERS AND GRADE (spec) ────────────────────────────────────────
 function applyFilters(pick){
@@ -883,7 +883,7 @@ function pickCard(p){
     // Warnings
     if(b.hotCold==='COLD'||b.hotCold==='Cooling')h+='<div style="font-size:10px;color:var(--red);margin-bottom:4px">&#129704; '+b.hotCold+' last 14 days</div>';
     if(b.bbRate>=0.09&&(p.mktKey==='batter_hits'||p.mktKey==='batter_total_bases'))h+='<div style="font-size:10px;color:var(--amb);margin-bottom:4px">&#9888; High walk rate hurts this prop</div>';
-    if(b.games<ROOKIE_GAME_GATE)h+='<div style="font-size:10px;color:var(--amb);margin-bottom:4px">&#9675; Rookie ('+b.games+' games) — use caution</div>';
+    if(b.games<ROOKIE_GAME_GATE)h+='<div style="font-size:10px;color:var(--amb);margin-bottom:4px">&#9675; Small sample ('+b.games+' games) — rookie caution</div>';
   }
 
   // Pitcher K stats
