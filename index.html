@@ -143,7 +143,7 @@ var MIN_ODDS             = -140;  // worst odds we accept
 var ROOKIE_GAME_GATE     = 50;    // under this = rookie restrictions
 var K_LINE_MAX           = 7.0;   // 7.5+ K lines excluded from card
 var HRI_25_LINE          = 2.5;   // 2.5 H+R+RBI hard capped at B
-var CAREER_GAME_MIN      = 100;   // under 100 career games = capped at Watch List
+var CAREER_GAME_MIN      = 30;    // under 30 games = capped at Watch List
 var CAREER_AVG_FLOOR     = 0.220; // career avg below .220 = score penalty applied
 
 // ── STATE ─────────────────────────────────────────────────────────────────────
@@ -469,9 +469,9 @@ function applyFilters(pick){
   // 1b. Career floor filters — hitter props only, NOT pitcher props
   if(b&&isHitterProp){
 
-    // FIX 3: Hard exclude — career avg below .220 AND under 150 games
-    // Rolling window cannot override a career sample this severe
-    if(b.avg<CAREER_AVG_FLOOR&&b.games<150){
+    // Hard exclude — career avg below .220 AND under 30 games
+    // Only excludes players with both a terrible avg AND almost no sample
+    if(b.avg<CAREER_AVG_FLOOR&&b.games<30){
       return{pass:false,reason:'Career excluded: avg '+b.avg+' / '+b.games+' games'};
     }
 
@@ -715,7 +715,7 @@ async function loadAll(){
         if(score<40)return;
 
         // Raw grade
-        var rawGrade=score>=68?'A':score>=52?'B':'C';
+        var rawGrade=score>=65?'A':score>=50?'B':'C';
         if(rawGrade==='C')return;
 
         // Track K picks for conflict check
