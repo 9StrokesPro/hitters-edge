@@ -143,6 +143,8 @@ var MIN_ODDS             = -140;  // worst odds we accept
 var ROOKIE_GAME_GATE     = 50;    // under this = rookie restrictions
 var K_LINE_MAX           = 7.0;   // 7.5+ K lines excluded from card
 var HRI_25_LINE          = 2.5;   // 2.5 H+R+RBI hard capped at B
+var CAREER_GAME_MIN      = 100;   // under 100 career games = capped at Watch List
+var CAREER_AVG_FLOOR     = 0.220; // career avg below .220 = score penalty applied
 
 // ── STATE ─────────────────────────────────────────────────────────────────────
 var D=null,BETS=[],LEGS=[],LOG_MODE='single',TOAST_T=null;
@@ -326,11 +328,24 @@ async function getBatterStats(name){
   var diff=tAB>=10?l7-avg:0; // need at least 10 ABs in window to call a streak
   var hotCold=diff>=0.050?'HOT':diff>=0.020?'Warming':diff<=-0.050?'COLD':diff<=-0.020?'Cooling':'Neutral';
 
+  // Career floor penalty applied to rolling avg if career context is weak
+  // Prevents rolling window from overriding thin career sample
+  var adjRoll10avg = roll10avg;
+  var adjRoll10obp = roll10obp;
+  if(g < CAREER_GAME_MIN || avg < CAREER_AVG_FLOOR){
+    // Blend rolling avg with career avg (60/40) to prevent pure hot-streak inflation
+    adjRoll10avg = Math.round((roll10avg*0.4 + avg*0.6)*1000)/1000;
+    adjRoll10obp = Math.round((roll10obp*0.4 + obp*0.6)*1000)/1000;
+  }
+
   return{
     playerId:pid,
     games:g,
     avg,obp,slg,
-    roll10avg,roll10obp,
+    roll10avg:adjRoll10avg,
+    roll10obp:adjRoll10obp,
+    rawRoll10avg:roll10avg,  // keep original for display
+    rawRoll10obp:roll10obp,
     hotCold,
     bbRate:Math.round(Math.max(obp-avg,0)*1000)/1000,
     hpg:Math.round(hits/g*100)/100,
@@ -449,6 +464,25 @@ function applyFilters(pick){
   // 2. K line max: 7.5+ excluded entirely per spec
   if(k==='pitcher_strikeouts'&&line>=7.5){
     return{pass:false,reason:'K line 7.5+ excluded'};
+  }
+
+  // 1b. Career floor: under 100 career games OR avg below .220
+  // Rolling window can show hot streaks but career context overrides
+  if(b&&k!=='pitcher_strikeouts'){
+    if(b.games<CAREER_GAME_MIN){
+      // Cap at Watch List — rolling window can't override thin career sample
+      if(grade==='A'){
+        grade='B';
+        filters.push('Career floor: only '+b.games+' games — Watch List max');
+      }
+    }
+    if(b.avg<CAREER_AVG_FLOOR){
+      // Below .220 career avg = score penalty + B cap
+      if(grade==='A'){
+        grade='B';
+        filters.push('Career avg '+b.avg+' below .220 floor — Watch List max');
+      }
+    }
   }
   // 3. Doubles excluded entirely
   if(k==='batter_doubles'){return{pass:false,reason:'Doubles excluded'};}
@@ -863,12 +897,14 @@ function pickCard(p){
   if(p.bStats){
     h+='<div class="pgrid">';
     var b=p.bStats;
-    if(p.mktKey==='batter_singles')
-      h+=sg4(b.roll10avg,'10G AVG','var(--grn)')+sg4(b.avg,'AVG','var(--tel)')+sg4(b.sngpg,'1B/G','var(--tel)')+sg4(b.hrpg,'HR/G','var(--mut)');
+    if(p.mktKey==='batter_singles'){
+      var r10label=b.games<CAREER_GAME_MIN||b.avg<CAREER_AVG_FLOOR?'10G ADJ':'10G AVG';
+      h+=sg4(b.rawRoll10avg||b.roll10avg,'10G RAW','var(--grn)')+sg4(b.avg,'AVG','var(--tel)')+sg4(b.sngpg,'1B/G','var(--tel)')+sg4(b.hrpg,'HR/G','var(--mut)');
+    }
     else if(p.mktKey==='batter_hits_runs_rbis')
-      h+=sg4(b.roll10obp,'10G OBP','var(--grn)')+sg4(b.obp,'OBP','var(--blu)')+sg4(b.runspg,'R/G','var(--grn)')+sg4(b.rbipg,'RBI/G','var(--red)');
+      h+=sg4(b.rawRoll10obp||b.roll10obp,'10G OBP','var(--grn)')+sg4(b.obp,'OBP','var(--blu)')+sg4(b.runspg,'R/G','var(--grn)')+sg4(b.rbipg,'RBI/G','var(--red)');
     else if(p.mktKey==='batter_hits')
-      h+=sg4(b.roll10avg,'10G AVG','var(--grn)')+sg4(b.avg,'AVG','var(--tel)')+sg4(b.hpg,'H/G','var(--amb)')+sg4(b.bbRate,'Walk%','var(--mut)');
+      h+=sg4(b.rawRoll10avg||b.roll10avg,'10G AVG','var(--grn)')+sg4(b.avg,'AVG','var(--tel)')+sg4(b.hpg,'H/G','var(--amb)')+sg4(b.bbRate,'Walk%','var(--mut)');
     else if(p.mktKey==='batter_total_bases')
       h+=sg4(b.slg,'SLG','var(--nvy)')+sg4(b.tbpg,'TB/G','var(--nvy)')+sg4(b.avg,'AVG','var(--tel)')+sg4(b.bbRate,'Walk%','var(--amb)');
     else if(p.mktKey==='batter_home_runs')
@@ -883,7 +919,9 @@ function pickCard(p){
     // Warnings
     if(b.hotCold==='COLD'||b.hotCold==='Cooling')h+='<div style="font-size:10px;color:var(--red);margin-bottom:4px">&#129704; '+b.hotCold+' last 14 days</div>';
     if(b.bbRate>=0.09&&(p.mktKey==='batter_hits'||p.mktKey==='batter_total_bases'))h+='<div style="font-size:10px;color:var(--amb);margin-bottom:4px">&#9888; High walk rate hurts this prop</div>';
-    if(b.games<ROOKIE_GAME_GATE)h+='<div style="font-size:10px;color:var(--amb);margin-bottom:4px">&#9675; Small sample ('+b.games+' games) — rookie caution</div>';
+    if(b.games<CAREER_GAME_MIN)h+='<div style="font-size:10px;color:var(--amb);margin-bottom:4px">&#9675; Career sample: '+b.games+' games — rolling avg blended with season avg</div>';
+    if(b.avg<CAREER_AVG_FLOOR)h+='<div style="font-size:10px;color:var(--red);margin-bottom:4px">&#9888; Career avg '+b.avg+' below .220 floor — score penalized</div>';
+    if(b.games<ROOKIE_GAME_GATE)h+='<div style="font-size:10px;color:var(--amb);margin-bottom:4px">&#9675; Rookie ('+b.games+' games) — multi-path props capped at B</div>';
   }
 
   // Pitcher K stats
