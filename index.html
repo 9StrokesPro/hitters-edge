@@ -897,10 +897,8 @@ function pickCard(p){
   if(p.bStats){
     h+='<div class="pgrid">';
     var b=p.bStats;
-    if(p.mktKey==='batter_singles'){
-      var r10label=b.games<CAREER_GAME_MIN||b.avg<CAREER_AVG_FLOOR?'10G ADJ':'10G AVG';
-      h+=sg4(b.rawRoll10avg||b.roll10avg,'10G RAW','var(--grn)')+sg4(b.avg,'AVG','var(--tel)')+sg4(b.sngpg,'1B/G','var(--tel)')+sg4(b.hrpg,'HR/G','var(--mut)');
-    }
+    if(p.mktKey==='batter_singles')
+      h+=sg4(b.rawRoll10avg||b.roll10avg,'10G AVG','var(--grn)')+sg4(b.avg,'AVG','var(--tel)')+sg4(b.sngpg,'1B/G','var(--tel)')+sg4(b.hrpg,'HR/G','var(--mut)');
     else if(p.mktKey==='batter_hits_runs_rbis')
       h+=sg4(b.rawRoll10obp||b.roll10obp,'10G OBP','var(--grn)')+sg4(b.obp,'OBP','var(--blu)')+sg4(b.runspg,'R/G','var(--grn)')+sg4(b.rbipg,'RBI/G','var(--red)');
     else if(p.mktKey==='batter_hits')
