@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-<title>Hitters Edge v9</title>
+<title>Hitters Edge v10</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -107,7 +107,7 @@ select.inp option{background:var(--sur2)}
 <body>
 <div class="hdr">
   <div>
-    <div class="logo">&#9918; Hitters Edge v9</div>
+    <div class="logo">&#9918; Hitters Edge v10</div>
     <div style="font-size:9px;color:var(--mut)" id="lu">Loading...</div>
     <div style="font-size:9px;color:var(--mut)" id="rtimer"></div>
   </div>
@@ -154,12 +154,15 @@ var PROP_MAX={
   pitcher_strikeouts:83, batter_home_runs:81, batter_total_bases:77,
   batter_rbis:76, batter_runs_scored:68, batter_stolen_bases:64, batter_walks:52
 };
+var TRACK_DAYS           = 30;    // rolling window for the paper-trading track record
+var MIN_VALUE_SAMPLE     = 10;    // settled bets in a score range before a model win% is shown (else "calibrating")
 
 // ── STATE ─────────────────────────────────────────────────────────────────────
 var D=null,BETS=[],LEGS=[],LOG_MODE='single',TOAST_T=null;
 var REFRESH_T=null,COUNTDOWN_T=null,NEXT_R=null;
 var SECT_OPEN={};
-var LF={player:'',market:'Over 0.5 Hits',odds:'-115',stake:'25',result:'PENDING',notes:''};
+var LF={player:'',market:'Over 0.5 Hits',odds:'-115',stake:'25',result:'PENDING',notes:'',score:null,mktKey:null};
+var CALIB=null; // score-bucket hit-rate table, rebuilt each render from settled bets
 var PF={odds:'',stake:'25',result:'PENDING'};
 var ML_player='',ML_market='Over 0.5 Hits';
 
@@ -215,6 +218,9 @@ function hotBadge(hc,games){
 }
 function calcProfit(odds,stake,result){if(result==='WIN')return odds>0?Math.round(stake*odds/100*100)/100:Math.round(stake*100/Math.abs(odds)*100)/100;if(result==='LOSS')return -stake;return 0;}
 function todayStr(){var n=new Date();return n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0')+'-'+String(n.getDate()).padStart(2,'0');}
+function ordinal(n){var s=['th','st','nd','rd'],v=n%100;return n+(s[(v-20)%10]||s[v]||s[0]);}
+// Estimated plate appearances tonight by batting-order spot (top of order sees more PA)
+function paEstimate(spot){if(!spot)return'';var m={1:'4-5',2:'4-5',3:'4',4:'4',5:'3-4',6:'3-4',7:'3-4',8:'3',9:'3'};return m[spot]||'3-4';}
 function toggleSection(key){
   SECT_OPEN[key]=!SECT_OPEN[key];
   var b=document.getElementById('sb-'+key),a=document.getElementById('sa-'+key);
@@ -579,6 +585,31 @@ function applyFilters(pick){
   return{pass:true,grade:grade,filters:filters};
 }
 
+// ── CALIBRATION / TRACK RECORD ────────────────────────────────────────────────
+// Map a displayed (normalized) score to a bucket. Because scores are normalized
+// to be comparable across props, one table works for every prop type.
+var CALIB_BUCKETS=['90-100','80-89','70-79','65-69','50-64'];
+function bucketOf(s){if(s>=90)return'90-100';if(s>=80)return'80-89';if(s>=70)return'70-79';if(s>=65)return'65-69';if(s>=50)return'50-64';return'<50';}
+// Empirical hit rate of settled single bets in the last TRACK_DAYS, by score bucket.
+// This IS the model's win probability — measured from real results, never assumed.
+function calibration(){
+  var cut=Date.now()-TRACK_DAYS*86400000;
+  var bk={};CALIB_BUCKETS.forEach(function(o){bk[o]={w:0,l:0,profit:0,staked:0};});
+  BETS.forEach(function(b){
+    if(!b.id||b.id<cut)return;                         // outside 30-day window
+    if(b.score==null)return;                           // manual/parlay bet w/o a model score
+    if(b.result!=='WIN'&&b.result!=='LOSS')return;     // unsettled
+    var o=bucketOf(b.score);if(!bk[o])return;
+    if(b.result==='WIN')bk[o].w++;else bk[o].l++;
+    bk[o].profit+=(b.profit||0);bk[o].staked+=(b.stake||0);
+  });
+  var out={};CALIB_BUCKETS.forEach(function(o){
+    var n=bk[o].w+bk[o].l;
+    out[o]={w:bk[o].w,l:bk[o].l,n:n,rate:n>0?bk[o].w/n:null,roi:bk[o].staked>0?bk[o].profit/bk[o].staked:null};
+  });
+  return out;
+}
+
 // ── PARLAY BUILDER ────────────────────────────────────────────────────────────
 function impliedProb(odds){
   // Convert American odds to implied probability
@@ -688,6 +719,7 @@ async function loadAll(){
   }
 
   var now=new Date();
+  var oddsAsOf=now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York',hour12:true})+' ET';
   var upcoming=[],live=[],finished=[];
   oddsGames.forEach(function(g){
     var ct=new Date(g.commence_time),el=now-ct;
@@ -707,6 +739,20 @@ async function loadAll(){
     var un=(tot.outcomes||[]).find(function(o){return o.name==='Under';});
     if(!ov||!un)return;
     totals.push({game:g.away_team+' @ '+g.home_team,time:fmtTime(g.commence_time),line:ov.point,overOdds:ov.price,underOdds:un.price,park:PARKS[g.home_team]||100,isUpcoming:new Date(g.commence_time)>now});
+  });
+
+  // Game total lookup (run-environment tag) — 'away @ home' -> total line
+  var totalMap={};
+  totals.forEach(function(t){totalMap[t.game]=t.line;});
+  // Moneyline lookup (pitcher exit-risk) — team name -> american price. h2h already fetched.
+  // Keyed on Odds API team names, same names used in og2.home_team/away_team below.
+  var mlMap={};
+  oddsGames.forEach(function(g){
+    var bk=(g.bookmakers||[]).find(function(b){return b.key==='draftkings';})||(g.bookmakers||[])[0];
+    if(!bk)return;
+    var h2h=(bk.markets||[]).find(function(m){return m.key==='h2h';});
+    if(!h2h)return;
+    (h2h.outcomes||[]).forEach(function(o){if(o.name&&o.price!=null)mlMap[o.name]=o.price;});
   });
 
   // Step 2: MLB schedule for pitchers + lineups
@@ -768,6 +814,9 @@ async function loadAll(){
   setP('Loading props...');
   var rawPicks=[];
   var batterCache={};
+  // Line-movement store: first odds this app saw today for each pick (per browser).
+  // The Odds API free tier has no true "opening line", so we anchor on first-seen.
+  var openLines=sg('open_'+todayStr(),{});
   // Track pitcher K games for conflict check
   var kPickGames={}; // game string -> true if K over exists
 
@@ -908,6 +957,19 @@ async function loadAll(){
         // per-team premium cap. Empty for pitcher K props.
         var oppPitcher=isPitcher?'':oppPitName;
 
+        // ── CONTEXT LAYERS (display only — no scoring impact) ──
+        // Line movement: remember the first odds we saw for THIS pick+side today.
+        var lkey=pName+'|'+k+'|'+mkt.line+'|'+sideOver;
+        if(openLines[lkey]==null)openLines[lkey]=recOdds;
+        var oddsOpen=openLines[lkey];
+        // Exit risk (K props): the starting pitcher's own team moneyline.
+        var pitTeam=null,pitML=null;
+        if(isPitcher){
+          if(ai2.homePitName===pName)pitTeam=og2.home_team;
+          else if(ai2.awayPitName===pName)pitTeam=og2.away_team;
+          if(pitTeam)pitML=mlMap[pitTeam];
+        }
+
         rawPicks.push({
           name:pName,game:gameStr,time:fmtTime(og2.commence_time),
           park,mktKey:k,propLabel,line:mkt.line,
@@ -918,12 +980,17 @@ async function loadAll(){
           pitcher:oppPitcher,
           matchupAdj:isPitcher?0:Math.round(mAdj/propMax*100), matchupTag:isPitcher?'':mTag,
           oppPitName:oppPitcher,
-          oppERA:oppPit&&oppPit.era, oppWHIP:oppPit&&oppPit.whip, oppK9:oppPit&&oppPit.k9
+          oppERA:oppPit&&oppPit.era, oppWHIP:oppPit&&oppPit.whip, oppK9:oppPit&&oppPit.k9,
+          oppL3era:(oppPitL3&&oppPitL3.era)||null,
+          gameTotal:(totalMap[gameStr]!=null?totalMap[gameStr]:null),
+          oddsOpen:oddsOpen, oddsMove:recOdds-oddsOpen,
+          pitTeam:pitTeam, pitML:(pitML!=null?pitML:null)
         });
       });
     }
     await slp(150);
   }
+  ss('open_'+todayStr(),openLines); // persist first-seen odds for line movement
 
   // Apply all spec filters
   var picks=[];
@@ -979,12 +1046,19 @@ async function loadAll(){
   // Watch:   B-grade + overflow A (bonus bets only)
   // (Research tier is internal — not shown)
 
+  // Same-game indicator: flag picks that share a game (parlay-construction guard)
+  var gameCounts={};
+  picks.forEach(function(p){gameCounts[p.game]=(gameCounts[p.game]||0)+1;});
+  picks.forEach(function(p){p.sameGame=gameCounts[p.game]>1;});
+
   // Build best parlays from premium card
   var bestParlays=buildBestParlays(picks);
 
   D={picks,totals,aceNotes,bestParlays,
     upcoming:upcoming.length,live:live.length,finished:finished.length,
     date:new Date().toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'}),
+    oddsAsOf:oddsAsOf,
+    generatedAt:new Date().toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York',hour12:true})+' ET',
     loadedAt:new Date().toLocaleTimeString()};
 
   var premCount=picks.filter(function(p){return p.grade==='A';}).length;
@@ -997,6 +1071,7 @@ async function loadAll(){
 // ── RENDER PICKS ──────────────────────────────────────────────────────────────
 function renderPicks(){
   if(!D)return;
+  CALIB=calibration(); // rebuild the score→hit-rate table from settled bets
   var premium=D.picks.filter(function(p){return p.grade==='A';});
   var watchlist=D.picks.filter(function(p){return p.grade==='B'||p.grade==='W';});
 
@@ -1008,6 +1083,11 @@ function renderPicks(){
   if(D.finished>0)h+='<span class="stpill st-fn">&#10003; '+D.finished+' final</span>';
   if(D.aceNotes&&D.aceNotes.length)h+='<span class="stpill st-ace">&#9940; '+D.aceNotes.length+' ace filtered</span>';
   h+='</div>';
+
+  // Card timestamp / odds-lock
+  if(D.generatedAt||D.oddsAsOf){
+    h+='<div style="font-size:10px;color:var(--mut);margin-bottom:8px">&#128197; Card generated '+(D.generatedAt||'--')+' &middot; odds current as of '+(D.oddsAsOf||'--')+' &middot; <span style="color:var(--amb)">bet early — lines move</span></div>';
+  }
 
   // Ace notes
   if(D.aceNotes&&D.aceNotes.length){
@@ -1132,7 +1212,7 @@ function sg4(v,l,c){return '<div class="pgrid-box"><div class="pgrid-val" style=
 
 function pickCard(p){
   var cid='c'+Math.random().toString(36).substr(2,8);
-  window['_d'+cid]={player:p.name,market:p.propLabel,game:p.game,time:p.time};
+  window['_d'+cid]={player:p.name,market:p.propLabel,game:p.game,time:p.time,score:(p.score!=null?p.score:null),mktKey:p.mktKey};
 
   var isA=p.grade==='A';
   var isW=p.grade==='W'; // Watch list overflow
@@ -1152,6 +1232,33 @@ function pickCard(p){
   // Score bar
   h+='<div class="sbar"><div class="sbar-fill" style="width:'+p.score+'%;background:'+col+'"></div></div>';
   h+='<div style="font-size:10px;color:'+col+';font-weight:700;margin-bottom:5px">Score: '+p.score+'/100'+(p.rawScore!=null?' <span style="color:var(--mut);font-weight:600">(raw model '+p.rawScore+'/'+(p.propMax||100)+')</span>':'')+'</div>';
+
+  // Line movement (first-seen odds -> current, for the recommended side)
+  if(p.oddsOpen!=null){
+    var mv=p.oddsMove||0;
+    var lmc=mv>0?'var(--grn)':mv<0?'var(--red)':'var(--mut)';
+    var lml=mv>0?'in your favor':mv<0?'against you — sharp money':'no move';
+    h+='<div style="font-size:10px;color:var(--mut);margin-bottom:4px">&#128201; Open '+fmtOdds(p.oddsOpen)+' &rarr; now '+fmtOdds(p.recOdds)+' <span style="color:'+lmc+';font-weight:700">('+(mv>0?'+':'')+mv+' &middot; '+lml+')</span></div>';
+  }
+
+  // Value indicator — book-implied % vs the model's REAL hit rate for this score range
+  if(p.recOdds!=null){
+    var bookP=impliedProb(p.recOdds);
+    var cbk=CALIB?CALIB[bucketOf(p.score)]:null;
+    var vrow='&#128202; Book '+(bookP*100).toFixed(1)+'%';
+    if(cbk&&cbk.n>=MIN_VALUE_SAMPLE&&cbk.rate!=null){
+      var gap=(cbk.rate-bookP)*100;
+      var vc=gap>=4?'var(--grn)':gap>=0?'var(--mut)':'var(--red)';
+      var vl=gap>=10?'STRONG VALUE &#9989;':gap>=4?'VALUE':gap>=0?'fair':'NEGATIVE &mdash; fade &#9888;';
+      vrow+=' &middot; Model '+(cbk.rate*100).toFixed(1)+'% &middot; <span style="color:'+vc+';font-weight:700">'+(gap>=0?'+':'')+gap.toFixed(1)+'% '+vl+'</span> <span style="color:var(--mut)">(n='+cbk.n+')</span>';
+    }else{
+      vrow+=' &middot; <span style="color:var(--mut)">Model calibrating ('+(cbk?cbk.n:0)+'/'+MIN_VALUE_SAMPLE+' settled in '+bucketOf(p.score)+' range)</span>';
+    }
+    h+='<div style="font-size:10px;color:var(--mut);margin-bottom:4px">'+vrow+'</div>';
+  }
+
+  // Same-game guard (do not parlay two picks from one game)
+  if(p.sameGame)h+='<div style="font-size:10px;color:var(--amb);margin-bottom:4px">&#128279; Same game as another pick &mdash; do NOT parlay these together</div>';
 
   // Conflict flag
   if(p.conflictFlag)h+='<div style="font-size:10px;color:var(--amb);margin-bottom:4px">&#9888; Same game has a pitcher K over — structurally opposed</div>';
@@ -1188,6 +1295,23 @@ function pickCard(p){
       var ms=(p.matchupAdj>0?'+':'')+p.matchupAdj;
       var mtag=p.matchupTag?' '+p.matchupTag.toUpperCase():'';
       h+='<div style="font-size:10px;color:'+mc+';margin-bottom:4px">&#9918; vs '+p.oppPitName+' &middot; '+p.oppERA.toFixed(2)+' ERA, '+(p.oppWHIP!=null?p.oppWHIP.toFixed(2):'--')+' WHIP, '+(p.oppK9!=null?p.oppK9:'--')+' K/9 &middot; matchup '+ms+mtag+'</div>';
+      // Opposing starter's recent form — last-3-start ERA vs season ERA
+      if(p.oppL3era!=null){
+        var tougher=p.oppL3era>p.oppERA+0.30, softer=p.oppL3era<p.oppERA-0.30;
+        var l3c=tougher?'var(--red)':softer?'var(--grn)':'var(--mut)';
+        h+='<div style="font-size:10px;color:'+l3c+';margin-bottom:4px">&nbsp;&nbsp;&#8627; Last-3 ERA '+p.oppL3era.toFixed(2)+(tougher?' &#9888; trending tougher':softer?' &#9989; softening':'')+'</div>';
+      }
+    }
+    // Game run-environment (from game total)
+    if(p.gameTotal!=null){
+      var hi=p.gameTotal>=9, lo=p.gameTotal<=7.5;
+      var gec=hi?'var(--grn)':lo?'var(--amb)':'var(--mut)';
+      var gel=hi?'high run environment &#9989;':lo?'low run environment &#9888;':'neutral run environment';
+      h+='<div style="font-size:10px;color:'+gec+';margin-bottom:4px">&#127919; Game total '+p.gameTotal+' &middot; '+gel+'</div>';
+    }
+    // Batting order + estimated plate appearances (floor context)
+    if(p.lineupSpot){
+      h+='<div style="font-size:10px;color:var(--mut);margin-bottom:4px">&#9876;&#65039; Batting '+ordinal(p.lineupSpot)+' &middot; est. '+paEstimate(p.lineupSpot)+' PA tonight</div>';
     }
     // Warnings
     if(b.hotCold==='COLD'||b.hotCold==='Cooling')h+='<div style="font-size:10px;color:var(--red);margin-bottom:4px">&#129704; '+b.hotCold+' last 14 days</div>';
@@ -1201,6 +1325,13 @@ function pickCard(p){
   if(p.pitSt){
     h+='<div class="pgrid">'+sg4(p.pitSt.era,'ERA','var(--red)')+sg4(p.pitSt.k9,'K/9','var(--blu)')+sg4(p.pitSt.avgK,'Season K/G','var(--grn)')+sg4(p.pitSt.gs,'GS','var(--mut)')+'</div>';
     if(p.pitL3)h+='<div style="font-size:11px;color:'+(p.pitL3.avgK>p.line?'var(--grn)':'var(--red)')+';margin-bottom:4px">Last 3 starts: '+p.pitL3.avgK+' K/start avg vs '+p.line+' line</div>';
+    // Exit risk — a trailing pitcher gets pulled regardless of K count
+    if(p.pitML!=null){
+      var fav=p.pitML<0;
+      var erisk=fav?(p.pitML<=-130?'LOW':'MODERATE'):'MODERATE';
+      var erc=fav?'var(--grn)':'var(--amb)';
+      h+='<div style="font-size:10px;color:'+erc+';margin-bottom:4px">&#9201;&#65039; Exit risk '+erisk+' &middot; '+p.pitTeam+' '+fmtOdds(p.pitML)+(fav?' favorite — likely goes deep':' underdog — monitor game score')+'</div>';
+    }
   }
 
   // Bet line + real odds
@@ -1237,6 +1368,31 @@ function renderPnL(){
   h+='<div class="pnlb"><div style="font-size:20px;font-weight:700;color:'+(st.total>=0?'var(--grn)':'var(--red)')+'">'+(st.total>=0?'+$':'-$')+Math.abs(st.total).toFixed(2)+'</div><div style="font-size:10px;color:var(--mut)">ALL TIME</div></div>';
   h+='<div class="pnlb"><div style="font-size:18px;font-weight:700">'+st.wins+'W / '+st.losses+'L</div><div style="font-size:10px;color:var(--mut)">RECORD</div></div>';
   h+='<div class="pnlb"><div style="font-size:18px;font-weight:700;color:'+(roi>=0?'var(--grn)':'var(--red)')+'">'+roi+'%</div><div style="font-size:10px;color:var(--mut)">ROI</div></div></div>';
+
+  // ── 30-DAY TRACK RECORD + SCORE CALIBRATION (powers the Value % on each pick) ──
+  var cal=calibration();
+  var cut30=Date.now()-TRACK_DAYS*86400000, t30={w:0,l:0,profit:0,staked:0};
+  BETS.forEach(function(b){if(!b.id||b.id<cut30)return;if(b.result!=='WIN'&&b.result!=='LOSS')return;if(b.result==='WIN')t30.w++;else t30.l++;t30.profit+=(b.profit||0);t30.staked+=(b.stake||0);});
+  var n30=t30.w+t30.l, roi30=t30.staked>0?Math.round(t30.profit/t30.staked*100):0, wr30=n30>0?Math.round(t30.w/n30*100):0;
+  h+='<div class="stl">'+TRACK_DAYS+'-Day Track Record</div>';
+  h+='<div class="pnlg" style="margin-bottom:6px">';
+  h+='<div class="pnlb"><div style="font-size:18px;font-weight:700;color:'+(t30.profit>=0?'var(--grn)':'var(--red)')+'">'+(t30.profit>=0?'+$':'-$')+Math.abs(t30.profit).toFixed(2)+'</div><div style="font-size:10px;color:var(--mut)">30D PROFIT</div></div>';
+  h+='<div class="pnlb"><div style="font-size:18px;font-weight:700">'+t30.w+'W / '+t30.l+'L</div><div style="font-size:10px;color:var(--mut)">'+wr30+'% HIT</div></div>';
+  h+='<div class="pnlb"><div style="font-size:18px;font-weight:700;color:'+(roi30>=0?'var(--grn)':'var(--red)')+'">'+roi30+'%</div><div style="font-size:10px;color:var(--mut)">30D ROI</div></div>';
+  h+='<div class="pnlb"><div style="font-size:18px;font-weight:700">'+n30+'</div><div style="font-size:10px;color:var(--mut)">SETTLED</div></div></div>';
+  h+='<div style="font-size:10px;color:var(--mut);margin-bottom:6px">Hit rate by displayed score &mdash; this is the model win% behind each pick\'s Value tag. A range stays &ldquo;calibrating&rdquo; until '+MIN_VALUE_SAMPLE+'+ settled bets land in it.</div>';
+  var anyCal=CALIB_BUCKETS.some(function(o){return cal[o].n>0;});
+  if(!anyCal)h+='<div class="empty" style="padding:12px;margin-bottom:12px">No settled scored bets in the last '+TRACK_DAYS+' days yet.<br>Log picks from the card (so the score is captured), then mark them Win/Loss to build calibration.</div>';
+  else{
+    CALIB_BUCKETS.forEach(function(o){var c=cal[o];if(c.n===0)return;
+      var ready=c.n>=MIN_VALUE_SAMPLE, rate=c.rate!=null?Math.round(c.rate*100):0;
+      var rc=ready?(c.rate>=0.5?'var(--grn)':'var(--amb)'):'var(--mut)';
+      h+='<div class="bet-row"><div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:700">Score '+o+'</div><div style="font-size:10px;color:var(--mut)">'+c.w+'W / '+c.l+'L'+(c.roi!=null?' &middot; ROI '+Math.round(c.roi*100)+'%':'')+'</div></div>';
+      h+='<div style="text-align:right;flex-shrink:0"><div style="font-size:16px;font-weight:700;color:'+rc+'">'+rate+'%</div><div style="font-size:9px;color:var(--mut)">'+(ready?'hit rate':'calibrating '+c.n+'/'+MIN_VALUE_SAMPLE)+'</div></div></div>';
+    });
+    h+='<div style="height:8px"></div>';
+  }
+
   if(!BETS.length)h+='<div class="empty">No bets logged yet.</div>';
   else{
     // P&L by prop type
@@ -1270,7 +1426,7 @@ function renderLog(){
 function setLogMode(m){LOG_MODE=m;renderLog();}
 function mktOpts(sel){return MKTS.map(function(m){return'<option'+(m===sel?' selected':'')+'>'+m+'</option>';}).join('');}
 function renderSingle(){
-  return'<div class="card"><label class="lbl">Player</label><input class="inp" value="'+LF.player+'" placeholder="e.g. Yordan Alvarez" oninput="LF.player=this.value"><label class="lbl">Market</label><select class="inp" onchange="LF.market=this.value">'+mktOpts(LF.market)+'</select><label class="lbl">Odds</label><input class="inp" type="number" value="'+LF.odds+'" placeholder="-115" oninput="LF.odds=this.value"><label class="lbl">Stake ($)</label><input class="inp" type="number" value="'+LF.stake+'" oninput="LF.stake=this.value"><label class="lbl">Result</label><select class="inp" onchange="LF.result=this.value"><option>PENDING</option><option>WIN</option><option>LOSS</option></select><label class="lbl">Notes</label><input class="inp" value="'+LF.notes+'" placeholder="matchup notes..." oninput="LF.notes=this.value"><button class="btn" onclick="submitBet()">Save Bet</button></div>';
+  return'<div class="card"><label class="lbl">Player</label><input class="inp" value="'+LF.player+'" placeholder="e.g. Yordan Alvarez" oninput="LF.player=this.value;LF.score=null;LF.mktKey=null;"><label class="lbl">Market</label><select class="inp" onchange="LF.market=this.value">'+mktOpts(LF.market)+'</select><label class="lbl">Odds</label><input class="inp" type="number" value="'+LF.odds+'" placeholder="-115" oninput="LF.odds=this.value"><label class="lbl">Stake ($)</label><input class="inp" type="number" value="'+LF.stake+'" oninput="LF.stake=this.value"><label class="lbl">Result</label><select class="inp" onchange="LF.result=this.value"><option>PENDING</option><option>WIN</option><option>LOSS</option></select><label class="lbl">Notes</label><input class="inp" value="'+LF.notes+'" placeholder="matchup notes..." oninput="LF.notes=this.value"><button class="btn" onclick="submitBet()">Save Bet</button></div>';
 }
 function renderParlay(){
   var h='<div class="card"><div style="font-size:12px;font-weight:700;color:var(--mut);margin-bottom:8px">LEGS ('+LEGS.length+')</div>';
@@ -1283,7 +1439,7 @@ function renderParlay(){
   h+='<button class="btn-s" style="background:var(--rbg);color:var(--red);border-color:var(--red);margin-top:6px" onclick="clearLegs()">Clear All</button></div>';
   return h;
 }
-function logFromPick(cid){var d=window['_d'+cid];if(!d)return;LF.player=d.player;LF.market=d.market;LF.notes=d.game+' | '+d.time;LOG_MODE='single';nav('log');toast('Pre-filled — set odds then save');}
+function logFromPick(cid){var d=window['_d'+cid];if(!d)return;LF.player=d.player;LF.market=d.market;LF.notes=d.game+' | '+d.time;LF.score=(d.score!=null?d.score:null);LF.mktKey=d.mktKey||null;LOG_MODE='single';nav('log');toast('Pre-filled — set odds then save');}
 function addLeg(cid){var d=window['_d'+cid];if(!d)return;LEGS.push({player:d.player,market:d.market});toast('Leg '+LEGS.length+' added');if(LOG_MODE==='parlay')renderLog();}
 function addManualLeg(){if(!ML_player.trim()){toast('Enter name');return;}LEGS.push({player:ML_player,market:ML_market});ML_player='';toast('Leg '+LEGS.length);renderLog();}
 function removeLeg(i){LEGS.splice(i,1);renderLog();}
@@ -1291,8 +1447,8 @@ function clearLegs(){LEGS=[];renderLog();toast('Cleared');}
 function submitBet(){
   if(!LF.player.trim()){toast('Enter player name');return;}
   var stake=parseFloat(LF.stake)||25,odds=parseInt(LF.odds)||(-115);
-  BETS.unshift({id:Date.now(),dateStr:new Date().toLocaleDateString(),player:LF.player,market:LF.market,odds,stake,result:LF.result,profit:calcProfit(odds,stake,LF.result),notes:LF.notes});
-  ss('bets',BETS);LF={player:'',market:'Over 0.5 Hits',odds:'-115',stake:'25',result:'PENDING',notes:''};
+  BETS.unshift({id:Date.now(),dateStr:new Date().toLocaleDateString(),player:LF.player,market:LF.market,odds,stake,result:LF.result,profit:calcProfit(odds,stake,LF.result),notes:LF.notes,score:(LF.score!=null?LF.score:null),mktKey:LF.mktKey||null});
+  ss('bets',BETS);LF={player:'',market:'Over 0.5 Hits',odds:'-115',stake:'25',result:'PENDING',notes:'',score:null,mktKey:null};
   toast('&#9989; Saved!');renderLog();renderPnL();
 }
 function submitParlay(){
@@ -1314,8 +1470,8 @@ function copyPicks(){
   var watch=D.picks.filter(function(p){return p.grade==='B'||p.grade==='W';});
   var wins=BETS.filter(function(b){return b.result==='WIN';}).length;
   var tot=BETS.filter(function(b){return b.result!=='PENDING';}).length;
-  var txt='HITTERS EDGE v9 — '+D.date+'\nRecord: '+wins+'W/'+(tot-wins)+'L'+(tot?' ('+Math.round(wins/tot*100)+'%)':'')+'\n';
-  txt+='Model: Split scoring by prop type | Rolling 10-game stats | Ace filter | 5-pick cap\n';
+  var txt='HITTERS EDGE v10 — '+D.date+'\nRecord: '+wins+'W/'+(tot-wins)+'L'+(tot?' ('+Math.round(wins/tot*100)+'%)':'')+'\n';
+  txt+='Model: Per-prop normalized scoring | Opposing-pitcher matchup | Rolling 10-game stats | Ace filter | Calibrated value%\n';
   if(D.aceNotes&&D.aceNotes.length){txt+='\nACE FILTERS:\n';D.aceNotes.forEach(function(n){txt+='  '+n.team+' vs '+n.pitcher+' ('+n.era+' ERA) — skipped\n';});}
   txt+='\n=== PREMIUM CARD (real money, all cleared filters) ===\n';
   if(!premium.length)txt+='None today\n';
