@@ -1215,6 +1215,23 @@ async function loadAll(){
   picks.forEach(function(p){gameCounts[p.game]=(gameCounts[p.game]||0)+1;});
   picks.forEach(function(p){p.sameGame=gameCounts[p.game]>1;});
 
+  // Correlated-SGP signal: two picks vs the SAME pitcher, BOTH a STRONG/PERFECT
+  // bat-vs-vulnerability match = a correlated same-game opportunity (build as an
+  // SGP), which is the OPPOSITE of the cross-game "do not parlay" caution.
+  function strongMatch(p){
+    if(p.isPitcher||!p.bStats)return false;
+    var ml=matchLevel(p.batKey,p.oppTypeKey);
+    return !!ml&&(ml.label==='PERFECT MATCH'||ml.label==='STRONG MATCH');
+  }
+  picks.forEach(function(p){
+    p.sgpPartner=null;
+    if(!p.pitcher||!strongMatch(p))return;
+    var partner=picks.find(function(q){
+      return q!==p&&q.name!==p.name&&!q.isPitcher&&q.game===p.game&&q.pitcher===p.pitcher&&strongMatch(q);
+    });
+    if(partner)p.sgpPartner=partner.name;
+  });
+
   // Build best parlays from premium card
   var bestParlays=buildBestParlays(picks);
 
@@ -1450,7 +1467,8 @@ function pickCard(p){
   }
 
   // Same-game guard (do not parlay two picks from one game)
-  if(p.sameGame)h+='<div style="font-size:10px;color:var(--amb);margin-bottom:4px">&#128279; Same game as another pick &mdash; do NOT parlay these together</div>';
+  if(p.sgpPartner)h+='<div style="font-size:10px;color:var(--tel);font-weight:700;margin-bottom:4px">&#128279; CORRELATED SGP OPPORTUNITY &mdash; pairs with '+p.sgpPartner+' vs '+p.pitcher+' (same vulnerability) &mdash; build as a same-game parlay</div>';
+  else if(p.sameGame)h+='<div style="font-size:10px;color:var(--amb);margin-bottom:4px">&#128279; Same game as another pick &mdash; do NOT combine in a CROSS-game parlay</div>';
 
   // Conflict flag
   if(p.conflictFlag)h+='<div style="font-size:10px;color:var(--amb);margin-bottom:4px">&#9888; Same game has a pitcher K over ‚Äî structurally opposed</div>';
@@ -1701,7 +1719,8 @@ function pickDump(p){
     var cb=CALIB?CALIB[bucketOf(p.score)]:null;
     T.push('  Value: book '+bookP+'%'+(cb&&cb.n>=MIN_VALUE_SAMPLE&&cb.rate!=null?' | model '+(cb.rate*100).toFixed(1)+'% (n='+cb.n+')':' | model calibrating ('+(cb?cb.n:0)+'/'+MIN_VALUE_SAMPLE+')'));
   }
-  if(p.sameGame)T.push('  ** SAME-GAME as another pick ‚Äî do not parlay together **');
+  if(p.sgpPartner)T.push('  ** CORRELATED SGP OPPORTUNITY ‚Äî pairs with '+p.sgpPartner+' vs '+p.pitcher+' (same vulnerability); build as a same-game parlay **');
+  else if(p.sameGame)T.push('  ** SAME-GAME as another pick ‚Äî do not combine in a CROSS-game parlay **');
   if(p.conflictFlag)T.push('  ** CONFLICT: same game has a pitcher K over **');
   if(b){
     var bt=batType(b.iso);
