@@ -467,6 +467,19 @@ async function loadStatcast(){
 
 // ‚îÄ‚îÄ SCORING MODELS (split by prop type per spec) ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
 
+// Regression guard (v10): the 10-game window must cut BOTH ways. A rolling
+// avg/obp BELOW the season baseline is decline, not edge ‚Äî penalize it so a high
+// H/G can't float a cooling bat onto the premium card. Returns a score delta.
+function trendPenalty(roll, season){
+  if(roll==null||season==null)return 0;
+  var gap=roll-season;
+  if(gap<=-0.050)return -16;
+  if(gap<=-0.035)return -11;
+  if(gap<=-0.025)return -7;
+  if(gap<=-0.015)return -3;
+  return 0;
+}
+
 // TIER 1: Singles model ‚Äî floor prop, highest confidence
 // Inputs: rolling AVG, H/G, contact profile, park
 function scoreSingles(b, park){
@@ -486,6 +499,8 @@ function scoreSingles(b, park){
   // Hot/cold (only counts with 100+ games per spec)
   if(b.hotCold==='HOT')s+=12;else if(b.hotCold==='Warming')s+=6;
   else if(b.hotCold==='COLD')s-=15;else if(b.hotCold==='Cooling')s-=7;
+  // Regression guard: 10G avg below season avg = penalize (decline, not edge)
+  s+=trendPenalty(b.roll10avg,b.avg);
   return Math.max(0,Math.min(100,Math.round(s)));
 }
 
@@ -528,6 +543,8 @@ function scoreHRI(b, spot, park, line){
   // Hot/cold (100+ games only)
   if(b.hotCold==='HOT')s+=10;else if(b.hotCold==='Warming')s+=5;
   else if(b.hotCold==='COLD')s-=15;else if(b.hotCold==='Cooling')s-=8;
+  // Regression guard: 10G OBP below season OBP = penalize (decline, not edge)
+  s+=trendPenalty(b.roll10obp,b.obp);
   return Math.max(0,Math.min(100,Math.round(s)));
 }
 
@@ -545,6 +562,8 @@ function scoreHits(b, park){
   if(park>=108)s+=5;else if(park<96)s-=4;
   if(b.hotCold==='HOT')s+=10;else if(b.hotCold==='Warming')s+=5;
   else if(b.hotCold==='COLD')s-=14;else if(b.hotCold==='Cooling')s-=7;
+  // Regression guard: 10G avg below season avg = penalize (decline, not edge)
+  s+=trendPenalty(b.roll10avg,b.avg);
   return Math.max(0,Math.min(100,Math.round(s)));
 }
 
@@ -609,6 +628,11 @@ function applyFilters(pick){
   if(k==='pitcher_strikeouts'&&line>=7.5){
     return{pass:false,reason:'K line 7.5+ excluded'};
   }
+
+  // Prop mismatch ‚Äî ELIMINATE entirely (bat type vs prop type):
+  //  power bat on a singles prop, or contact bat on a multi-path H+R+RBI prop.
+  if(pick.batKey==='POWER'&&k==='batter_singles')        return{pass:false,reason:'Mismatch: power bat on singles prop'};
+  if(pick.batKey==='CONTACT'&&k==='batter_hits_runs_rbis')return{pass:false,reason:'Mismatch: contact bat on multi-path prop'};
 
   // Define hitter prop types ‚Äî H/G and career filters only apply to these
   var hitterProps=['batter_singles','batter_hits','batter_hits_runs_rbis',
@@ -1119,7 +1143,7 @@ async function loadAll(){
           pitTeam:pitTeam, pitML:(pitML!=null?pitML:null),
           batKey:bKey,
           luckSum:lg?lg.sum:null, luckParts:lg?lg.parts:null,
-          oppStat:pSav||null,
+          hitStat:bSav||null, oppStat:pSav||null,
           oppTypeKey:oppVuln?oppVuln.key:null, oppTypeLabel:oppVuln?oppVuln.label:null, oppTypeBest:oppVuln?oppVuln.best:null
         });
       });
@@ -1130,6 +1154,7 @@ async function loadAll(){
 
   // Apply all spec filters
   var picks=[];
+  var mismatchNotes=[]; // bat-type/prop mismatches eliminated (for transparency)
   rawPicks.forEach(function(p){
     // Conflict check: skip batter props in games with K over
     if(!p.isPitcher&&kPickGames[p.game]){
@@ -1137,7 +1162,10 @@ async function loadAll(){
       p.conflictFlag=true;
     }
     var result=applyFilters(p);
-    if(!result.pass)return;
+    if(!result.pass){
+      if(result.reason&&result.reason.indexOf('Mismatch')===0)mismatchNotes.push({name:p.name,prop:p.propLabel,reason:result.reason});
+      return;
+    }
     p.grade=result.grade;
     p.filterNotes=result.filters;
     picks.push(p);
@@ -1190,7 +1218,7 @@ async function loadAll(){
   // Build best parlays from premium card
   var bestParlays=buildBestParlays(picks);
 
-  D={picks,totals,aceNotes,bestParlays,
+  D={picks,totals,aceNotes,bestParlays,mismatchNotes:mismatchNotes,
     sgps:buildSGPs(picks),
     upcoming:upcoming.length,live:live.length,finished:finished.length,
     date:new Date().toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'}),
@@ -1219,7 +1247,14 @@ function renderPicks(){
   if(D.live>0)    h+='<span class="stpill st-lv">&#128308; '+D.live+' live</span>';
   if(D.finished>0)h+='<span class="stpill st-fn">&#10003; '+D.finished+' final</span>';
   if(D.aceNotes&&D.aceNotes.length)h+='<span class="stpill st-ace">&#9940; '+D.aceNotes.length+' ace filtered</span>';
+  if(D.mismatchNotes&&D.mismatchNotes.length)h+='<span class="stpill st-ace">&#9940; '+D.mismatchNotes.length+' mismatch removed</span>';
   h+='</div>';
+  // Eliminated bat-type/prop mismatches
+  if(D.mismatchNotes&&D.mismatchNotes.length){
+    h+='<div class="filter-note"><div style="font-size:11px;font-weight:700;color:var(--amb);margin-bottom:3px">&#9940; PROP MISMATCHES REMOVED</div>';
+    D.mismatchNotes.forEach(function(m){h+='<div style="font-size:10px;color:var(--mut)"><span style="color:var(--txt)">'+m.name+'</span> &mdash; '+m.prop+' ('+m.reason.replace('Mismatch: ','')+')</div>';});
+    h+='</div>';
+  }
 
   // Card timestamp / odds-lock
   if(D.generatedAt||D.oddsAsOf){
@@ -1495,6 +1530,13 @@ function pickCard(p){
     }
     // Warnings
     if(b.hotCold==='COLD'||b.hotCold==='Cooling')h+='<div style="font-size:10px;color:var(--red);margin-bottom:4px">&#129704; '+b.hotCold+' last 14 days</div>';
+    // Regression note: 10-game window below season baseline (drives the trend penalty)
+    if(p.mktKey==='batter_singles'||p.mktKey==='batter_hits'||p.mktKey==='batter_hits_runs_rbis'){
+      var trIsObp=(p.mktKey==='batter_hits_runs_rbis');
+      var trRoll=trIsObp?b.roll10obp:b.roll10avg, trSeas=trIsObp?b.obp:b.avg;
+      if(trRoll!=null&&trSeas!=null&&(trRoll-trSeas)<=-0.015)
+        h+='<div style="font-size:10px;color:var(--red);margin-bottom:4px">&#128317; 10G '+(trIsObp?'OBP':'avg')+' '+fmt3(trRoll)+' below season '+fmt3(trSeas)+' &mdash; regression, score penalized</div>';
+    }
     if(b.bbRate>=0.09&&(p.mktKey==='batter_hits'||p.mktKey==='batter_total_bases'))h+='<div style="font-size:10px;color:var(--amb);margin-bottom:4px">&#9888; High walk rate hurts this prop</div>';
     // Prop mismatch: bat type vs prop type
     if(bt&&bt.key==='POWER'&&p.mktKey==='batter_singles')h+='<div style="font-size:10px;color:var(--amb);margin-bottom:4px">&#9888; PROP MISMATCH: power bat on a singles prop &mdash; consider H+R+RBI or Total Bases instead</div>';
@@ -1647,31 +1689,68 @@ function markResult(id,result){
   ss('bets',BETS);toast(result==='WIN'?'&#9989; WIN!':'&#10060; Loss');renderPnL();
 }
 // ‚îÄ‚îÄ COPY ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+// Full per-pick data dump for Claude analysis ‚Äî every hitter & pitcher input.
+function pickDump(p){
+  var b=p.bStats, hs=p.hitStat, os=p.oppStat, T=[];
+  var pc=function(v){return v==null?'--':v;};
+  T.push((p.isPitcher?'[PITCHER] ':'[HITTER] ')+p.name+' ‚Äî '+p.propLabel+'  (Grade '+p.grade+' | Score '+p.score+'/100, raw '+p.rawScore+'/'+p.propMax+')');
+  T.push('  Lineup: '+(p.lineupConfirmed?'CONFIRMED':'PROJECTED')+(p.lineupSpot?' #'+p.lineupSpot:'')+' | '+p.game+' '+p.time+(p.gameTotal!=null?' | Game total '+p.gameTotal:''));
+  T.push('  Odds: '+fmtOdds(p.recOdds)+' (open '+fmtOdds(p.oddsOpen)+', move '+(p.oddsMove>0?'+':'')+p.oddsMove+')');
+  if(p.recOdds!=null){
+    var bookP=(impliedProb(p.recOdds)*100).toFixed(1);
+    var cb=CALIB?CALIB[bucketOf(p.score)]:null;
+    T.push('  Value: book '+bookP+'%'+(cb&&cb.n>=MIN_VALUE_SAMPLE&&cb.rate!=null?' | model '+(cb.rate*100).toFixed(1)+'% (n='+cb.n+')':' | model calibrating ('+(cb?cb.n:0)+'/'+MIN_VALUE_SAMPLE+')'));
+  }
+  if(p.sameGame)T.push('  ** SAME-GAME as another pick ‚Äî do not parlay together **');
+  if(p.conflictFlag)T.push('  ** CONFLICT: same game has a pitcher K over **');
+  if(b){
+    var bt=batType(b.iso);
+    T.push('  BAT TYPE: '+(bt?bt.label:'-')+' (ISO '+fmt3(b.iso)+') | '+b.games+' games');
+    T.push('  Season: AVG '+fmt3(b.avg)+' OBP '+fmt3(b.obp)+' SLG '+fmt3(b.slg));
+    T.push('  Per game: H '+b.hpg+' 1B '+b.sngpg+' TB '+b.tbpg+' HR '+b.hrpg+' R '+b.runspg+' RBI '+b.rbipg+' SB '+b.sbpg+' | BB% '+fmt3(b.bbRate));
+    T.push('  10-game: AVG '+fmt3(b.roll10avg)+' OBP '+fmt3(b.roll10obp)+' | 7-day trend: '+b.hotCold);
+    if(hs)T.push('  Statcast(bat): xBA '+fmt3(hs.xba)+' xSLG '+fmt3(hs.xslg)+' xwOBA '+fmt3(hs.xwoba)+' wOBA '+fmt3(hs.woba)+' | Barrel '+pc(hs.barrel_batted_rate)+'% HardHit '+pc(hs.hard_hit_percent)+'%');
+    if(p.luckSum!=null)T.push('  Luck gap (expected-actual composite): '+(p.luckSum>0?'+':'')+fmt3(p.luckSum)+(p.luckSum>0.100?' ‚Äî REGRESSION DUE (underpriced)':''));
+  }
+  if(p.oppPitName){
+    T.push('  OPP SP: '+p.oppPitName+' | ERA '+pc(p.oppERA)+' WHIP '+pc(p.oppWHIP)+' K/9 '+pc(p.oppK9)+(p.oppL3era!=null?' | last-3 ERA '+p.oppL3era:''));
+    if(os)T.push('    SP Statcast: HardHit '+pc(os.hard_hit_percent)+'% Barrel '+pc(os.barrel_batted_rate)+'% Whiff '+pc(os.whiff_percent)+'% | K% '+pc(os.k_percent)+' BB% '+pc(os.bb_percent)+' xSLG '+fmt3(os.xslg));
+    var ml=matchLevel(p.batKey,p.oppTypeKey);
+    T.push('    Vulnerability: '+(p.oppTypeKey?p.oppTypeKey+' '+p.oppTypeLabel:'untyped')+' | Bat match: '+(ml?ml.label:'-')+' | Matchup tag: '+(p.matchupTag||'-').toUpperCase()+' '+(p.matchupAdj>0?'+':'')+p.matchupAdj);
+  }
+  if(p.isPitcher&&p.pitSt){
+    T.push('  SP season: ERA '+p.pitSt.era+' WHIP '+p.pitSt.whip+' K/9 '+p.pitSt.k9+' BB/9 '+p.pitSt.bb9+' GS '+p.pitSt.gs+' avgK '+p.pitSt.avgK);
+    if(p.pitL3)T.push('  Last-3 starts: '+p.pitL3.avgK+' K/start, ERA '+p.pitL3.era+' (line '+p.line+')');
+    if(p.pitML!=null)T.push('  Exit risk: '+p.pitTeam+' '+fmtOdds(p.pitML)+(p.pitML<0?' favorite ‚Äî likely deep':' underdog ‚Äî monitor'));
+  }
+  if(p.filterNotes&&p.filterNotes.length)T.push('  Notes: '+p.filterNotes.join('; '));
+  return T.join('\n');
+}
 function copyPicks(){
   if(!D){toast('No data');return;}
   var premium=D.picks.filter(function(p){return p.grade==='A';});
   var watch=D.picks.filter(function(p){return p.grade==='B'||p.grade==='W';});
   var wins=BETS.filter(function(b){return b.result==='WIN';}).length;
   var tot=BETS.filter(function(b){return b.result!=='PENDING';}).length;
-  var txt='HITTERS EDGE v10 ‚Äî '+D.date+'\nRecord: '+wins+'W/'+(tot-wins)+'L'+(tot?' ('+Math.round(wins/tot*100)+'%)':'')+'\n';
-  txt+='Model: Per-prop normalized scoring | Opposing-pitcher matchup | Rolling 10-game stats | Ace filter | Calibrated value%\n';
-  if(D.aceNotes&&D.aceNotes.length){txt+='\nACE FILTERS:\n';D.aceNotes.forEach(function(n){txt+='  '+n.team+' vs '+n.pitcher+' ('+n.era+' ERA) ‚Äî skipped\n';});}
-  txt+='\n=== PREMIUM CARD (real money, all cleared filters) ===\n';
+  var txt='HITTERS EDGE v10 ‚Äî '+D.date+' (generated '+(D.generatedAt||'?')+', odds as of '+(D.oddsAsOf||'?')+')\n';
+  txt+='Record: '+wins+'W/'+(tot-wins)+'L'+(tot?' ('+Math.round(wins/tot*100)+'%)':'')+'\n';
+  txt+='Score = normalized 0-100 WITHIN each prop (a ranking, not a win probability). Value model% = real settled-bet hit rate for that score bucket.\n';
+  if(D.aceNotes&&D.aceNotes.length){txt+='\nACE FILTERS (batters skipped):\n';D.aceNotes.forEach(function(n){txt+='  '+n.team+' vs '+n.pitcher+' ('+n.era+' ERA)\n';});}
+  if(D.mismatchNotes&&D.mismatchNotes.length){txt+='\nMISMATCHES REMOVED:\n';D.mismatchNotes.forEach(function(m){txt+='  '+m.name+' ‚Äî '+m.prop+' ('+m.reason.replace('Mismatch: ','')+')\n';});}
+  txt+='\n========== PREMIUM CARD ('+premium.length+') ==========\n';
   if(!premium.length)txt+='None today\n';
-  premium.forEach(function(p){
-    txt+='\n'+p.name+(p.lineupConfirmed?' [CONFIRMED':'[PROJECTED')+(p.lineupSpot?' #'+p.lineupSpot:'')+']'+'\n';
-    txt+='  Bet: '+p.propLabel+' | Odds: '+fmtOdds(p.recOdds)+' | Score: '+p.score+'/100\n';
-    txt+='  Game: '+p.game+' | '+p.time+'\n';
-    if(p.bStats)txt+='  10G AVG: '+p.bStats.roll10avg+' Season: '+p.bStats.avg+' H/G: '+p.bStats.hpg+' Streak: '+p.bStats.hotCold+'\n';
-    if(p.pitL3)txt+='  Last-3 K/start: '+p.pitL3.avgK+' vs line '+p.line+'\n';
-    if(p.conflictFlag)txt+='  *** CONFLICT: same game has pitcher K over ***\n';
-  });
-  txt+='\n=== WATCH LIST (bonus bets only) ===\n';
-  watch.slice(0,5).forEach(function(p){txt+=p.name+' ‚Äî '+p.propLabel+' '+fmtOdds(p.recOdds)+' ('+p.score+')\n';});
-  txt+='\n=== GAME TOTALS ===\n';
-  D.totals.filter(function(t){return t.isUpcoming;}).forEach(function(t){txt+=t.game+' Line:'+t.line+' O:'+fmtOdds(t.overOdds)+' U:'+fmtOdds(t.underOdds)+'\n';});
-  txt+='\nANALYZE:\n1. Best pick + tier breakdown\n2. Best 2-3 leg parlay from premium card\n3. Any picks to avoid\n4. Conflict flags ‚Äî should any be skipped?\n';
-  txt+='\nRULES: Premium only for real money $25. Watch=bonus. -140 or better. No aces. No doubles. 7.5+ K lines excluded.';
+  premium.forEach(function(p){txt+='\n'+pickDump(p)+'\n';});
+  txt+='\n========== WATCH LIST ('+watch.length+') ==========\n';
+  if(!watch.length)txt+='None\n';
+  watch.forEach(function(p){txt+='\n'+pickDump(p)+'\n';});
+  if(D.sgps&&D.sgps.length){
+    txt+='\n========== CORRELATED SGP OPPORTUNITIES ==========\n';
+    D.sgps.forEach(function(s){txt+='\n'+s.game+' ‚Äî vs '+s.pitcher+' ('+(s.typeKey||'')+' '+(s.typeLabel||'')+'), combined '+fmtOdds(s.combined)+'\n';s.legs.forEach(function(l){txt+='  '+l.name+' #'+l.spot+' ('+l.bat+'): '+l.prop+' '+fmtOdds(l.odds)+'\n';});});
+  }
+  txt+='\n========== GAME TOTALS ==========\n';
+  D.totals.filter(function(t){return t.isUpcoming;}).forEach(function(t){txt+=t.game+' Line '+t.line+' O '+fmtOdds(t.overOdds)+' U '+fmtOdds(t.underOdds)+'\n';});
+  txt+='\nANALYZE:\n1. Rank the premium card by true edge using ALL data above ‚Äî weight bat-type/pitcher-vulnerability match, luck gap (regression), matchup tag, and the value gap.\n2. Best 2-3 leg cross-game parlay, plus any correlated SGP worth playing.\n3. Premium picks to fade (cooling 10-game trend, tough/avoid matchup, or negative value).\n';
+  txt+='\nRULES: Premium = real money $25. Watch = bonus only. -140 or better. No aces, no doubles, no power-on-singles / contact-on-HRRBI.';
   copyText(txt,'copy-ok');
 }
 function copyParlay(){
