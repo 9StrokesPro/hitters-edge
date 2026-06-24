@@ -227,6 +227,43 @@ function batType(iso){
   if(iso>=0.150)return{key:'HYBRID',label:'HYBRID BAT',dot:'&#128993;'};
   return{key:'CONTACT',label:'CONTACT BAT',dot:'&#128994;'};
 }
+// ‚îÄ‚îÄ STATCAST-DRIVEN TYPING (Wave 2) ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+// Classify the opposing starter into a vulnerability type. Statcast metrics
+// (hard-hit%, barrel%, whiff%) come from Baseball Savant; ERA/WHIP/K9 from MLB.
+// Returns null when there isn't enough data to type the pitcher (honest fallback).
+function classifyPitcher(pm, ps){
+  if(!pm)return null;
+  var era=pm.era,whip=pm.whip,k9=pm.k9,bb9=pm.bb9;
+  var hh=ps?ps.hard_hit_percent:null, br=ps?ps.barrel_batted_rate:null, wh=ps?ps.whiff_percent:null, bb=ps?ps.bb_percent:null;
+  var walkHi=(bb!=null)?bb>8:(bb9!=null&&bb9>3.0); // Savant BB% preferred, BB/9 proxy when absent
+  if(era>5.00&&whip>1.50&&hh!=null&&hh>40) return{key:'TYPE3',label:'UNIVERSAL TARGET',best:'all bats ‚Äî Singles & H+R+RBI'};
+  if(hh!=null&&br!=null&&wh!=null&&hh>40&&br>8&&wh<22) return{key:'TYPE1',label:'POWER TARGET',best:'power bats ‚Äî H+R+RBI & TB'};
+  if(whip>1.40&&walkHi&&k9<7.0) return{key:'TYPE2',label:'CONTACT TARGET',best:'contact bats ‚Äî Singles & Hits'};
+  if(era<3.00&&k9>9.0&&hh!=null&&hh<30) return{key:'TYPE4',label:'AVOID',best:'no edge ‚Äî fade'};
+  return null;
+}
+// Bat type vs pitcher vulnerability type -> match strength
+function matchLevel(batKey, typeKey){
+  if(!typeKey||!batKey)return null;
+  if(typeKey==='TYPE4')return{label:'AVOID',cls:'red',icon:'&#10060;'};
+  if(batKey==='CONTACT'&&typeKey==='TYPE2')return{label:'PERFECT MATCH',cls:'grn',icon:'&#9989;'};
+  if(batKey==='POWER'&&typeKey==='TYPE1')return{label:'PERFECT MATCH',cls:'grn',icon:'&#9989;'};
+  if(typeKey==='TYPE3'&&(batKey==='POWER'||batKey==='CONTACT'||batKey==='HYBRID'))return{label:'STRONG MATCH',cls:'grn',icon:'&#9989;'};
+  if(batKey==='POWER'&&typeKey==='TYPE2')return{label:'PARTIAL MATCH',cls:'amb',icon:'&#9888;'};
+  if(batKey==='CONTACT'&&typeKey==='TYPE1')return{label:'PARTIAL MATCH',cls:'amb',icon:'&#9888;'};
+  if(batKey==='HYBRID'&&(typeKey==='TYPE1'||typeKey==='TYPE2'))return{label:'PARTIAL MATCH',cls:'amb',icon:'&#9888;'};
+  return null;
+}
+// Composite luck gap: expected (Savant) minus actual. Positive = under-rewarded so far.
+function luckGap(b, bs){
+  if(!bs||!b)return null;
+  var sum=0,parts=[];
+  if(bs.xba!=null&&b.avg!=null){sum+=bs.xba-b.avg;parts.push({k:'xBA',x:bs.xba,a:b.avg});}
+  if(bs.xslg!=null&&b.slg!=null){sum+=bs.xslg-b.slg;parts.push({k:'xSLG',x:bs.xslg,a:b.slg});}
+  if(bs.xwoba!=null&&bs.woba!=null){sum+=bs.xwoba-bs.woba;parts.push({k:'xwOBA',x:bs.xwoba,a:bs.woba});}
+  if(!parts.length)return null;
+  return{sum:Math.round(sum*1000)/1000,parts:parts};
+}
 // Estimated plate appearances tonight by batting-order spot (top of order sees more PA)
 function paEstimate(spot){if(!spot)return'';var m={1:'4-5',2:'4-5',3:'4',4:'4',5:'3-4',6:'3-4',7:'3-4',8:'3',9:'3'};return m[spot]||'3-4';}
 function toggleSection(key){
@@ -382,6 +419,50 @@ async function getBatterStats(name){
     sbpg:Math.round(sb/g*100)/100,
     sngpg:Math.round(sng/g*100)/100
   };
+}
+
+// ‚îÄ‚îÄ BASEBALL SAVANT STATCAST (Wave 2) ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+// Parse one CSV line honoring quoted fields (Savant quotes the name + some values).
+function parseCSVLine(line){
+  var out=[],cur='',q=false;
+  for(var i=0;i<line.length;i++){var c=line[i];
+    if(c==='"'){q=!q;}
+    else if(c===','&&!q){out.push(cur);cur='';}
+    else cur+=c;}
+  out.push(cur);return out;
+}
+// CSV -> { player_id : {metric:number,...} }
+function parseSavant(txt){
+  var map={};if(!txt)return map;
+  var lines=txt.split('\n').filter(function(l){return l.trim();});
+  if(lines.length<2)return map;
+  var hdr=parseCSVLine(lines[0].replace(/^Ôªø/,''));
+  var idx={};hdr.forEach(function(h,i){idx[h.trim()]=i;});
+  var pidI=idx['player_id'];if(pidI==null)return map;
+  for(var r=1;r<lines.length;r++){
+    var f=parseCSVLine(lines[r]);var pid=parseInt(f[pidI]);if(!pid)continue;
+    var o={};
+    for(var key in idx){
+      if(key==='player_id'||key==='year'||key.indexOf('last_name')===0)continue;
+      var v=f[idx[key]];o[key]=(v==null||v==='')?null:parseFloat(v);
+    }
+    map[pid]=o;
+  }
+  return map;
+}
+// Batter + pitcher Statcast leaderboards (keyed by MLB player_id), cached once/day.
+async function loadStatcast(){
+  var ck='sc_'+todayStr();var cached=sg(ck,null);
+  if(cached&&cached.bat&&cached.pit&&(Object.keys(cached.bat).length||Object.keys(cached.pit).length))return cached;
+  var base='https://baseballsavant.mlb.com/leaderboard/custom?year='+SEASON+'&filter=&min=1&sort=4&sortDir=desc&csv=true&type=';
+  var bsel='&selections=xba,xslg,xwoba,woba';
+  var psel='&selections=whiff_percent,barrel_batted_rate,hard_hit_percent,k_percent,bb_percent,xslg,woba,xwoba';
+  var bat={},pit={};
+  try{var br=await fetch(base+'batter'+bsel);if(br.ok)bat=parseSavant(await br.text());}catch(e){console.warn('savant batter',e.message);}
+  try{var pr=await fetch(base+'pitcher'+psel);if(pr.ok)pit=parseSavant(await pr.text());}catch(e){console.warn('savant pitcher',e.message);}
+  var out={bat:bat,pit:pit};
+  if(Object.keys(bat).length||Object.keys(pit).length)ss(ck,out);
+  return out;
 }
 
 // ‚îÄ‚îÄ SCORING MODELS (split by prop type per spec) ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
@@ -714,6 +795,36 @@ function buildBestParlays(picks){
   return{two:makeParlay(best2),three:makeParlay(best3)};
 }
 
+// ‚îÄ‚îÄ CORRELATED SGP IDENTIFIER (Wave 2) ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+// A contact bat (batting 1-2) getting on base + a power bat (batting 3-5) driving
+// in runs, vs a TYPE 2/3 hittable starter. One sequence can cash both legs.
+function buildSGPs(picks){
+  var prem=picks.filter(function(p){return p.grade==='A'&&!p.isPitcher&&p.bStats&&p.pitcher;});
+  var byPit={}; // group by opposing pitcher = same opposing lineup
+  prem.forEach(function(p){
+    if(p.oppTypeKey!=='TYPE2'&&p.oppTypeKey!=='TYPE3')return;
+    (byPit[p.pitcher]=byPit[p.pitcher]||[]).push(p);
+  });
+  var out=[];
+  Object.keys(byPit).forEach(function(pit){
+    var arr=byPit[pit];
+    var contact=arr.filter(function(p){return p.batKey==='CONTACT'&&p.lineupSpot&&p.lineupSpot<=2;}).sort(function(a,b){return b.score-a.score;})[0];
+    var power=arr.filter(function(p){return p.batKey==='POWER'&&p.lineupSpot>=3&&p.lineupSpot<=5;}).sort(function(a,b){return b.score-a.score;})[0];
+    if(contact&&power){
+      out.push({
+        game:contact.game,time:contact.time,pitcher:pit,
+        typeKey:contact.oppTypeKey,typeLabel:contact.oppTypeLabel,matchupTag:contact.matchupTag,
+        legs:[
+          {name:contact.name,prop:contact.propLabel,odds:contact.recOdds,spot:contact.lineupSpot,bat:'CONTACT'},
+          {name:power.name,prop:power.propLabel,odds:power.recOdds,spot:power.lineupSpot,bat:'POWER'}
+        ],
+        combined:parlayOdds([{odds:contact.recOdds},{odds:power.recOdds}])
+      });
+    }
+  });
+  return out;
+}
+
 // ‚îÄ‚îÄ MAIN LOADER ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
 async function loadAll(){
   setP('Loading...');
@@ -768,6 +879,10 @@ async function loadAll(){
   setP('Checking pitchers and lineups...');
   var mlbGames=await loadMLBSchedule();
 
+  // Statcast (Baseball Savant) ‚Äî cached once per day, keyed by MLB player_id
+  setP('Loading Statcast profiles...');
+  var statcast=await loadStatcast();
+
   // Build lookup map: away_key+home_key -> mlb game
   var mlbMap={};
   mlbGames.forEach(function(mg){mlbMap[mg.awayKey+'_'+mg.homeKey]=mg;});
@@ -801,6 +916,7 @@ async function loadAll(){
       homeIsAce:!!(homePst&&homePst.isAce),
       awayIsAce:!!(awayPst&&awayPst.isAce),
       homePitName:mg.homePitcher.name,awayPitName:mg.awayPitcher.name,
+      homePitId:homePid,awayPitId:awayPid,
       homeERA:homePst&&homePst.era,awayERA:awayPst&&awayPst.era,
       homePitSt:homePst,awayPitSt:awayPst,
       homePitL3:homePid?pitcherL3Cache[homePid]:null,
@@ -880,7 +996,7 @@ async function loadAll(){
       // Resolve this batter's side + opposing probable pitcher.
       // Team match (from MLB currentTeam) is primary so this works pre-lineup;
       // lineup membership is the fallback and also gives the batting-order spot.
-      var oppPit=null,oppPitL3=null,oppPitName='',batSide='';
+      var oppPit=null,oppPitL3=null,oppPitName='',oppPitId=null,batSide='';
       var lineupSpot=null;
       var lineupConfirmed=ai2.lineupPosted||false;
       if(!isPitcher&&bStats){
@@ -890,8 +1006,8 @@ async function loadAll(){
         else if(bStats.team&&bStats.team===ai2.homeTeam)batSide='home';
         else if(awaySpot)batSide='away';
         else if(homeSpot)batSide='home';
-        if(batSide==='away'){oppPit=ai2.homePitSt;oppPitL3=ai2.homePitL3;oppPitName=ai2.homePitName||'';}
-        else if(batSide==='home'){oppPit=ai2.awayPitSt;oppPitL3=ai2.awayPitL3;oppPitName=ai2.awayPitName||'';}
+        if(batSide==='away'){oppPit=ai2.homePitSt;oppPitL3=ai2.homePitL3;oppPitName=ai2.homePitName||'';oppPitId=ai2.homePitId;}
+        else if(batSide==='home'){oppPit=ai2.awayPitSt;oppPitL3=ai2.awayPitL3;oppPitName=ai2.awayPitName||'';oppPitId=ai2.awayPitId;}
         if(awaySpot)lineupSpot=awaySpot.spot;
         else if(homeSpot)lineupSpot=homeSpot.spot;
       }
@@ -979,6 +1095,13 @@ async function loadAll(){
           if(pitTeam)pitML=mlMap[pitTeam];
         }
 
+        // ‚îÄ‚îÄ STATCAST LAYERS (Wave 2, display only) ‚Äî hitter props ‚îÄ‚îÄ
+        var bKey=(bStats?(batType(bStats.iso)||{}).key:null)||null;
+        var bSav=(bStats&&statcast.bat)?statcast.bat[bStats.playerId]:null;
+        var lg=(bStats&&!isPitcher)?luckGap(bStats,bSav):null;
+        var pSav=(oppPitId&&statcast.pit)?statcast.pit[oppPitId]:null;
+        var oppVuln=(!isPitcher)?classifyPitcher(oppPit,pSav):null;
+
         rawPicks.push({
           name:pName,game:gameStr,time:fmtTime(og2.commence_time),
           park,mktKey:k,propLabel,line:mkt.line,
@@ -993,7 +1116,11 @@ async function loadAll(){
           oppL3era:(oppPitL3&&oppPitL3.era)||null,
           gameTotal:(totalMap[gameStr]!=null?totalMap[gameStr]:null),
           oddsOpen:oddsOpen, oddsMove:recOdds-oddsOpen,
-          pitTeam:pitTeam, pitML:(pitML!=null?pitML:null)
+          pitTeam:pitTeam, pitML:(pitML!=null?pitML:null),
+          batKey:bKey,
+          luckSum:lg?lg.sum:null, luckParts:lg?lg.parts:null,
+          oppStat:pSav||null,
+          oppTypeKey:oppVuln?oppVuln.key:null, oppTypeLabel:oppVuln?oppVuln.label:null, oppTypeBest:oppVuln?oppVuln.best:null
         });
       });
     }
@@ -1064,6 +1191,7 @@ async function loadAll(){
   var bestParlays=buildBestParlays(picks);
 
   D={picks,totals,aceNotes,bestParlays,
+    sgps:buildSGPs(picks),
     upcoming:upcoming.length,live:live.length,finished:finished.length,
     date:new Date().toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'}),
     oddsAsOf:oddsAsOf,
@@ -1213,6 +1341,26 @@ function renderPicks(){
     h+='</div>';
   }
 
+  // ‚îÄ‚îÄ CORRELATED SGP OPPORTUNITIES ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+  if(D.sgps&&D.sgps.length){
+    D.sgps.forEach(function(s){
+      h+='<div class="card" style="border-color:var(--tel);background:var(--sur)">';
+      h+='<div style="font-size:13px;font-weight:700;color:var(--tel);margin-bottom:2px">&#128279; Correlated SGP Opportunity</div>';
+      h+='<div style="font-size:11px;color:var(--mut);margin-bottom:8px">'+s.game+' &middot; '+s.time+'</div>';
+      h+='<div style="font-size:11px;color:var(--txt);margin-bottom:8px">Pitcher: <b>'+s.pitcher+'</b> &middot; '+(s.typeKey?s.typeKey.replace('TYPE','TYPE '):'')+' '+(s.typeLabel||'')+(s.matchupTag?' &middot; '+s.matchupTag.toUpperCase():'')+'</div>';
+      s.legs.forEach(function(l,i){
+        h+='<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-top:1px solid var(--bdr)">';
+        h+='<div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:600">Leg '+(i+1)+': '+l.name+'</div>';
+        h+='<div style="font-size:10px;color:var(--mut)">'+l.prop+' &middot; #'+l.spot+' '+(l.bat==='CONTACT'?'&#128994; Contact':'&#128308; Power')+' bat</div></div>';
+        h+='<div style="font-size:13px;font-weight:700;color:'+(l.odds>0?'var(--grn)':'var(--txt)')+';flex-shrink:0">'+fmtOdds(l.odds)+'</div></div>';
+      });
+      h+='<div style="font-size:10px;color:var(--mut);margin-top:6px;line-height:1.5"><b>Why this works:</b> contact bat reaches base via singles against a hittable arm; the power bat behind him drives the run in. One sequence can cash both legs &mdash; correlated upside.</div>';
+      h+='<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding-top:8px;border-top:1px solid var(--bdr)"><span style="font-size:11px;color:var(--mut)">Combined odds</span><span style="font-size:16px;font-weight:700;color:var(--gld)">'+fmtOdds(s.combined)+'</span></div>';
+      h+='<div style="font-size:9px;color:var(--amb);margin-top:4px">Same-game parlay ‚Äî one book, build as an SGP.</div>';
+      h+='</div>';
+    });
+  }
+
   document.getElementById('pg-picks').innerHTML=h;
 }
 
@@ -1312,6 +1460,27 @@ function pickCard(p){
         var l3c=tougher?'var(--red)':softer?'var(--grn)':'var(--mut)';
         h+='<div style="font-size:10px;color:'+l3c+';margin-bottom:4px">&nbsp;&nbsp;&#8627; Last-3 ERA '+p.oppL3era.toFixed(2)+(tougher?' &#9888; trending tougher':softer?' &#9989; softening':'')+'</div>';
       }
+      // Statcast batted-ball profile of the opposing starter
+      if(p.oppStat){
+        var ss=p.oppStat, parts=[];
+        if(ss.hard_hit_percent!=null)parts.push(ss.hard_hit_percent+'% HardHit');
+        if(ss.barrel_batted_rate!=null)parts.push(ss.barrel_batted_rate+'% Barrel');
+        if(ss.whiff_percent!=null)parts.push(ss.whiff_percent+'% Whiff');
+        if(parts.length)h+='<div style="font-size:10px;color:var(--mut);margin-bottom:4px">&nbsp;&nbsp;&#128202; Statcast: '+parts.join(' &middot; ')+'</div>';
+      }
+    }
+    // Pitcher vulnerability type + bat-type match
+    if(p.oppTypeKey){
+      var ml=matchLevel(p.batKey,p.oppTypeKey);
+      var tcol=p.oppTypeKey==='TYPE4'?'var(--red)':'var(--grn)';
+      var tnum=p.oppTypeKey.replace('TYPE','TYPE ');
+      var mtxt=ml?(' &middot; '+ml.icon+' '+ml.label):'';
+      h+='<div style="font-size:10px;font-weight:700;color:'+tcol+';margin-bottom:4px">VULNERABILITY: '+tnum+' &mdash; '+p.oppTypeLabel+mtxt+'</div>';
+    }
+    // Luck-gap / regression flag (Statcast expected vs actual)
+    if(p.luckSum!=null&&p.luckSum>0.100){
+      var slgPart=(p.luckParts||[]).filter(function(x){return x.k==='xSLG';})[0];
+      h+='<div style="font-size:10px;font-weight:700;color:var(--grn);margin-bottom:4px">&#9889; REGRESSION DUE: composite +'+fmt3(p.luckSum)+(slgPart?' &middot; xSLG '+fmt3(slgPart.x)+' vs SLG '+fmt3(slgPart.a):'')+' &mdash; book pricing below contact quality</div>';
     }
     // Game run-environment (from game total)
     if(p.gameTotal!=null){
