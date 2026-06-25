@@ -1087,6 +1087,7 @@ function buildModelStats(){
     by_grade:{},by_score_bucket:{},by_prop_type:{},by_matchup_tag:{},by_platoon:{},
     by_regression_due:{},by_trend:{},by_direction:{},by_prop_dir:{},by_clv:{},by_event:{},
     under_bt:{all:{w:0,t:0,p:0},by_grade:{},by_prop:{}},
+    bench:{n:0,rec:0,blind_under:0,always_over:0,rec_over:0,rec_under:0,tcut:70},
     over_n:0,under_n:0,clv_sum:0,clv_n:0,clv_pos:0,clv_since:null,last_updated:new Date().toISOString()};
   function bump(o,key,p){
     if(key==null||key==='')return;
@@ -1119,6 +1120,14 @@ function buildModelStats(){
       if(push)s.under_bt.all.p++;else{s.under_bt.all.t++;if(uw)s.under_bt.all.w++;}
       uadd(s.under_bt.by_grade,p.grade);
       uadd(s.under_bt.by_prop,p.prop_type);
+      // Mirror-vs-prediction benchmark (excl push). Over legs use real odds; Under legs assume -120.
+      if(!push){
+        var UP=100/120, overWin=p.result==='WIN', b=s.bench; b.n++;
+        b.always_over+=overWin?americanProfit(p.odds):-1;     // (c) always Over
+        b.blind_under+=uw?UP:-1;                              // (b) blind Under @ -120
+        if(p.score>=b.tcut){b.rec+=overWin?americanProfit(p.odds):-1;b.rec_over++;} // (a) score-driven side
+        else{b.rec+=uw?UP:-1;b.rec_under++;}
+      }
     }
   });
   try{localStorage.setItem('he9_model_stats',JSON.stringify(s));}catch(e){}
@@ -1641,16 +1650,31 @@ function modelPerfBlock(){
     Object.keys(ub.by_prop).sort(function(a,b){return (ub.by_prop[b].w/ub.by_prop[b].t)-(ub.by_prop[a].w/ub.by_prop[a].t);}).forEach(function(k){h+=ubr('Under '+k,ub.by_prop[k]);});
     h+='<div style="font-size:9px;color:var(--mut);margin-top:2px">Hit-rate only (historical Under odds not retrievable). Unders are minus-money: break-even is ~55% at -120, ~58% at -140. Above that = fading would have been +EV.</div>';
   }
-  // By model score bucket ‚Äî is the score itself predictive?
-  var sbOrder=['90-100','80-89','70-79','60-69','50-59'];
-  var sbAvail=sbOrder.filter(function(k){return s.by_score_bucket[k]&&s.by_score_bucket[k].t>=MODEL_MIN;});
-  if(sbAvail.length){
-    h+='<div style="font-size:10px;font-weight:700;color:var(--txt);margin:8px 0 2px">By model score (does ROI rise with score?)</div>';
-    sbOrder.forEach(function(k){h+=bucketRow('Score '+k,s.by_score_bucket[k]);});
-    if(sbAvail.length>=2){
-      var hi=s.by_score_bucket[sbAvail[0]],lo=s.by_score_bucket[sbAvail[sbAvail.length-1]],dl=Math.round((roiOf(hi)-roiOf(lo))*100);
-      h+='<div style="font-size:10px;font-weight:700;color:'+(dl>0?'var(--grn)':'var(--red)')+'">&Delta; '+sbAvail[0]+'&minus;'+sbAvail[sbAvail.length-1]+': '+(dl>0?'+':'')+dl+'% ROI '+(dl>0?'&#9989; score adds signal':'&#10060; score FLAT/INVERTED ‚Äî ranking is noise')+'</div>';
-    }
+  // SCORE-CALIBRATION TEST ‚Äî does ROI rise with the model's own score? (the skill test)
+  var LADDER_MIN=6, asc=['50-59','60-69','70-79','80-89','90-100']; // low -> high score
+  var ladderRow=function(label,o){if(!o||o.t<LADDER_MIN)return o&&o.t?'<div style="font-size:11px;color:var(--mut)">'+label+': '+o.t+' picks (too few)</div>':'';var hr=Math.round(o.w/o.t*100),roi=Math.round(o.u/o.t*100),c=roi>0?'var(--grn)':roi<0?'var(--red)':'var(--mut)';return '<div style="font-size:11px;color:'+c+'">'+label+': '+hr+'% | ROI '+(roi>0?'+':'')+roi+'% (n='+o.t+')'+(o.t<MODEL_MIN?' *':'')+'</div>';};
+  var lad=asc.filter(function(k){return s.by_score_bucket[k]&&s.by_score_bucket[k].t>=LADDER_MIN;});
+  if(lad.length>=2){
+    h+='<div style="font-size:10px;font-weight:700;color:var(--txt);margin:8px 0 2px">Score calibration (Over) ‚Äî does ROI rise with score?</div>';
+    asc.slice().reverse().forEach(function(k){h+=ladderRow('Score '+k,s.by_score_bucket[k]);});
+    var rois=lad.map(function(k){return roiOf(s.by_score_bucket[k]);}); // ascending score order
+    var spread=rois[rois.length-1]-rois[0], mono=true; for(var i=1;i<rois.length;i++){if(rois[i]<rois[i-1]-0.05)mono=false;}
+    var verdict=spread>=0.10&&mono?'PREDICTIVE ‚Äî ROI rises with score':spread>=0.10?'PARTLY PREDICTIVE ‚Äî rises overall, not monotonic':spread<=-0.10?'INVERTED ‚Äî higher score = WORSE (ranking backwards)':'FLAT ‚Äî score is noise (no signal)';
+    var vc=spread>=0.10?'var(--grn)':spread<=-0.10?'var(--red)':'var(--amb)';
+    h+='<div style="font-size:10px;font-weight:700;color:'+vc+';margin-top:2px">Verdict: '+verdict+' (spread '+(spread>0?'+':'')+Math.round(spread*100)+'% ROI top vs bottom)</div>';
+    h+='<div style="font-size:9px;color:var(--mut)">* = bucket under '+MODEL_MIN+' settled; read as directional only.</div>';
+  }
+  // MIRROR vs PREDICTION benchmark ‚Äî does using the SCORE beat blindly fading?
+  if(s.bench.n>=MODEL_MIN){
+    var b=s.bench, rRec=Math.round(b.rec/b.n*100), rBlind=Math.round(b.blind_under/b.n*100), rOver=Math.round(b.always_over/b.n*100);
+    var rowB=function(label,roi){var c=roi>0?'var(--grn)':roi<0?'var(--red)':'var(--mut)';return '<div style="font-size:11px;color:'+c+'">'+label+': ROI '+(roi>0?'+':'')+roi+'%</div>';};
+    h+='<div style="font-size:10px;font-weight:700;color:var(--txt);margin:8px 0 2px">Mirror vs prediction (n='+b.n+')</div>';
+    h+=rowB('(a) Score-driven side (Over if score&ge;'+b.tcut+', else Under)',rRec)+'<div style="font-size:9px;color:var(--mut);margin:-2px 0 2px 8px">'+b.rec_over+' Overs / '+b.rec_under+' Unders</div>';
+    h+=rowB('(b) Blind fade ‚Äî always Under',rBlind);
+    h+=rowB('(c) Always Over (today)',rOver);
+    var adds=rRec>rBlind+2;
+    h+='<div style="font-size:10px;font-weight:700;color:'+(adds?'var(--grn)':'var(--red)')+';margin-top:2px">Score adds value over blind fade: '+(adds?'YES (+'+(rRec-rBlind)+'% vs blind)':'NO ‚Äî only riding the mirror')+'</div>';
+    h+='<div style="font-size:9px;color:var(--mut)">Over legs use real odds; Under legs assume -120 (no historical Under odds).</div>';
   }
   // Closing line value (forward-only)
   if(s.clv_n>0){
