@@ -962,6 +962,12 @@ var MSTATS=null; // cached aggregated model stats, refreshed on render
 function propShort(mktKey){return {batter_singles:'singles',batter_hits:'hits',batter_runs_scored:'runs',batter_rbis:'rbi',batter_total_bases:'total_bases',batter_hits_runs_rbis:'h_r_rbi',batter_walks:'walks',batter_stolen_bases:'stolen_bases',batter_home_runs:'home_runs',pitcher_strikeouts:'strikeouts'}[mktKey]||mktKey;}
 function scoreBucket(s){return s>=90?'90-100':s>=80?'80-89':s>=70?'70-79':s>=60?'60-69':s>=50?'50-59':'<50';}
 function pct(w,t,m){m=m||20;if(t<m)return'calibrating ('+t+'/'+m+')';return Math.round(w/t*100)+'% ('+w+'/'+t+')';}
+// Single-event (one PA can settle it) vs multi-event (needs accumulation across PAs)
+function eventClass(prop,line){
+  if(prop==='h_r_rbi'||prop==='strikeouts')return'multi';
+  if((prop==='total_bases'||prop==='hits')&&line>=1.5)return'multi';
+  return'single';
+}
 
 // Immutable point-in-time snapshot ‚Äî never overwrite an already-logged pick.
 function pickIdOf(p){return todayStr().replace(/-/g,'')+'_'+p.pid+'_'+propShort(p.mktKey)+'_'+p.line;}
@@ -1079,7 +1085,8 @@ function buildModelStats(){
   var all=getAllLoggedPicks();
   var s={total_generated:all.length,total_resolved:0,total_pending:0,total_dnp:0,total_push:0,
     by_grade:{},by_score_bucket:{},by_prop_type:{},by_matchup_tag:{},by_platoon:{},
-    by_regression_due:{},by_trend:{},by_direction:{},by_prop_dir:{},by_clv:{},
+    by_regression_due:{},by_trend:{},by_direction:{},by_prop_dir:{},by_clv:{},by_event:{},
+    under_bt:{all:{w:0,t:0,p:0},by_grade:{},by_prop:{}},
     over_n:0,under_n:0,clv_sum:0,clv_n:0,clv_pos:0,clv_since:null,last_updated:new Date().toISOString()};
   function bump(o,key,p){
     if(key==null||key==='')return;
@@ -1103,7 +1110,16 @@ function buildModelStats(){
     var dir=p.direction||'over';
     bump(s.by_direction,dir,p); if(dir==='under')s.under_n++;else s.over_n++;
     bump(s.by_prop_dir,p.prop_type+'|'+dir,p);
+    bump(s.by_event,eventClass(p.prop_type,p.line),p);
     if(p.clv!=null){s.clv_sum+=p.clv;s.clv_n++;if(p.clv>0)s.clv_pos++;bump(s.by_clv,p.clv>=0?'pos':'neg',p);if(!s.clv_since||p.date<s.clv_since)s.clv_since=p.date;}
+    // UNDER backtest: would fading THIS Over (taking the Under) have hit? (hit-rate only ‚Äî no historical Under odds)
+    if(dir==='over'&&p.actual_stat!=null){
+      var uw=p.actual_stat<p.line, push=p.actual_stat===p.line;
+      var uadd=function(o,k){if(k==null||k==='')return;if(!o[k])o[k]={w:0,t:0,p:0};if(push){o[k].p++;}else{o[k].t++;if(uw)o[k].w++;}};
+      if(push)s.under_bt.all.p++;else{s.under_bt.all.t++;if(uw)s.under_bt.all.w++;}
+      uadd(s.under_bt.by_grade,p.grade);
+      uadd(s.under_bt.by_prop,p.prop_type);
+    }
   });
   try{localStorage.setItem('he9_model_stats',JSON.stringify(s));}catch(e){}
   MSTATS=s;return s;
@@ -1601,6 +1617,12 @@ function modelPerfBlock(){
   // Prop type, sorted by ROI (best first) ‚Äî localizes the leak
   var props=Object.keys(s.by_prop_type).filter(function(k){return s.by_prop_type[k].t>=MODEL_MIN;}).sort(function(a,b){return roiOf(s.by_prop_type[b])-roiOf(s.by_prop_type[a]);});
   if(props.length){h+='<div style="font-size:10px;font-weight:700;color:var(--txt);margin:8px 0 2px">By prop (sorted by ROI)</div>';props.forEach(function(k){h+=bucketRow(k,s.by_prop_type[k]);});}
+  // Single-event vs multi-event summary
+  if((s.by_event.single&&s.by_event.single.t>=MODEL_MIN)||(s.by_event.multi&&s.by_event.multi.t>=MODEL_MIN)){
+    h+='<div style="font-size:10px;font-weight:700;color:var(--txt);margin:8px 0 2px">Single-event vs multi-event</div>';
+    h+=bucketRow('Single-event (1B, RBI, BB, SB, 0.5 lines)',s.by_event.single);
+    h+=bucketRow('Multi-event (H+R+RBI, TB/Hits 1.5+, Ks)',s.by_event.multi);
+  }
   // Over / Under split (overall + per prop where both sides exist)
   var ouTot=s.over_n+s.under_n;
   h+='<div style="font-size:10px;font-weight:700;color:var(--txt);margin:8px 0 2px">Over vs Under ('+(ouTot?Math.round(s.over_n/ouTot*100):0)+'% of settled picks are Overs)</div>';
@@ -1609,6 +1631,16 @@ function modelPerfBlock(){
     var ov=s.by_prop_dir[pt+'|over'],un=s.by_prop_dir[pt+'|under'];
     if(ov&&un&&(ov.t>=MODEL_MIN||un.t>=MODEL_MIN)){h+='<div style="font-size:10px;color:var(--mut);margin-top:3px">'+pt+':</div>'+bucketRow('&nbsp;&nbsp;Over',ov)+bucketRow('&nbsp;&nbsp;Under',un);}
   });
+  // UNDER backtest ‚Äî would fading our own Overs have hit? (hit-rate only; no historical Under odds)
+  var ub=s.under_bt;
+  if(ub&&ub.all.t>=MODEL_MIN){
+    var ubr=function(label,o){if(!o||o.t<MODEL_MIN)return o&&o.t?'<div style="font-size:11px;color:var(--mut)">'+label+': calibrating ('+o.t+'/'+MODEL_MIN+')</div>':'';var r=Math.round(o.w/o.t*100),c=r>=58?'var(--grn)':r<52?'var(--red)':'var(--amb)';return '<div style="font-size:11px;color:'+c+'">'+label+': '+r+'% ('+o.w+'/'+o.t+')'+(o.p?' &middot; '+o.p+' push':'')+'</div>';};
+    h+='<div style="font-size:10px;font-weight:700;color:var(--txt);margin:8px 0 2px">UNDER backtest ‚Äî fading our own Overs</div>';
+    h+=ubr('Under overall',ub.all);
+    ['A','B','W'].forEach(function(g){if(ub.by_grade[g])h+=ubr('Under '+g,ub.by_grade[g]);});
+    Object.keys(ub.by_prop).sort(function(a,b){return (ub.by_prop[b].w/ub.by_prop[b].t)-(ub.by_prop[a].w/ub.by_prop[a].t);}).forEach(function(k){h+=ubr('Under '+k,ub.by_prop[k]);});
+    h+='<div style="font-size:9px;color:var(--mut);margin-top:2px">Hit-rate only (historical Under odds not retrievable). Unders are minus-money: break-even is ~55% at -120, ~58% at -140. Above that = fading would have been +EV.</div>';
+  }
   // By model score bucket ‚Äî is the score itself predictive?
   var sbOrder=['90-100','80-89','70-79','60-69','50-59'];
   var sbAvail=sbOrder.filter(function(k){return s.by_score_bucket[k]&&s.by_score_bucket[k].t>=MODEL_MIN;});
