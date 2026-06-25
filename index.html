@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-<title>Hitters Edge v10</title>
+<title>Hitters Edge v11</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -107,7 +107,7 @@ select.inp option{background:var(--sur2)}
 <body>
 <div class="hdr">
   <div>
-    <div class="logo">&#9918; Hitters Edge v10</div>
+    <div class="logo">&#9918; Hitters Edge v11</div>
     <div style="font-size:9px;color:var(--mut)" id="lu">Loading...</div>
     <div style="font-size:9px;color:var(--mut)" id="rtimer"></div>
   </div>
@@ -140,7 +140,12 @@ var SEASON    = 2026;
 var ACE_ERA_THRESHOLD    = 2.80;  // ERA at or below = ace
 var ACE_MIN_STARTS       = 6;     // minimum GS to be considered ace
 var MAX_A_PICKS          = 5;     // hard cap on premium card
-var MIN_ODDS             = -140;  // worst odds we accept
+var MIN_ODDS             = -160;  // v11 floor: lay no more than -160
+var MAX_ODDS             = 130;   // v11 HARD CAP: no longshots past +130 (the proven leak)
+var RUNS_TOTAL_MIN       = 8.5;   // runs props need a high-total game
+var RBI_TOTAL_MIN        = 8.0;   // rbi props need run environment + runners
+var WALK_HITTER_BB_MIN   = 0.085; // walks props need a patient hitter (BB% proxy)
+var WALK_OPP_BB9_MIN     = 3.3;   // ...vs a wild-ish pitcher
 var ROOKIE_GAME_GATE     = 50;    // under this = rookie restrictions
 var K_LINE_MAX           = 7.0;   // 7.5+ K lines excluded from card
 var HRI_25_LINE          = 2.5;   // 2.5 H+R+RBI hard capped at B
@@ -225,7 +230,6 @@ var SECTIONS=[
   {key:'batter_home_runs',     label:'Home Runs',           icon:'&#128165;', col:'var(--pur)', tier:3},
   {key:'batter_rbis',          label:'RBI',                 icon:'&#128170;', col:'#e91e63',    tier:3},
   {key:'batter_runs_scored',   label:'Runs Scored',         icon:'&#127939;', col:'var(--grn)', tier:3},
-  {key:'batter_stolen_bases',  label:'Stolen Bases',        icon:'&#128168;', col:'var(--tel)', tier:3},
   {key:'batter_walks',         label:'Walks',               icon:'&#128065;', col:'var(--blu)', tier:3},
 ];
 // Doubles excluded per spec
@@ -330,7 +334,7 @@ async function loadOddsGames(){
 }
 async function loadEventProps(eventId){
   // Doubles excluded per spec
-  var mkts='batter_hits,batter_hits_runs_rbis,batter_singles,batter_total_bases,batter_home_runs,batter_rbis,batter_runs_scored,batter_stolen_bases,batter_walks,pitcher_strikeouts';
+  var mkts='batter_hits,batter_hits_runs_rbis,batter_singles,batter_total_bases,batter_home_runs,batter_rbis,batter_runs_scored,batter_walks,pitcher_strikeouts'; // v11: stolen_bases removed (kill-list)
   return await apiFetch(ODDS_BASE+'/sports/baseball_mlb/events/'+eventId+'/odds?regions=us&markets='+mkts+'&oddsFormat=american&apiKey='+ODDS_KEY);
 }
 
@@ -720,6 +724,43 @@ function pitcherMatchupAdj(p, l3, key){
   adj=Math.max(-MATCHUP_MAX_ADJ,Math.min(MATCHUP_MAX_ADJ,Math.round(adj)));
   var tag=adj>=6?'JUICY':adj>=2?'soft':adj<=-6?'TOUGH':adj<=-2?'firm':'even';
   return{adj:adj,tag:tag};
+}
+
+// ‚îÄ‚îÄ v11: WIN-PROBABILITY SCORING (rank by likelihood the line clears, not payout) ‚îÄ‚îÄ
+// Poisson P(X >= k) for a per-game event rate. Standard first-pass prop model.
+function poisAtLeast(lambda,k){
+  if(lambda<=0)return 0; if(k<=0)return 1;
+  var cum=0,term=Math.exp(-lambda);
+  for(var i=0;i<k;i++){cum+=term;term*=lambda/(i+1);}
+  return Math.max(0,Math.min(1,1-cum));
+}
+// Per-game expected rate of the event for this hitter prop.
+function rateFor(k,b){
+  if(k==='batter_singles')return b.sngpg||0;
+  if(k==='batter_hits')return b.hpg||0;
+  if(k==='batter_total_bases')return b.tbpg||0;
+  if(k==='batter_runs_scored')return b.runspg||0;
+  if(k==='batter_rbis')return b.rbipg||0;
+  if(k==='batter_home_runs')return b.hrpg||0;
+  if(k==='batter_walks')return Math.max((b.bbRate||0)*4.2,0); // BB% x ~4.2 PA/game
+  if(k==='batter_hits_runs_rbis')return (b.hpg||0)+(b.runspg||0)+(b.rbipg||0);
+  return 0;
+}
+// Modeled win probability (0-1) that an OVER clears its line, with gentle form + context mult.
+function winProbOver(k,line,b,mult){
+  var rate=rateFor(k,b)*(mult||1);
+  return poisAtLeast(rate,Math.ceil(line)); // Over X.5 needs >= ceil(line)
+}
+// Player-type -> prop matching. Returns null if OK, else a skip reason (hard filter).
+function profileMismatch(k,b,batKey,spot,gameTotal,oppBB9){
+  if(k==='batter_stolen_bases')return'SB killed (v11)';
+  if(!b)return null;
+  if(k==='batter_total_bases'||k==='batter_home_runs'){ if(batKey==='CONTACT')return'contact bat on a power prop'; }
+  if(k==='batter_singles'){ if(batKey==='POWER')return'power bat on singles'; }
+  if(k==='batter_runs_scored'){ if(!spot||spot>3)return'runs need a top-3 lineup spot'; if(gameTotal!=null&&gameTotal<RUNS_TOTAL_MIN)return'runs need a high-total game'; }
+  if(k==='batter_rbis'){ if(!spot||spot<3||spot>6)return'rbi need a 3-6 lineup spot'; if(gameTotal!=null&&gameTotal<RBI_TOTAL_MIN)return'rbi need run environment'; }
+  if(k==='batter_walks'){ if((b.bbRate||0)<WALK_HITTER_BB_MIN)return'walks need a patient hitter'; if(oppBB9!=null&&oppBB9<WALK_OPP_BB9_MIN)return'walks need a wild pitcher'; }
+  return null;
 }
 
 // ‚îÄ‚îÄ APPLY ALL FILTERS AND GRADE (spec) ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
@@ -1365,53 +1406,42 @@ async function loadAll(){
         var mkt=mkts[k];
         if(!mkt)return;
 
-        // FIX 3: Score FIRST using pure stats ‚Äî no odds involved
-        // recOdds derived from score after, not before
-        var score=0;
-        if(k==='batter_singles')            score=scoreSingles(bStats||{},park);
-        else if(k==='pitcher_strikeouts')   score=scorePitcherK(pitSt,pitL3,mkt.line);
-        else if(k==='batter_hits_runs_rbis')score=scoreHRI(bStats||{},lineupSpot,park,mkt.line);
-        else if(k==='batter_hits')          score=scoreHits(bStats||{},park);
-        else if(k==='batter_total_bases')   score=scoreTB(bStats||{},park);
-        else if(k==='batter_home_runs')     score=scoreHR(bStats||{},park);
-        else if(k==='batter_rbis')          score=scoreRBI(bStats||{});
-        else if(k==='batter_runs_scored')   score=scoreRuns(bStats||{});
-        else if(k==='batter_stolen_bases')  score=scoreSB(bStats||{});
-        else if(k==='batter_walks')         score=scoreWlk(bStats||{});
-        else return;
+        if(k==='batter_stolen_bases')return; // v11 kill-list (belt + suspenders)
 
-        // Opposing-pitcher matchup adjustment ‚Äî hitter props only, graded on a
-        // spectrum (the binary ace skip above only removes the extreme tail).
-        var mAdj=0,mTag='';
+        // v11 PLAYER-TYPE -> PROP matching (hard filter). Wrong profile = skip.
+        var bKeyEarly=bStats?(batType(bStats.iso)||{}).key:null;
+        var oppBB9=oppPit?(oppPit.bb9!=null?oppPit.bb9:null):null;
         if(!isPitcher){
-          var mu=pitcherMatchupAdj(oppPit,oppPitL3,k);
-          mAdj=mu.adj;mTag=mu.tag;
-          score=Math.max(0,Math.min(100,score+mAdj));
-          // Platoon modifier (favorable/unfavorable handedness)
-          if(pm)score=Math.max(0,Math.min(100,score+pm.adj));
-          // Weather: temperature modifier only (wind shown but not scored yet)
-          var wAdj=weatherMod(weather[gameStr]);
-          if(wAdj)score=Math.max(0,Math.min(100,score+wAdj));
+          var mis=profileMismatch(k,bStats,bKeyEarly,lineupSpot,(totalMap[gameStr]!=null?totalMap[gameStr]:null),oppBB9);
+          if(mis)return;
         }
 
-        // rawScore = internal model points. Each model has a different ceiling
-        // (see PROP_MAX), so raw points are NOT comparable across props.
-        var rawScore=score;
-        // Normalize to a common 0-100 scale: 100 = the best this prop can
-        // realistically score. Now the displayed number reads the same everywhere
-        // ‚Äî a 90 Singles and a 90 Walks are equally strong FOR THEIR prop.
-        var propMax=PROP_MAX[k]||100;
-        score=Math.max(0,Math.min(100,Math.round(rawScore/propMax*100)));
+        // Context as gentle multipliers on the event rate (not point adds).
+        var mAdj=0,mTag='',wAdj=0,pAdj=(pm?pm.adj:0);
+        if(!isPitcher){var mu=pitcherMatchupAdj(oppPit,oppPitL3,k);mAdj=mu.adj;mTag=mu.tag;wAdj=weatherMod(weather[gameStr]);}
 
-        // Recommended side comes from the RAW model signal (tuned on raw points),
-        // never from odds and never from the normalized display number.
-        var recOdds=(k==='pitcher_strikeouts'&&rawScore<55)?mkt.under:mkt.over;
-        if(!recOdds||recOdds<MIN_ODDS)return;
+        // v11 SCORE = modeled WIN PROBABILITY (0-100). Ranks by likelihood, not payout.
+        var score=0,sideOver='Over',recOdds=mkt.over;
+        if(k==='pitcher_strikeouts'){
+          var krate=((pitL3&&pitL3.avgK)||(pitSt&&pitSt.avgK)||0);
+          var pOver=poisAtLeast(krate,Math.ceil(mkt.line));
+          if(pOver>=0.5){score=Math.round(pOver*100);sideOver='Over';recOdds=mkt.over;}
+          else{score=Math.round((1-pOver)*100);sideOver='Under';recOdds=mkt.under;}
+        }else if(bStats){
+          var formMult=bStats.hotCold==='HOT'?1.08:bStats.hotCold==='Warming'?1.04:bStats.hotCold==='COLD'?0.88:bStats.hotCold==='Cooling'?0.94:1;
+          var ctxMult=1+(mAdj+pAdj+wAdj)/200; // matchup+platoon+temp, gentle
+          var wp=winProbOver(k,mkt.line,bStats,formMult*ctxMult);
+          score=Math.round(Math.max(0,Math.min(100,wp*100)));
+        }else return;
+        var rawScore=score, propMax=100; // win-prob already cross-prop comparable
 
-        if(score<40)return;
+        // v11 ODDS BAND: floor (-160) + HARD long cap (+130). Amputate the longshot tail.
+        if(recOdds==null||recOdds<MIN_ODDS||recOdds>MAX_ODDS)return;
 
-        // Grade off the normalized score so the badge always matches the number.
-        var rawGrade=score>=65?'A':score>=50?'B':'C';
+        if(score<52)return; // below a coin flip = no edge
+
+        // Grade off win probability (premium = high-probability common events)
+        var rawGrade=score>=65?'A':score>=52?'B':'C';
         if(rawGrade==='C')return;
 
         // Track K picks for conflict check
@@ -1419,9 +1449,8 @@ async function loadAll(){
           kPickGames[gameStr]=true;
         }
 
-        // Build label
-        var sideOver=(k==='pitcher_strikeouts'&&rawScore<55)?'Under':'Over';
-        var lmap={'batter_hits_runs_rbis':'H+R+RBI','batter_singles':'Singles','batter_hits':'Hits','batter_total_bases':'Total Bases','batter_home_runs':'HR','batter_rbis':'RBI','batter_runs_scored':'Runs Scored','batter_stolen_bases':'SB','batter_walks':'Walks','pitcher_strikeouts':'Strikeouts'};
+        // Build label (sideOver already set by the win-prob block above)
+        var lmap={'batter_hits_runs_rbis':'H+R+RBI','batter_singles':'Singles','batter_hits':'Hits','batter_total_bases':'Total Bases','batter_home_runs':'HR','batter_rbis':'RBI','batter_runs_scored':'Runs Scored','batter_walks':'Walks','pitcher_strikeouts':'Strikeouts'};
         var propLabel=sideOver+' '+mkt.line+' '+(lmap[k]||k);
 
         // True opposing pitcher (this batter's side) ‚Äî used for display and the
@@ -1753,7 +1782,7 @@ function renderPicks(){
 
   // How-to-read-the-score legend
   h+=modelPerfBlock();
-  h+='<div class="filter-note" style="background:var(--bbg);border-color:rgba(59,130,246,.3)"><div style="font-size:11px;font-weight:700;color:var(--blu);margin-bottom:3px">&#8505; How to read the Score</div><div style="font-size:10px;color:var(--mut);line-height:1.5">Each pick is scored <b>0&ndash;100 against the best a pick in that same prop can reach</b>. 100 = as strong a signal as that prop ever gives &mdash; it <b>ranks our best predictions; it is NOT the % chance the bet hits</b>. A 100 Walks pick and a 100 Singles pick are each the top of their own prop. The smaller <b>raw model</b> number is the internal score before normalizing &mdash; e.g. a raw <b>65</b> on Walks shows as <b>100</b>, because 65 is near the most a Walks pick can score.</div></div>';
+  h+='<div class="filter-note" style="background:var(--bbg);border-color:rgba(59,130,246,.3)"><div style="font-size:11px;font-weight:700;color:var(--blu);margin-bottom:3px">&#8505; v11 ‚Äî How to read the Score</div><div style="font-size:10px;color:var(--mut);line-height:1.5"><b>Score = modeled win probability</b> that the line clears (0&ndash;100%), not payout. Higher Score = higher hit likelihood, so a <b>-130 high-probability single outranks a +250 longshot</b>. Cards are capped to the <b>-160 to +130 odds band</b> (longshots past +130 were the proven leak) and each prop only fires on its matching bat type. <b>Singles board only ‚Äî no parlays</b> (multi-leg structure dilutes EV).</div></div>';
 
   // Premium card header
   h+='<div class="card" style="background:var(--gbg);border-color:rgba(34,197,94,.3)">';
@@ -1814,69 +1843,8 @@ function renderPicks(){
 
   h+='<div style="text-align:center;margin:10px 0"><button class="rbtn" onclick="loadAll()">&#8635; Refresh</button></div>';
 
-  // ‚îÄ‚îÄ BEST PARLAYS SECTION ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
-  if(D.bestParlays&&(D.bestParlays.two||D.bestParlays.three)){
-    h+='<div class="card" style="border-color:var(--gld);background:var(--sur)">';
-    h+='<div style="font-size:13px;font-weight:700;color:var(--gld);margin-bottom:4px">&#127920; Best Parlays</div>';
-    h+='<div style="font-size:11px;color:var(--mut);margin-bottom:10px">Drawn from Premium Card. Never combine two picks from the same game.</div>';
-
-    if(D.bestParlays.two){
-      var t=D.bestParlays.two;
-      var col=t.odds>0?'var(--grn)':'var(--amb)';
-      h+='<div style="background:var(--sur2);border-radius:9px;padding:10px;margin-bottom:8px">';
-      h+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px">';
-      h+='<div style="font-size:12px;font-weight:700;color:var(--txt)">2-Leg Parlay</div>';
-      h+='<div style="font-size:16px;font-weight:700;color:'+col+'">'+fmtOdds(t.odds)+'</div></div>';
-      t.legs.forEach(function(l){
-        h+='<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-top:1px solid var(--bdr)">';
-        h+='<div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:600">'+l.name+'</div>';
-        h+='<div style="font-size:10px;color:var(--mut)">'+l.prop+' &middot; '+l.game+'</div></div>';
-        h+='<div style="text-align:right;flex-shrink:0"><div style="font-size:13px;font-weight:700;color:'+(l.odds>0?'var(--grn)':'var(--txt)')+'">'+fmtOdds(l.odds)+'</div>';
-        h+='<div style="font-size:9px;color:var(--mut)">'+l.prob+'% prob</div></div></div>';
-      });
-      h+='</div>';
-    }
-
-    if(D.bestParlays.three){
-      var t3=D.bestParlays.three;
-      var col3=t3.odds>0?'var(--grn)':'var(--amb)';
-      h+='<div style="background:var(--sur2);border-radius:9px;padding:10px;margin-bottom:8px">';
-      h+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px">';
-      h+='<div style="font-size:12px;font-weight:700;color:var(--txt)">3-Leg Parlay</div>';
-      h+='<div style="font-size:16px;font-weight:700;color:'+col3+'">'+fmtOdds(t3.odds)+'</div></div>';
-      t3.legs.forEach(function(l){
-        h+='<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-top:1px solid var(--bdr)">';
-        h+='<div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:600">'+l.name+'</div>';
-        h+='<div style="font-size:10px;color:var(--mut)">'+l.prop+' &middot; '+l.game+'</div></div>';
-        h+='<div style="text-align:right;flex-shrink:0"><div style="font-size:13px;font-weight:700;color:'+(l.odds>0?'var(--grn)':'var(--txt)')+'">'+fmtOdds(l.odds)+'</div>';
-        h+='<div style="font-size:9px;color:var(--mut)">'+l.prob+'% prob</div></div></div>';
-      });
-      h+='</div>';
-    }
-
-    h+='<div style="font-size:10px;color:var(--mut);margin-top:4px">Parlay odds use standard math. These are suggestions ‚Äî if you already bet the singles, skip the parlay.</div>';
-    h+='</div>';
-  }
-
-  // ‚îÄ‚îÄ CORRELATED SGP OPPORTUNITIES ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
-  if(D.sgps&&D.sgps.length){
-    D.sgps.forEach(function(s){
-      h+='<div class="card" style="border-color:var(--tel);background:var(--sur)">';
-      h+='<div style="font-size:13px;font-weight:700;color:var(--tel);margin-bottom:2px">&#128279; Correlated SGP Opportunity</div>';
-      h+='<div style="font-size:11px;color:var(--mut);margin-bottom:8px">'+s.game+' &middot; '+s.time+'</div>';
-      h+='<div style="font-size:11px;color:var(--txt);margin-bottom:8px">Pitcher: <b>'+s.pitcher+'</b> &middot; '+(s.typeKey?s.typeKey.replace('TYPE','TYPE '):'')+' '+(s.typeLabel||'')+(s.matchupTag?' &middot; '+s.matchupTag.toUpperCase():'')+'</div>';
-      s.legs.forEach(function(l,i){
-        h+='<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-top:1px solid var(--bdr)">';
-        h+='<div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:600">Leg '+(i+1)+': '+l.name+'</div>';
-        h+='<div style="font-size:10px;color:var(--mut)">'+l.prop+' &middot; #'+l.spot+' '+(l.bat==='CONTACT'?'&#128994; Contact':'&#128308; Power')+' bat</div></div>';
-        h+='<div style="font-size:13px;font-weight:700;color:'+(l.odds>0?'var(--grn)':'var(--txt)')+';flex-shrink:0">'+fmtOdds(l.odds)+'</div></div>';
-      });
-      h+='<div style="font-size:10px;color:var(--mut);margin-top:6px;line-height:1.5"><b>Why this works:</b> contact bat reaches base via singles against a hittable arm; the power bat behind him drives the run in. One sequence can cash both legs &mdash; correlated upside.</div>';
-      h+='<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding-top:8px;border-top:1px solid var(--bdr)"><span style="font-size:11px;color:var(--mut)">Combined odds</span><span style="font-size:16px;font-weight:700;color:var(--gld)">'+fmtOdds(s.combined)+'</span></div>';
-      h+='<div style="font-size:9px;color:var(--amb);margin-top:4px">Same-game parlay ‚Äî one book, build as an SGP.</div>';
-      h+='</div>';
-    });
-  }
+  // v11: parlay/SGP auto-builders removed from the card ‚Äî singles board is the edge.
+  // (Multi-leg structure diluted EV: a 72% single becomes ~14% at six legs.)
 
   h+=resultsLogBlock();
 
@@ -2280,7 +2248,7 @@ function copyPicks(){
   var watch=D.picks.filter(function(p){return p.grade==='B'||p.grade==='W';});
   var wins=BETS.filter(function(b){return b.result==='WIN';}).length;
   var tot=BETS.filter(function(b){return b.result!=='PENDING';}).length;
-  var txt='HITTERS EDGE v10 ‚Äî '+D.date+' (generated '+(D.generatedAt||'?')+', odds as of '+(D.oddsAsOf||'?')+')\n';
+  var txt='HITTERS EDGE v11 ‚Äî '+D.date+' (generated '+(D.generatedAt||'?')+', odds as of '+(D.oddsAsOf||'?')+')\n';
   txt+='Record: '+wins+'W/'+(tot-wins)+'L'+(tot?' ('+Math.round(wins/tot*100)+'%)':'')+'\n';
   txt+='Score = normalized 0-100 WITHIN each prop (a ranking, not a win probability). Value model% = real settled-bet hit rate for that score bucket.\n';
   if(D.aceNotes&&D.aceNotes.length){txt+='\nACE FILTERS (batters skipped):\n';D.aceNotes.forEach(function(n){txt+='  '+n.team+' vs '+n.pitcher+' ('+n.era+' ERA)\n';});}
