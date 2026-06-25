@@ -342,6 +342,7 @@ async function loadMLBSchedule(){
     var awayLu=(g.lineups&&g.lineups.awayPlayers||[]).map(function(p,i){return{id:p.id,name:p.fullName,spot:i+1};});
     var homeLu=(g.lineups&&g.lineups.homePlayers||[]).map(function(p,i){return{id:p.id,name:p.fullName,spot:i+1};});
     return{
+      gamePk:g.gamePk,
       awayTeam:g.teams.away.team.name,homeTeam:g.teams.home.team.name,
       venue:g.venue&&g.venue.name||'',
       awayKey:g.teams.away.team.name.split(' ').pop().toLowerCase(),
@@ -953,6 +954,110 @@ function buildSGPs(picks){
   return out;
 }
 
+// ‚îÄ‚îÄ AUTOMATIC PICK OUTCOME TRACKING ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+// Purely additive: logs every generated pick, resolves it from box scores after the
+// game ends, and aggregates real win rates. Uses he9_pick_* and he9_model_stats keys
+// (separate from the manual bet log). Does NOT touch scoring/discovery/filters.
+var MSTATS=null; // cached aggregated model stats, refreshed on render
+function propShort(mktKey){return {batter_singles:'singles',batter_hits:'hits',batter_runs_scored:'runs',batter_rbis:'rbi',batter_total_bases:'total_bases',batter_hits_runs_rbis:'h_r_rbi',batter_walks:'walks',batter_stolen_bases:'stolen_bases',batter_home_runs:'home_runs',pitcher_strikeouts:'strikeouts'}[mktKey]||mktKey;}
+function scoreBucket(s){return s>=90?'90-100':s>=80?'80-89':s>=70?'70-79':s>=60?'60-69':s>=50?'50-59':'<50';}
+function pct(w,t,m){m=m||20;if(t<m)return'calibrating ('+t+'/'+m+')';return Math.round(w/t*100)+'% ('+w+'/'+t+')';}
+
+// Immutable point-in-time snapshot ‚Äî never overwrite an already-logged pick.
+function logPick(p){
+  if(!p||p.pid==null||p.line==null||!p.gamePk)return;
+  var prop=propShort(p.mktKey);
+  var id=todayStr().replace(/-/g,'')+'_'+p.pid+'_'+prop+'_'+p.line;
+  var key='he9_pick_'+id;
+  if(localStorage.getItem(key))return; // already logged today ‚Äî skip
+  var rec={id:id,date:todayStr(),generated_at:new Date().toISOString(),
+    player_name:p.name,player_id:p.pid,team:p.teamAbbr||'',game_pk:p.gamePk,opponent_team:p.oppAbbr||'',
+    pitcher_name:p.oppPitName||(p.isPitcher?p.name:''),prop_type:prop,line:p.line,direction:p.direction||'over',
+    grade:p.grade,score:p.score,odds:p.recOdds,implied_prob:Math.round(impliedProb(p.recOdds)*1000)/1000,
+    matchup_tag:((p.matchupTag||'').toUpperCase())||null,matchup_value:p.matchupAdj||0,
+    platoon:p.platoonSide||null,platoon_value:p.platoonAdj||0,game_total:(p.gameTotal!=null?p.gameTotal:null),
+    bat_type:p.batKey||null,iso:(p.bStats?p.bStats.iso:null),pitcher_vulnerability:p.oppTypeKey||null,
+    luck_gap:(p.luckSum!=null?p.luckSum:null),regression_due:(p.luckSum!=null&&p.luckSum>0.100),
+    ten_game_trend:(p.bStats?p.bStats.hotCold:null),result:'PENDING',actual_stat:null,resolved_at:null};
+  try{localStorage.setItem(key,JSON.stringify(rec));}catch(e){}
+}
+function logAllPicks(){ if(!D||!D.picks)return; D.picks.forEach(logPick); } // parlay legs are individual picks, already logged
+
+function getAllLoggedPicks(){var a=[];for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(k&&k.indexOf('he9_pick_')===0){try{a.push(JSON.parse(localStorage.getItem(k)));}catch(e){}}}return a;}
+function statForProp(prop,b){
+  var h=parseInt(b.hits)||0,d=parseInt(b.doubles)||0,t=parseInt(b.triples)||0,hr=parseInt(b.homeRuns)||0;
+  if(prop==='singles')return Math.max(h-d-t-hr,0);
+  if(prop==='hits')return h;
+  if(prop==='runs')return parseInt(b.runs)||0;
+  if(prop==='rbi')return parseInt(b.rbi)||0;
+  if(prop==='total_bases')return parseInt(b.totalBases)||0;
+  if(prop==='home_runs')return hr;
+  if(prop==='walks')return parseInt(b.baseOnBalls)||0;
+  if(prop==='stolen_bases')return parseInt(b.stolenBases)||0;
+  if(prop==='h_r_rbi')return h+(parseInt(b.runs)||0)+(parseInt(b.rbi)||0);
+  return 0;
+}
+function saveResolved(p,result,actual){p.actual_stat=actual;p.result=result;p.resolved_at=new Date().toISOString();try{localStorage.setItem('he9_pick_'+p.id,JSON.stringify(p));}catch(e){}}
+function resolveOne(p,box){
+  var pl=(box.teams.home.players&&box.teams.home.players['ID'+p.player_id])||(box.teams.away.players&&box.teams.away.players['ID'+p.player_id])||null;
+  if(!pl){saveResolved(p,'DNP',null);return;} // not in box score = did not dress
+  if(p.prop_type==='strikeouts'){
+    var ps=(pl.stats&&pl.stats.pitching)||{};
+    if(ps.inningsPitched==null){saveResolved(p,'DNP',null);return;}
+    var k=parseInt(ps.strikeOuts)||0;
+    saveResolved(p,(p.direction==='under'?k<p.line:k>p.line)?'WIN':'LOSS',k);return;
+  }
+  var b=(pl.stats&&pl.stats.batting)||{};
+  var ab=parseInt(b.atBats)||0,bb=parseInt(b.baseOnBalls)||0;
+  if(ab===0&&bb===0){saveResolved(p,'DNP',null);return;} // scratched / pinch role with no PA
+  var actual=statForProp(p.prop_type,b);
+  saveResolved(p,(p.direction==='under'?actual<p.line:actual>p.line)?'WIN':'LOSS',actual);
+}
+function yestStr(){var n=new Date();n.setDate(n.getDate()-1);return n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0')+'-'+String(n.getDate()).padStart(2,'0');}
+// Resolution pass: check schedule for Final games, then pull box scores once per game.
+async function resolvePending(){
+  var pend=getAllLoggedPicks().filter(function(p){return p.result==='PENDING'&&p.game_pk&&(p.date===todayStr()||p.date===yestStr());});
+  if(!pend.length){buildModelStats();return;}
+  var byDate={};pend.forEach(function(p){(byDate[p.date]=byDate[p.date]||{})[p.game_pk]=true;});
+  var finalGames={};
+  for(var dt in byDate){
+    var sd=await apiFetch(MLB+'/schedule?sportId=1&date='+dt);
+    var games=(sd&&sd.dates&&sd.dates[0]&&sd.dates[0].games)||[];
+    games.forEach(function(g){var st=g.status&&(g.status.abstractGameState||g.status.codedGameState);if(st==='Final'||st==='F')finalGames[g.gamePk]=true;});
+    await slp(150);
+  }
+  var byGame={};pend.forEach(function(p){if(finalGames[p.game_pk])(byGame[p.game_pk]=byGame[p.game_pk]||[]).push(p);});
+  for(var gp in byGame){
+    var box=await apiFetch(MLB+'/game/'+gp+'/boxscore');
+    if(box&&box.teams&&box.teams.home&&box.teams.away){byGame[gp].forEach(function(p){resolveOne(p,box);});}
+    await slp(200);
+  }
+  buildModelStats();
+  if(D)renderPicks(); // refresh display with freshly resolved results
+}
+// Aggregate win rates across segments. DNP excluded from all rates.
+function buildModelStats(){
+  var all=getAllLoggedPicks();
+  var s={total_generated:all.length,total_resolved:0,total_pending:0,total_dnp:0,
+    by_grade:{},by_score_bucket:{},by_prop_type:{},by_matchup_tag:{},by_platoon:{},
+    by_regression_due:{'true':{w:0,t:0},'false':{w:0,t:0}},by_trend:{},last_updated:new Date().toISOString()};
+  function bump(o,key,won){if(key==null||key==='')return;if(!o[key])o[key]={w:0,t:0};o[key].t++;if(won)o[key].w++;}
+  all.forEach(function(p){
+    if(p.result==='PENDING'){s.total_pending++;return;}
+    if(p.result==='DNP'){s.total_dnp++;return;}
+    var won=p.result==='WIN';s.total_resolved++;
+    bump(s.by_grade,p.grade,won);
+    bump(s.by_score_bucket,scoreBucket(p.score),won);
+    bump(s.by_prop_type,p.prop_type,won);
+    bump(s.by_matchup_tag,p.matchup_tag,won);
+    bump(s.by_platoon,p.platoon,won);
+    bump(s.by_regression_due,p.regression_due?'true':'false',won);
+    bump(s.by_trend,p.ten_game_trend,won);
+  });
+  try{localStorage.setItem('he9_model_stats',JSON.stringify(s));}catch(e){}
+  MSTATS=s;return s;
+}
+
 // ‚îÄ‚îÄ MAIN LOADER ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
 async function loadAll(){
   setP('Loading...');
@@ -1056,7 +1161,7 @@ async function loadAll(){
       awayPitL3:awayPid?pitcherL3Cache[awayPid]:null,
       lineupPosted:mg.lineupPosted,
       awayLineup:mg.awayLineup,homeLineup:mg.homeLineup,
-      awayTeam:mg.awayTeam,homeTeam:mg.homeTeam,venue:mg.venue
+      awayTeam:mg.awayTeam,homeTeam:mg.homeTeam,venue:mg.venue,gamePk:mg.gamePk
     };
   }
 
@@ -1173,6 +1278,13 @@ async function loadAll(){
       }
       var h2hFlag=getH2HFlag(h2h);
 
+      // Tracking identity (for auto-logging + box-score resolution)
+      var pickPid=isPitcher?((ai2.homePitName===pName)?ai2.homePitId:(ai2.awayPitName===pName?ai2.awayPitId:null)):(bStats?bStats.playerId:null);
+      var teamFull='',oppFull='';
+      if(isPitcher){var pIsHome=(ai2.homePitName===pName);teamFull=pIsHome?og2.home_team:og2.away_team;oppFull=pIsHome?og2.away_team:og2.home_team;}
+      else{teamFull=(batSide==='away')?og2.away_team:(batSide==='home')?og2.home_team:'';oppFull=(batSide==='away')?og2.home_team:(batSide==='home')?og2.away_team:'';}
+      var teamAbbr=TEAM_ABBR[teamFull]||'',oppAbbr=TEAM_ABBR[oppFull]||'';
+
       mktKeys.forEach(function(k){
         var mkt=mkts[k];
         if(!mkt)return;
@@ -1284,6 +1396,8 @@ async function loadAll(){
           h2h:h2h||null, h2hFlag:h2hFlag,
           homeTeam:og2.home_team, parkVenue:(ai2.venue||''),
           wx:(weather[gameStr]||null),
+          pid:pickPid, teamAbbr:teamAbbr, oppAbbr:oppAbbr, gamePk:(ai2.gamePk||null),
+          direction:(sideOver==='Under'?'under':'over'),
           oppTypeKey:oppVuln?oppVuln.key:null, oppTypeLabel:oppVuln?oppVuln.label:null, oppTypeBest:oppVuln?oppVuln.best:null
         });
       });
@@ -1383,11 +1497,57 @@ async function loadAll(){
     generatedAt:new Date().toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York',hour12:true})+' ET',
     loadedAt:new Date().toLocaleTimeString()};
 
+  logAllPicks();      // snapshot every pick (immutable) before rendering
+  buildModelStats();  // refresh aggregate win rates from whatever has resolved so far
+
   var premCount=picks.filter(function(p){return p.grade==='A';}).length;
   var watchCount=picks.filter(function(p){return p.grade==='B'||p.grade==='W';}).length;
   setP('Updated '+D.loadedAt+' \u2022 '+premCount+' premium \u2022 '+watchCount+' watch');
   renderPicks();renderTotals();updPnLHdr();
   if(!REFRESH_T)startAR();
+  resolvePending(); // resolve any finished games (fire-and-forget; refreshes display when done)
+}
+
+// Model Performance header ‚Äî only segments with 20+ resolved picks (proof-of-model).
+function modelPerfBlock(){
+  var s=MSTATS||sg('model_stats',null); if(!s)return'';
+  var h='<div class="card" style="border-color:var(--gld);background:var(--sur)">';
+  h+='<div style="font-size:13px;font-weight:700;color:var(--gld);margin-bottom:2px">&#128202; Model Performance (all-time)</div>';
+  h+='<div style="font-size:10px;color:var(--mut);margin-bottom:8px">Tracked '+s.total_generated+' &middot; Resolved '+s.total_resolved+' &middot; Pending '+s.total_pending+(s.total_dnp?' &middot; DNP '+s.total_dnp:'')+'</div>';
+  if(s.total_resolved<20){
+    h+='<div style="font-size:11px;color:var(--mut)">Calibrating ‚Äî win rates appear once 20+ picks resolve ('+s.total_resolved+'/20). Picks auto-resolve from box scores as games finish.</div></div>';
+    return h;
+  }
+  function seg(title,obj,order){
+    var keys=(order||Object.keys(obj)).filter(function(k){return obj[k]&&obj[k].t>=20;});
+    if(!keys.length)return'';
+    var html='<div style="font-size:10px;font-weight:700;color:var(--txt);margin:7px 0 2px">'+title+'</div>';
+    keys.forEach(function(k){var o=obj[k],r=Math.round(o.w/o.t*100),c=r>=60?'var(--grn)':r<48?'var(--red)':'var(--mut)',ic=r>=60?' &#9989;':r<40?' &#10060;':'';html+='<div style="font-size:11px;color:'+c+'">'+k+': '+r+'% ('+o.w+'/'+o.t+')'+ic+'</div>';});
+    return html;
+  }
+  h+=seg('By grade',s.by_grade,['A','W','B']);
+  h+=seg('By prop',s.by_prop_type);
+  h+=seg('By matchup tag',s.by_matchup_tag,['JUICY','SOFT','EVEN','FIRM','TOUGH']);
+  h+=seg('By platoon',s.by_platoon,['FAVORABLE','NEUTRAL','UNFAVORABLE']);
+  h+=seg('Regression due',s.by_regression_due,['true','false']);
+  h+=seg('By 10-game trend',s.by_trend,['HOT','Warming','Neutral','Cooling','COLD']);
+  h+='</div>';return h;
+}
+// Results Log ‚Äî last 50 resolved picks, newest first (collapsible).
+function resultsLogBlock(){
+  var all=getAllLoggedPicks().filter(function(p){return p.result==='WIN'||p.result==='LOSS';});
+  if(!all.length)return'';
+  all.sort(function(a,b){return(b.resolved_at||'').localeCompare(a.resolved_at||'');});
+  var open=!!SECT_OPEN['_results'];
+  var h='<div class="sect"><div class="sect-hdr" style="background:var(--sur2)" onclick="toggleSection(\'_results\')">';
+  h+='<div class="sect-title"><span style="font-size:16px">&#128203;</span><span>Results Log</span><span style="background:var(--sur);color:var(--mut);font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px">'+all.length+'</span></div>';
+  h+='<span id="sa-_results" class="sect-arr'+(open?' open':'')+'" style="font-size:13px">&#9660;</span></div>';
+  h+='<div id="sb-_results" class="sect-body'+(open?' open':'')+'">';
+  all.slice(0,50).forEach(function(p){
+    var win=p.result==='WIN', dt=p.date.slice(5).replace('-','/');
+    h+='<div style="font-size:10px;color:'+(win?'var(--grn)':'var(--red)')+';padding:3px 0;border-bottom:1px solid var(--bdr)">'+dt+' &middot; '+p.player_name+' &middot; '+p.prop_type+' '+(p.direction==='under'?'U':'O')+p.line+' &middot; '+p.grade+' &middot; '+p.score+' &middot; '+(p.matchup_tag||'-')+(p.matchup_value?(p.matchup_value>0?' +':' ')+p.matchup_value:'')+' &middot; '+(p.platoon||'-')+' &middot; got '+p.actual_stat+' &rarr; '+(win?'&#9989; WIN':'&#10060; LOSS')+'</div>';
+  });
+  h+='</div></div>';return h;
 }
 
 // ‚îÄ‚îÄ RENDER PICKS ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
@@ -1428,6 +1588,7 @@ function renderPicks(){
   if(D.upcoming===0&&D.live===0)h+='<div class="card" style="text-align:center;color:var(--mut);padding:20px">All games finished. Check back tomorrow.</div>';
 
   // How-to-read-the-score legend
+  h+=modelPerfBlock();
   h+='<div class="filter-note" style="background:var(--bbg);border-color:rgba(59,130,246,.3)"><div style="font-size:11px;font-weight:700;color:var(--blu);margin-bottom:3px">&#8505; How to read the Score</div><div style="font-size:10px;color:var(--mut);line-height:1.5">Each pick is scored <b>0&ndash;100 against the best a pick in that same prop can reach</b>. 100 = as strong a signal as that prop ever gives &mdash; it <b>ranks our best predictions; it is NOT the % chance the bet hits</b>. A 100 Walks pick and a 100 Singles pick are each the top of their own prop. The smaller <b>raw model</b> number is the internal score before normalizing &mdash; e.g. a raw <b>65</b> on Walks shows as <b>100</b>, because 65 is near the most a Walks pick can score.</div></div>';
 
   // Premium card header
@@ -1553,6 +1714,8 @@ function renderPicks(){
     });
   }
 
+  h+=resultsLogBlock();
+
   document.getElementById('pg-picks').innerHTML=h;
 }
 
@@ -1590,19 +1753,13 @@ function pickCard(p){
     h+='<div style="font-size:10px;color:var(--mut);margin-bottom:4px">&#128201; Open '+fmtOdds(p.oddsOpen)+' &rarr; now '+fmtOdds(p.recOdds)+' <span style="color:'+lmc+';font-weight:700">('+(mv>0?'+':'')+mv+' &middot; '+lml+')</span></div>';
   }
 
-  // Value indicator ‚Äî book-implied % vs the model's REAL hit rate for this score range
+  // Value indicator ‚Äî book-implied % vs the model's REAL tracked win rate (auto-resolved)
   if(p.recOdds!=null){
-    var bookP=impliedProb(p.recOdds);
-    var cbk=CALIB?CALIB[bucketOf(p.score)]:null;
-    var vrow='&#128202; Book '+(bookP*100).toFixed(1)+'%';
-    if(cbk&&cbk.n>=MIN_VALUE_SAMPLE&&cbk.rate!=null){
-      var gap=(cbk.rate-bookP)*100;
-      var vc=gap>=4?'var(--grn)':gap>=0?'var(--mut)':'var(--red)';
-      var vl=gap>=10?'STRONG VALUE &#9989;':gap>=4?'VALUE':gap>=0?'fair':'NEGATIVE &mdash; fade &#9888;';
-      vrow+=' &middot; Model '+(cbk.rate*100).toFixed(1)+'% &middot; <span style="color:'+vc+';font-weight:700">'+(gap>=0?'+':'')+gap.toFixed(1)+'% '+vl+'</span> <span style="color:var(--mut)">(n='+cbk.n+')</span>';
-    }else{
-      vrow+=' &middot; <span style="color:var(--mut)">Model calibrating ('+(cbk?cbk.n:0)+'/'+MIN_VALUE_SAMPLE+' settled in '+bucketOf(p.score)+' range)</span>';
-    }
+    var vrow='&#128202; Book '+(impliedProb(p.recOdds)*100).toFixed(1)+'%';
+    var gseg=MSTATS&&MSTATS.by_grade[p.grade], bseg=MSTATS&&MSTATS.by_score_bucket[scoreBucket(p.score)];
+    if(gseg)vrow+=' &middot; Grade '+p.grade+': '+pct(gseg.w,gseg.t);
+    if(bseg)vrow+=' &middot; Score '+scoreBucket(p.score)+': '+pct(bseg.w,bseg.t);
+    if(!gseg&&!bseg)vrow+=' &middot; <span style="color:var(--mut)">Model calibrating ('+((MSTATS&&MSTATS.total_resolved)||0)+'/20)</span>';
     h+='<div style="font-size:10px;color:var(--mut);margin-bottom:4px">'+vrow+'</div>';
   }
 
@@ -1954,10 +2111,13 @@ function copyText(txt,okId){
 }
 function showOk(id){var el=document.getElementById(id);if(el){el.style.display='block';setTimeout(function(){el.style.display='none';},5000);}}
 // ‚îÄ‚îÄ AUTO REFRESH ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+var RESOLVE_T=null;
 function startAR(){
   if(REFRESH_T)return;
   NEXT_R=Date.now()+60*60*1000;
   REFRESH_T=setInterval(function(){loadAll();NEXT_R=Date.now()+60*60*1000;},60*60*1000);
+  // Outcome resolution: own hourly timer so it runs even between card reloads
+  if(!RESOLVE_T)RESOLVE_T=setInterval(function(){resolvePending();},60*60*1000);
   if(COUNTDOWN_T)clearInterval(COUNTDOWN_T);
   COUNTDOWN_T=setInterval(function(){var el=document.getElementById('rtimer');if(!el)return;var diff=NEXT_R-Date.now();if(diff<=0){el.textContent='Refreshing...';return;}var m=Math.floor(diff/60000),s=Math.floor((diff%60000)/1000);el.textContent='Refresh in '+m+'m '+('0'+s).slice(-2)+'s';},1000);
 }
