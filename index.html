@@ -964,10 +964,20 @@ function scoreBucket(s){return s>=90?'90-100':s>=80?'80-89':s>=70?'70-79':s>=60?
 function pct(w,t,m){m=m||20;if(t<m)return'calibrating ('+t+'/'+m+')';return Math.round(w/t*100)+'% ('+w+'/'+t+')';}
 
 // Immutable point-in-time snapshot ‚Äî never overwrite an already-logged pick.
+function pickIdOf(p){return todayStr().replace(/-/g,'')+'_'+p.pid+'_'+propShort(p.mktKey)+'_'+p.line;}
+// Closing-line capture: each load overwrites the latest odds seen for every pick today.
+// The last value before first pitch is the de-facto closing line for CLV. (Approximate ‚Äî
+// only as fresh as the last time the app refreshed before the game started.)
+function updateClosing(){
+  if(!D||!D.picks)return;
+  var ck='close_'+todayStr(), cs=sg(ck,{});
+  D.picks.forEach(function(p){if(p.pid!=null&&p.gamePk&&p.recOdds!=null)cs[pickIdOf(p)]=p.recOdds;});
+  ss(ck,cs);
+}
 function logPick(p){
   if(!p||p.pid==null||p.line==null||!p.gamePk)return;
   var prop=propShort(p.mktKey);
-  var id=todayStr().replace(/-/g,'')+'_'+p.pid+'_'+prop+'_'+p.line;
+  var id=pickIdOf(p);
   var key='he9_pick_'+id;
   if(localStorage.getItem(key))return; // already logged today ‚Äî skip
   var rec={id:id,date:todayStr(),generated_at:new Date().toISOString(),
@@ -1005,7 +1015,12 @@ function settleDetail(prop,actual,direction,line,result){
   var op=result==='PUSH'?' = ':(direction==='under'?' < ':' > ');
   return prop+': '+actual+op+line+' ‚Üí '+result;
 }
-function saveResolved(p,result,actual,detail){p.actual_stat=actual;p.result=result;p.resolved_at=new Date().toISOString();if(detail)p.settle=detail;try{localStorage.setItem('he9_pick_'+p.id,JSON.stringify(p));}catch(e){}}
+function saveResolved(p,result,actual,detail){
+  p.actual_stat=actual;p.result=result;p.resolved_at=new Date().toISOString();if(detail)p.settle=detail;
+  // Closing line value: capture once from the last-seen closing odds for this pick.
+  if(p.clv==null&&p.odds!=null){var cs=sg('close_'+p.date,{}),co=cs[p.id];if(co!=null){p.closing_odds=co;p.clv=Math.round((impliedProb(co)-impliedProb(p.odds))*1000)/1000;}}
+  try{localStorage.setItem('he9_pick_'+p.id,JSON.stringify(p));}catch(e){}
+}
 function resolveOne(p,box){
   var pl=(box.teams.home.players&&box.teams.home.players['ID'+p.player_id])||(box.teams.away.players&&box.teams.away.players['ID'+p.player_id])||null;
   if(!pl){saveResolved(p,'DNP',null,'not in box score ‚Äî did not play (excluded)');return;}
@@ -1064,7 +1079,8 @@ function buildModelStats(){
   var all=getAllLoggedPicks();
   var s={total_generated:all.length,total_resolved:0,total_pending:0,total_dnp:0,total_push:0,
     by_grade:{},by_score_bucket:{},by_prop_type:{},by_matchup_tag:{},by_platoon:{},
-    by_regression_due:{},by_trend:{},last_updated:new Date().toISOString()};
+    by_regression_due:{},by_trend:{},by_direction:{},by_prop_dir:{},by_clv:{},
+    over_n:0,under_n:0,clv_sum:0,clv_n:0,clv_pos:0,clv_since:null,last_updated:new Date().toISOString()};
   function bump(o,key,p){
     if(key==null||key==='')return;
     if(!o[key])o[key]={w:0,t:0,u:0,os:0,on:0}; // w=wins, t=settled, u=unit P/L, os/on=odds avg
@@ -1084,6 +1100,10 @@ function buildModelStats(){
     bump(s.by_platoon,p.platoon,p);
     bump(s.by_regression_due,p.regression_due?'true':'false',p);
     bump(s.by_trend,p.ten_game_trend,p);
+    var dir=p.direction||'over';
+    bump(s.by_direction,dir,p); if(dir==='under')s.under_n++;else s.over_n++;
+    bump(s.by_prop_dir,p.prop_type+'|'+dir,p);
+    if(p.clv!=null){s.clv_sum+=p.clv;s.clv_n++;if(p.clv>0)s.clv_pos++;bump(s.by_clv,p.clv>=0?'pos':'neg',p);if(!s.clv_since||p.date<s.clv_since)s.clv_since=p.date;}
   });
   try{localStorage.setItem('he9_model_stats',JSON.stringify(s));}catch(e){}
   MSTATS=s;return s;
@@ -1529,6 +1549,7 @@ async function loadAll(){
     loadedAt:new Date().toLocaleTimeString()};
 
   logAllPicks();      // snapshot every pick (immutable) before rendering
+  updateClosing();    // capture latest odds as the running closing line (for CLV)
   buildModelStats();  // refresh aggregate win rates from whatever has resolved so far
 
   var premCount=picks.filter(function(p){return p.grade==='A';}).length;
@@ -1577,14 +1598,43 @@ function modelPerfBlock(){
   // Grades broken out (A = real money) at the top
   h+='<div style="font-size:10px;font-weight:700;color:var(--txt);margin:6px 0 2px">By grade (A = real money)</div>';
   ['A','B','W'].forEach(function(g){h+=bucketRow('Grade '+g,s.by_grade[g]);});
-  // Prop type, sorted by ROI (best first)
+  // Prop type, sorted by ROI (best first) ‚Äî localizes the leak
   var props=Object.keys(s.by_prop_type).filter(function(k){return s.by_prop_type[k].t>=MODEL_MIN;}).sort(function(a,b){return roiOf(s.by_prop_type[b])-roiOf(s.by_prop_type[a]);});
   if(props.length){h+='<div style="font-size:10px;font-weight:700;color:var(--txt);margin:8px 0 2px">By prop (sorted by ROI)</div>';props.forEach(function(k){h+=bucketRow(k,s.by_prop_type[k]);});}
+  // Over / Under split (overall + per prop where both sides exist)
+  var ouTot=s.over_n+s.under_n;
+  h+='<div style="font-size:10px;font-weight:700;color:var(--txt);margin:8px 0 2px">Over vs Under ('+(ouTot?Math.round(s.over_n/ouTot*100):0)+'% of settled picks are Overs)</div>';
+  h+=bucketRow('Over',s.by_direction.over)+bucketRow('Under',s.by_direction.under);
+  Object.keys(s.by_prop_type).forEach(function(pt){
+    var ov=s.by_prop_dir[pt+'|over'],un=s.by_prop_dir[pt+'|under'];
+    if(ov&&un&&(ov.t>=MODEL_MIN||un.t>=MODEL_MIN)){h+='<div style="font-size:10px;color:var(--mut);margin-top:3px">'+pt+':</div>'+bucketRow('&nbsp;&nbsp;Over',ov)+bucketRow('&nbsp;&nbsp;Under',un);}
+  });
+  // By model score bucket ‚Äî is the score itself predictive?
+  var sbOrder=['90-100','80-89','70-79','60-69','50-59'];
+  var sbAvail=sbOrder.filter(function(k){return s.by_score_bucket[k]&&s.by_score_bucket[k].t>=MODEL_MIN;});
+  if(sbAvail.length){
+    h+='<div style="font-size:10px;font-weight:700;color:var(--txt);margin:8px 0 2px">By model score (does ROI rise with score?)</div>';
+    sbOrder.forEach(function(k){h+=bucketRow('Score '+k,s.by_score_bucket[k]);});
+    if(sbAvail.length>=2){
+      var hi=s.by_score_bucket[sbAvail[0]],lo=s.by_score_bucket[sbAvail[sbAvail.length-1]],dl=Math.round((roiOf(hi)-roiOf(lo))*100);
+      h+='<div style="font-size:10px;font-weight:700;color:'+(dl>0?'var(--grn)':'var(--red)')+'">&Delta; '+sbAvail[0]+'&minus;'+sbAvail[sbAvail.length-1]+': '+(dl>0?'+':'')+dl+'% ROI '+(dl>0?'&#9989; score adds signal':'&#10060; score FLAT/INVERTED ‚Äî ranking is noise')+'</div>';
+    }
+  }
+  // Closing line value (forward-only)
+  if(s.clv_n>0){
+    var avgClv=Math.round(s.clv_sum/s.clv_n*1000)/10, posPct=Math.round(s.clv_pos/s.clv_n*100);
+    h+='<div style="font-size:10px;font-weight:700;color:var(--txt);margin:8px 0 2px">Closing line value'+(s.clv_since?' (since '+s.clv_since+')':'')+'</div>';
+    h+='<div style="font-size:11px;color:'+(avgClv>=0?'var(--grn)':'var(--red)')+'">Avg CLV '+(avgClv>0?'+':'')+avgClv+' pts &middot; '+posPct+'% beat the close ('+s.clv_n+')</div>';
+    h+=bucketRow('+CLV picks',s.by_clv.pos)+bucketRow('-CLV picks',s.by_clv.neg);
+  }else{
+    h+='<div style="font-size:10px;color:var(--mut);margin:8px 0 2px">Closing line value: capturing from today forward (resolved picks will show CLV once games finish).</div>';
+  }
   // Signals with their control/opposite side + ROI delta
   h+=signalGroup('Matchup tag',s.by_matchup_tag,'JUICY','TOUGH',['SOFT','FIRM','EVEN']);
   h+=signalGroup('Platoon',s.by_platoon,'FAVORABLE','UNFAVORABLE',['NEUTRAL']);
   h+=signalGroup('10-game trend',s.by_trend,'HOT','COLD',['Warming','Neutral','Cooling']);
   h+=signalGroup('Regression due',s.by_regression_due,'true','false',[]);
+  h+='<div style="font-size:9px;color:var(--mut);margin-top:6px">Note: ROI uses each pick&rsquo;s own odds, so a bucket&rsquo;s ROI can differ from hit%&times;avg-odds when winners skew to longer prices (e.g. JUICY). Avg odds and ROI are computed over the same settled set.</div>';
   h+='</div>';return h;
 }
 // Settlement Log / Audit ‚Äî every resolved pick with the exact stat it was graded on.
