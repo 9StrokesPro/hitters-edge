@@ -1928,7 +1928,7 @@ function renderTotals(){
 function updPnLHdr(){var tot=BETS.reduce(function(a,b){return a+(b.profit||0);},0);var el=document.getElementById('pnl-hdr');el.textContent=(tot>=0?'+$':'-$')+Math.abs(tot).toFixed(2);el.style.color=tot>=0?'var(--grn)':'var(--red)';}
 function renderPnL(){
   var today=new Date().toLocaleDateString();
-  var st=BETS.reduce(function(a,b){a.total+=(b.profit||0);a.staked+=(b.stake||0);if(b.dateStr===today)a.today+=(b.profit||0);if(b.result==='WIN')a.wins++;else if(b.result==='LOSS')a.losses++;else a.pend++;return a;},{total:0,today:0,staked:0,wins:0,losses:0,pend:0});
+  var st=BETS.reduce(function(a,b){a.total+=(b.profit||0);a.staked+=(b.result==='VOID'?0:(b.stake||0));if(b.dateStr===today)a.today+=(b.profit||0);if(b.result==='WIN')a.wins++;else if(b.result==='LOSS')a.losses++;else if(b.result==='VOID'||b.result==='CASHOUT')a.other++;else a.pend++;return a;},{total:0,today:0,staked:0,wins:0,losses:0,pend:0,other:0});
   var roi=st.staked>0?Math.round(st.total/st.staked*100):0;
   var h='<div class="pnlg">';
   h+='<div class="pnlb"><div style="font-size:20px;font-weight:700;color:'+(st.today>=0?'var(--grn)':'var(--red)')+'">'+(st.today>=0?'+$':'-$')+Math.abs(st.today).toFixed(2)+'</div><div style="font-size:10px;color:var(--mut)">TODAY</div></div>';
@@ -1973,12 +1973,22 @@ function renderPnL(){
     }
     h+='<div class="stl">Bet History</div>';
     BETS.forEach(function(b){
-      var pc=b.result==='WIN'?'var(--grn)':b.result==='LOSS'?'var(--red)':'var(--mut)';
-      var pl=b.result==='WIN'?'+$'+b.profit.toFixed(2):b.result==='LOSS'?'-$'+Math.abs(b.profit||0).toFixed(2):'PENDING';
+      var st2=b.result||'PENDING', net=(b.profit||0);
+      var ret=st2==='WIN'?(b.stake+net):st2==='VOID'?b.stake:st2==='CASHOUT'?(b.cashout||0):st2==='LOSS'?0:null;
+      var icon=st2==='WIN'?'&#9989;':st2==='LOSS'?'&#10060;':st2==='VOID'?'&#11093;':st2==='CASHOUT'?'&#128176;':'&#9203;';
+      var lbl=st2==='WIN'?'WIN':st2==='LOSS'?'LOSS':st2==='VOID'?'VOIDED':st2==='CASHOUT'?'CASHED':'PENDING';
+      var pos=(st2==='WIN')||(st2==='CASHOUT'&&net>=0), neg=(st2==='LOSS')||(st2==='CASHOUT'&&net<0);
+      var pc=pos?'var(--grn)':neg?'var(--red)':'var(--mut)';
+      var netStr=st2==='PENDING'?'PENDING':(net>=0?'+$':'-$')+Math.abs(net).toFixed(2);
       h+='<div class="bet-row"><div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+b.player+'</div>';
-      h+='<div style="font-size:10px;color:var(--mut)">'+b.dateStr+' &middot; '+b.market+' &middot; $'+b.stake+' @ '+fmtOdds(parseInt(b.odds||0))+'</div>';
-      if(!b.result||b.result==='PENDING')h+='<div class="rbtns"><button class="bwin" onclick="markResult('+b.id+',\'WIN\')">&#10003; Win</button><button class="blos" onclick="markResult('+b.id+',\'LOSS\')">&#10007; Loss</button></div>';
-      h+='</div><div style="text-align:right;flex-shrink:0"><div style="font-size:14px;font-weight:700;color:'+pc+'">'+pl+'</div><div style="font-size:10px;color:var(--mut)">'+b.result+'</div></div></div>';
+      h+='<div style="font-size:10px;color:var(--mut)">'+b.dateStr+' &middot; '+b.market+' &middot; $'+b.stake+' @ '+fmtOdds(parseInt(b.odds||0))+(ret!=null?' &middot; ret $'+ret.toFixed(2):'')+'</div>';
+      var btns='';
+      if(st2==='PENDING')btns+='<button class="bwin" onclick="markResult('+b.id+',\'WIN\')">&#10003; Win</button><button class="blos" onclick="markResult('+b.id+',\'LOSS\')">&#10007; Loss</button>';
+      if(st2==='VOID'||st2==='CASHOUT')btns+='<button class="rbtn" onclick="undoBet('+b.id+')">Undo</button>';
+      else btns+='<button class="rbtn" onclick="voidBet('+b.id+')">Void</button><button class="rbtn" onclick="cashoutBet('+b.id+')">Cashout</button>';
+      btns+='<button class="rbtn" onclick="removeBet('+b.id+')">Remove</button>';
+      h+='<div class="rbtns" style="flex-wrap:wrap">'+btns+'</div>';
+      h+='</div><div style="text-align:right;flex-shrink:0"><div style="font-size:14px;font-weight:700;color:'+pc+'">'+netStr+'</div><div style="font-size:10px;color:var(--mut)">'+icon+' '+lbl+'</div></div></div>';
     });
   }
   document.getElementById('pg-pnl').innerHTML=h;updPnLHdr();
@@ -2028,7 +2038,33 @@ function submitParlay(){
 function markResult(id,result){
   var idx=BETS.findIndex(function(b){return b.id===id;});if(idx===-1)return;
   BETS[idx].result=result;BETS[idx].profit=calcProfit(BETS[idx].odds,BETS[idx].stake,result);
-  ss('bets',BETS);toast(result==='WIN'?'&#9989; WIN!':'&#10060; Loss');renderPnL();
+  ss('bets',BETS);toast(result==='WIN'?'WIN!':'Loss');renderPnL();
+}
+// ‚îÄ‚îÄ BET LOG MANAGEMENT ‚Äî void / cashout / undo / remove (stake & odds never change) ‚îÄ‚îÄ
+function voidBet(id){
+  var b=BETS.find(function(x){return x.id===id;});if(!b)return;
+  b.prevResult=b.result;b.prevProfit=b.profit;            // remember for undo (reversible in session)
+  b.result='VOID';b.profit=0;delete b.cashout;b.note='Voided ‚Äî prop unavailable / player scratched';
+  ss('bets',BETS);toast('Voided ‚Äî stake returned');renderPnL();
+}
+function cashoutBet(id){
+  var b=BETS.find(function(x){return x.id===id;});if(!b)return;
+  var inp=window.prompt('Cashout amount received ($):',String(b.stake));if(inp===null)return;
+  var amt=parseFloat(inp);if(isNaN(amt)||amt<0){toast('Invalid amount');return;}
+  b.prevResult=b.result;b.prevProfit=b.profit;
+  b.result='CASHOUT';b.cashout=Math.round(amt*100)/100;b.profit=Math.round((amt-b.stake)*100)/100;b.note='Cashed out early';
+  ss('bets',BETS);toast('Cashed out $'+amt.toFixed(2));renderPnL();
+}
+function undoBet(id){
+  var b=BETS.find(function(x){return x.id===id;});if(!b)return;
+  b.result=(b.prevResult!=null?b.prevResult:'PENDING');b.profit=(b.prevProfit!=null?b.prevProfit:0);
+  delete b.cashout;delete b.note;delete b.prevResult;delete b.prevProfit;
+  ss('bets',BETS);toast('Reverted to '+b.result);renderPnL();
+}
+function removeBet(id){
+  if(!window.confirm('Delete this bet entry? This cannot be undone.'))return;
+  var i=BETS.findIndex(function(x){return x.id===id;});
+  if(i>-1){BETS.splice(i,1);ss('bets',BETS);toast('Entry removed');renderPnL();}
 }
 // ‚îÄ‚îÄ COPY ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
 // Full per-pick data dump for Claude analysis ‚Äî every hitter & pitcher input.
