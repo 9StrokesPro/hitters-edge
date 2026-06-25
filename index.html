@@ -997,21 +997,29 @@ function statForProp(prop,b){
   if(prop==='h_r_rbi')return h+(parseInt(b.runs)||0)+(parseInt(b.rbi)||0);
   return 0;
 }
-function saveResolved(p,result,actual){p.actual_stat=actual;p.result=result;p.resolved_at=new Date().toISOString();try{localStorage.setItem('he9_pick_'+p.id,JSON.stringify(p));}catch(e){}}
+function americanProfit(odds){if(odds==null)return 0;return odds>0?odds/100:100/Math.abs(odds);} // profit per 1u on a WIN
+// Exact-line lands = PUSH (excluded). Over wins on value>line, Under wins on value<line.
+function gradeOutcome(direction,actual,line){if(actual===line)return'PUSH';return(direction==='under'?actual<line:actual>line)?'WIN':'LOSS';}
+function settleDetail(prop,actual,direction,line,result){
+  if(actual==null)return result;
+  var op=result==='PUSH'?' = ':(direction==='under'?' < ':' > ');
+  return prop+': '+actual+op+line+' ‚Üí '+result;
+}
+function saveResolved(p,result,actual,detail){p.actual_stat=actual;p.result=result;p.resolved_at=new Date().toISOString();if(detail)p.settle=detail;try{localStorage.setItem('he9_pick_'+p.id,JSON.stringify(p));}catch(e){}}
 function resolveOne(p,box){
   var pl=(box.teams.home.players&&box.teams.home.players['ID'+p.player_id])||(box.teams.away.players&&box.teams.away.players['ID'+p.player_id])||null;
-  if(!pl){saveResolved(p,'DNP',null);return;} // not in box score = did not dress
+  if(!pl){saveResolved(p,'DNP',null,'not in box score ‚Äî did not play (excluded)');return;}
   if(p.prop_type==='strikeouts'){
     var ps=(pl.stats&&pl.stats.pitching)||{};
-    if(ps.inningsPitched==null){saveResolved(p,'DNP',null);return;}
-    var k=parseInt(ps.strikeOuts)||0;
-    saveResolved(p,(p.direction==='under'?k<p.line:k>p.line)?'WIN':'LOSS',k);return;
+    if(ps.inningsPitched==null){saveResolved(p,'DNP',null,'pitcher did not appear (excluded)');return;}
+    var k=parseInt(ps.strikeOuts)||0, kr=gradeOutcome(p.direction,k,p.line);
+    saveResolved(p,kr,k,settleDetail('strikeouts',k,p.direction,p.line,kr));return;
   }
   var b=(pl.stats&&pl.stats.batting)||{};
   var ab=parseInt(b.atBats)||0,bb=parseInt(b.baseOnBalls)||0;
-  if(ab===0&&bb===0){saveResolved(p,'DNP',null);return;} // scratched / pinch role with no PA
-  var actual=statForProp(p.prop_type,b);
-  saveResolved(p,(p.direction==='under'?actual<p.line:actual>p.line)?'WIN':'LOSS',actual);
+  if(ab===0&&bb===0){saveResolved(p,'DNP',null,'0 AB / 0 BB ‚Äî did not bat (excluded)');return;}
+  var actual=statForProp(p.prop_type,b), r=gradeOutcome(p.direction,actual,p.line);
+  saveResolved(p,r,actual,settleDetail(p.prop_type,actual,p.direction,p.line,r));
 }
 function yestStr(){var n=new Date();n.setDate(n.getDate()-1);return n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0')+'-'+String(n.getDate()).padStart(2,'0');}
 // Resolution pass: check schedule for Final games, then pull box scores once per game.
@@ -1035,24 +1043,47 @@ async function resolvePending(){
   buildModelStats();
   if(D)renderPicks(); // refresh display with freshly resolved results
 }
-// Aggregate win rates across segments. DNP excluded from all rates.
+// Re-audit: re-grade every ALREADY-settled pick against fresh box scores. Backfills the
+// audit detail, applies PUSH, and corrects any prior mis-grade. Games are already final.
+async function reauditAll(){
+  var all=getAllLoggedPicks().filter(function(p){return p.game_pk&&p.result&&p.result!=='PENDING';});
+  if(!all.length){toast('No settled picks to audit');return;}
+  toast('Re-auditing '+all.length+' picks‚Ä¶');
+  var byGame={};all.forEach(function(p){(byGame[p.game_pk]=byGame[p.game_pk]||[]).push(p);});
+  var gps=Object.keys(byGame);
+  for(var i=0;i<gps.length;i++){
+    var box=await apiFetch(MLB+'/game/'+gps[i]+'/boxscore');
+    if(box&&box.teams&&box.teams.home&&box.teams.away){byGame[gps[i]].forEach(function(p){resolveOne(p,box);});}
+    await slp(200);
+  }
+  buildModelStats();if(D)renderPicks();toast('Re-audit complete');
+}
+// Aggregate per bucket: w/t (settled, excl DNP+Push+Void), units P/L, and odds sum
+// for ROI and average odds. ROI is the headline metric.
 function buildModelStats(){
   var all=getAllLoggedPicks();
-  var s={total_generated:all.length,total_resolved:0,total_pending:0,total_dnp:0,
+  var s={total_generated:all.length,total_resolved:0,total_pending:0,total_dnp:0,total_push:0,
     by_grade:{},by_score_bucket:{},by_prop_type:{},by_matchup_tag:{},by_platoon:{},
-    by_regression_due:{'true':{w:0,t:0},'false':{w:0,t:0}},by_trend:{},last_updated:new Date().toISOString()};
-  function bump(o,key,won){if(key==null||key==='')return;if(!o[key])o[key]={w:0,t:0};o[key].t++;if(won)o[key].w++;}
+    by_regression_due:{},by_trend:{},last_updated:new Date().toISOString()};
+  function bump(o,key,p){
+    if(key==null||key==='')return;
+    if(!o[key])o[key]={w:0,t:0,u:0,os:0,on:0}; // w=wins, t=settled, u=unit P/L, os/on=odds avg
+    o[key].t++;
+    if(p.result==='WIN'){o[key].w++;o[key].u+=americanProfit(p.odds);}else{o[key].u+=-1;}
+    if(p.odds!=null){o[key].os+=p.odds;o[key].on++;}
+  }
   all.forEach(function(p){
     if(p.result==='PENDING'){s.total_pending++;return;}
-    if(p.result==='DNP'){s.total_dnp++;return;}
-    var won=p.result==='WIN';s.total_resolved++;
-    bump(s.by_grade,p.grade,won);
-    bump(s.by_score_bucket,scoreBucket(p.score),won);
-    bump(s.by_prop_type,p.prop_type,won);
-    bump(s.by_matchup_tag,p.matchup_tag,won);
-    bump(s.by_platoon,p.platoon,won);
-    bump(s.by_regression_due,p.regression_due?'true':'false',won);
-    bump(s.by_trend,p.ten_game_trend,won);
+    if(p.result==='DNP'||p.result==='VOID'){s.total_dnp++;return;} // excluded from denominators
+    if(p.result==='PUSH'){s.total_push++;return;}                  // excluded from denominators
+    s.total_resolved++; // WIN or LOSS only
+    bump(s.by_grade,p.grade,p);
+    bump(s.by_score_bucket,scoreBucket(p.score),p);
+    bump(s.by_prop_type,p.prop_type,p);
+    bump(s.by_matchup_tag,p.matchup_tag,p);
+    bump(s.by_platoon,p.platoon,p);
+    bump(s.by_regression_due,p.regression_due?'true':'false',p);
+    bump(s.by_trend,p.ten_game_trend,p);
   });
   try{localStorage.setItem('he9_model_stats',JSON.stringify(s));}catch(e){}
   MSTATS=s;return s;
@@ -1508,44 +1539,71 @@ async function loadAll(){
   resolvePending(); // resolve any finished games (fire-and-forget; refreshes display when done)
 }
 
-// Model Performance header ‚Äî only segments with 20+ resolved picks (proof-of-model).
+// One bucket row: hit% (w/t) | avg odds | ROI. Calibrating below MODEL_MIN settled.
+var MODEL_MIN=20;
+function roiOf(o){return o&&o.t?o.u/o.t:null;}
+function bucketRow(label,o){
+  if(!o||o.t===0)return'';
+  if(o.t<MODEL_MIN)return'<div style="font-size:11px;color:var(--mut)">'+label+': calibrating ('+o.t+'/'+MODEL_MIN+')</div>';
+  var hr=Math.round(o.w/o.t*100),roi=Math.round(o.u/o.t*100),ao=o.on?Math.round(o.os/o.on):null;
+  var c=roi>0?'var(--grn)':roi<0?'var(--red)':'var(--mut)';
+  return '<div style="font-size:11px;color:'+c+'">'+label+': '+hr+'% ('+o.w+'/'+o.t+') | avg '+(ao==null?'--':(ao>0?'+':'')+ao)+' | ROI '+(roi>0?'+':'')+roi+'%</div>';
+}
+// Signal vs its opposite, with ROI delta. A flag only "works" if it beats its opposite.
+function signalGroup(title,obj,sideKey,oppKey,others){
+  var keys=[sideKey,oppKey].concat(others||[]).filter(function(k){return obj[k]&&obj[k].t>0;});
+  if(!keys.length)return'';
+  var html='<div style="font-size:10px;font-weight:700;color:var(--txt);margin:8px 0 2px">'+title+'</div>';
+  keys.forEach(function(k){html+=bucketRow(k,obj[k]);});
+  var a=obj[sideKey],b=obj[oppKey];
+  if(a&&b&&a.t>=MODEL_MIN&&b.t>=MODEL_MIN){
+    var d=Math.round((roiOf(a)-roiOf(b))*100), works=d>0;
+    html+='<div style="font-size:10px;font-weight:700;color:'+(works?'var(--grn)':'var(--red)')+'">&Delta; '+sideKey+'&minus;'+oppKey+': '+(d>0?'+':'')+d+'% ROI '+(works?'&#9989; predictive':'&#10060; NOT predictive')+'</div>';
+  }
+  return html;
+}
+// Model Performance dashboard ‚Äî ROI-first, with controls and grade breakout.
 function modelPerfBlock(){
   var s=MSTATS||sg('model_stats',null); if(!s)return'';
   var h='<div class="card" style="border-color:var(--gld);background:var(--sur)">';
-  h+='<div style="font-size:13px;font-weight:700;color:var(--gld);margin-bottom:2px">&#128202; Model Performance (all-time)</div>';
-  h+='<div style="font-size:10px;color:var(--mut);margin-bottom:8px">Tracked '+s.total_generated+' &middot; Resolved '+s.total_resolved+' &middot; Pending '+s.total_pending+(s.total_dnp?' &middot; DNP '+s.total_dnp:'')+'</div>';
-  if(s.total_resolved<20){
-    h+='<div style="font-size:11px;color:var(--mut)">Calibrating ‚Äî win rates appear once 20+ picks resolve ('+s.total_resolved+'/20). Picks auto-resolve from box scores as games finish.</div></div>';
+  h+='<div style="font-size:13px;font-weight:700;color:var(--gld);margin-bottom:2px">&#128202; Model Performance (ROI-first)</div>';
+  h+='<div style="font-size:10px;color:var(--mut);margin-bottom:4px">Tracked '+s.total_generated+' &middot; Settled '+s.total_resolved+' &middot; Pending '+s.total_pending+' &middot; DNP/Void '+(s.total_dnp||0)+' &middot; Push '+(s.total_push||0)+'</div>';
+  h+='<div style="font-size:9px;color:var(--mut);margin-bottom:4px">Hit% excludes DNP/Push. ROI = units won per unit staked at the logged odds &mdash; the headline metric. A low hit% at plus-odds can still be +ROI.</div>';
+  h+='<button class="btn-s" onclick="reauditAll()" style="margin-bottom:6px">&#128270; Re-audit settled picks (backfill grading + fix mis-grades)</button>';
+  if(s.total_resolved<MODEL_MIN){
+    h+='<div style="font-size:11px;color:var(--mut)">Calibrating &mdash; '+s.total_resolved+'/'+MODEL_MIN+' settled. ROI needs ~30+ per bucket to stabilize.</div></div>';
     return h;
   }
-  function seg(title,obj,order){
-    var keys=(order||Object.keys(obj)).filter(function(k){return obj[k]&&obj[k].t>=20;});
-    if(!keys.length)return'';
-    var html='<div style="font-size:10px;font-weight:700;color:var(--txt);margin:7px 0 2px">'+title+'</div>';
-    keys.forEach(function(k){var o=obj[k],r=Math.round(o.w/o.t*100),c=r>=60?'var(--grn)':r<48?'var(--red)':'var(--mut)',ic=r>=60?' &#9989;':r<40?' &#10060;':'';html+='<div style="font-size:11px;color:'+c+'">'+k+': '+r+'% ('+o.w+'/'+o.t+')'+ic+'</div>';});
-    return html;
-  }
-  h+=seg('By grade',s.by_grade,['A','W','B']);
-  h+=seg('By prop',s.by_prop_type);
-  h+=seg('By matchup tag',s.by_matchup_tag,['JUICY','SOFT','EVEN','FIRM','TOUGH']);
-  h+=seg('By platoon',s.by_platoon,['FAVORABLE','NEUTRAL','UNFAVORABLE']);
-  h+=seg('Regression due',s.by_regression_due,['true','false']);
-  h+=seg('By 10-game trend',s.by_trend,['HOT','Warming','Neutral','Cooling','COLD']);
+  // Grades broken out (A = real money) at the top
+  h+='<div style="font-size:10px;font-weight:700;color:var(--txt);margin:6px 0 2px">By grade (A = real money)</div>';
+  ['A','B','W'].forEach(function(g){h+=bucketRow('Grade '+g,s.by_grade[g]);});
+  // Prop type, sorted by ROI (best first)
+  var props=Object.keys(s.by_prop_type).filter(function(k){return s.by_prop_type[k].t>=MODEL_MIN;}).sort(function(a,b){return roiOf(s.by_prop_type[b])-roiOf(s.by_prop_type[a]);});
+  if(props.length){h+='<div style="font-size:10px;font-weight:700;color:var(--txt);margin:8px 0 2px">By prop (sorted by ROI)</div>';props.forEach(function(k){h+=bucketRow(k,s.by_prop_type[k]);});}
+  // Signals with their control/opposite side + ROI delta
+  h+=signalGroup('Matchup tag',s.by_matchup_tag,'JUICY','TOUGH',['SOFT','FIRM','EVEN']);
+  h+=signalGroup('Platoon',s.by_platoon,'FAVORABLE','UNFAVORABLE',['NEUTRAL']);
+  h+=signalGroup('10-game trend',s.by_trend,'HOT','COLD',['Warming','Neutral','Cooling']);
+  h+=signalGroup('Regression due',s.by_regression_due,'true','false',[]);
   h+='</div>';return h;
 }
-// Results Log ‚Äî last 50 resolved picks, newest first (collapsible).
+// Settlement Log / Audit ‚Äî every resolved pick with the exact stat it was graded on.
 function resultsLogBlock(){
-  var all=getAllLoggedPicks().filter(function(p){return p.result==='WIN'||p.result==='LOSS';});
+  var all=getAllLoggedPicks().filter(function(p){return p.result&&p.result!=='PENDING';});
   if(!all.length)return'';
   all.sort(function(a,b){return(b.resolved_at||'').localeCompare(a.resolved_at||'');});
   var open=!!SECT_OPEN['_results'];
   var h='<div class="sect"><div class="sect-hdr" style="background:var(--sur2)" onclick="toggleSection(\'_results\')">';
-  h+='<div class="sect-title"><span style="font-size:16px">&#128203;</span><span>Results Log</span><span style="background:var(--sur);color:var(--mut);font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px">'+all.length+'</span></div>';
+  h+='<div class="sect-title"><span style="font-size:16px">&#128203;</span><span>Settlement Log / Audit</span><span style="background:var(--sur);color:var(--mut);font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px">'+all.length+'</span></div>';
   h+='<span id="sa-_results" class="sect-arr'+(open?' open':'')+'" style="font-size:13px">&#9660;</span></div>';
   h+='<div id="sb-_results" class="sect-body'+(open?' open':'')+'">';
-  all.slice(0,50).forEach(function(p){
-    var win=p.result==='WIN', dt=p.date.slice(5).replace('-','/');
-    h+='<div style="font-size:10px;color:'+(win?'var(--grn)':'var(--red)')+';padding:3px 0;border-bottom:1px solid var(--bdr)">'+dt+' &middot; '+p.player_name+' &middot; '+p.prop_type+' '+(p.direction==='under'?'U':'O')+p.line+' &middot; '+p.grade+' &middot; '+p.score+' &middot; '+(p.matchup_tag||'-')+(p.matchup_value?(p.matchup_value>0?' +':' ')+p.matchup_value:'')+' &middot; '+(p.platoon||'-')+' &middot; got '+p.actual_stat+' &rarr; '+(win?'&#9989; WIN':'&#10060; LOSS')+'</div>';
+  all.slice(0,80).forEach(function(p){
+    var col=p.result==='WIN'?'var(--grn)':p.result==='LOSS'?'var(--red)':'var(--mut)', dt=p.date.slice(5).replace('-','/');
+    h+='<div style="font-size:10px;padding:4px 0;border-bottom:1px solid var(--bdr)">';
+    h+='<div style="color:'+col+';font-weight:700">'+dt+' &middot; '+p.player_name+' &middot; '+(p.direction==='under'?'U':'O')+p.line+' '+p.prop_type+' @ '+fmtOdds(p.odds)+' &middot; '+p.grade+'/'+p.score+'</div>';
+    var detail=p.settle||(p.actual_stat!=null?(p.prop_type+': '+p.actual_stat+(p.direction==='under'?' < ':' > ')+p.line+' ‚Üí '+p.result+' (legacy)'):(p.result+' ‚Äî re-audit to verify'));
+    h+='<div style="color:var(--mut)">graded on &rarr; '+detail+'</div>';
+    h+='</div>';
   });
   h+='</div></div>';return h;
 }
@@ -1753,13 +1811,14 @@ function pickCard(p){
     h+='<div style="font-size:10px;color:var(--mut);margin-bottom:4px">&#128201; Open '+fmtOdds(p.oddsOpen)+' &rarr; now '+fmtOdds(p.recOdds)+' <span style="color:'+lmc+';font-weight:700">('+(mv>0?'+':'')+mv+' &middot; '+lml+')</span></div>';
   }
 
-  // Value indicator ‚Äî book-implied % vs the model's REAL tracked win rate (auto-resolved)
+  // Value indicator ‚Äî book-implied % vs the model's REAL tracked hit% + ROI (auto-resolved)
   if(p.recOdds!=null){
     var vrow='&#128202; Book '+(impliedProb(p.recOdds)*100).toFixed(1)+'%';
+    var segShort=function(o){if(!o||o.t<20)return'calibrating ('+(o?o.t:0)+'/20)';var roi=Math.round(o.u/o.t*100);return Math.round(o.w/o.t*100)+'% (ROI '+(roi>0?'+':'')+roi+'%)';};
     var gseg=MSTATS&&MSTATS.by_grade[p.grade], bseg=MSTATS&&MSTATS.by_score_bucket[scoreBucket(p.score)];
-    if(gseg)vrow+=' &middot; Grade '+p.grade+': '+pct(gseg.w,gseg.t);
-    if(bseg)vrow+=' &middot; Score '+scoreBucket(p.score)+': '+pct(bseg.w,bseg.t);
-    if(!gseg&&!bseg)vrow+=' &middot; <span style="color:var(--mut)">Model calibrating ('+((MSTATS&&MSTATS.total_resolved)||0)+'/20)</span>';
+    if(gseg)vrow+=' &middot; Grade '+p.grade+': '+segShort(gseg);
+    if(bseg)vrow+=' &middot; '+scoreBucket(p.score)+': '+segShort(bseg);
+    if(!gseg&&!bseg)vrow+=' &middot; <span style="color:var(--mut)">tracking ('+((MSTATS&&MSTATS.total_resolved)||0)+'/20)</span>';
     h+='<div style="font-size:10px;color:var(--mut);margin-bottom:4px">'+vrow+'</div>';
   }
 
