@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-<title>Hitters Edge v11.2</title>
+<title>Hitters Edge v11.3</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -107,7 +107,7 @@ select.inp option{background:var(--sur2)}
 <body>
 <div class="hdr">
   <div>
-    <div class="logo">&#9918; Hitters Edge v11.2</div>
+    <div class="logo">&#9918; Hitters Edge v11.3</div>
     <div style="font-size:9px;color:var(--mut)" id="lu">Loading...</div>
     <div style="font-size:9px;color:var(--mut)" id="rtimer"></div>
   </div>
@@ -140,8 +140,10 @@ var SEASON    = 2026;
 var ACE_ERA_THRESHOLD    = 2.80;  // ERA at or below = ace
 var ACE_MIN_STARTS       = 6;     // minimum GS to be considered ace
 var MAX_A_PICKS          = 5;     // hard cap on premium card
-var MIN_ODDS             = -160;  // v11 floor: lay no more than -160
-var MAX_ODDS             = 130;   // v11 HARD CAP: no longshots past +130 (the proven leak)
+var MIN_ODDS             = -160;  // (unused in v11.2+ ‚Äî full-range generation; kept for reference)
+var MAX_ODDS             = 130;   // (unused in v11.2+ ‚Äî +130 cap was rolled back)
+var PREMIUM_ODDS_FLOOR   = -140;  // v11.3 staking band: most juice allowed on the Premium card
+var PREMIUM_ALLOW_PLUS_MONEY = false; // v11.3: plus-money picks never hit the real-money card
 var RUNS_TOTAL_MIN       = 8.5;   // runs props need a high-total game
 var RBI_TOTAL_MIN        = 8.0;   // rbi props need run environment + runners
 var WALK_HITTER_BB_MIN   = 0.085; // walks props need a patient hitter (BB% proxy)
@@ -837,7 +839,22 @@ function applyFilters(pick){
   // 7. Conflict check: if same game has pitcher K over AND hitter props, flag
   // (handled at game level below)
 
+  // 8. v11.3 STAKING BAND (display only ‚Äî scoring/grading untouched): the real-money
+  // Premium card only carries the prices Joe actually bets (-140..-100, minus money).
+  // Out-of-band picks aren't deleted ‚Äî they drop to Watch/bonus, fully tracked.
+  if(grade==='A'&&!premiumOddsOk(pick.recOdds)){
+    grade='W';
+    filters.push('out-of-band (price) ‚Äî Watch/bonus only');
+  }
+
   return{pass:true,grade:grade,filters:filters};
+}
+// v11.3: is this price eligible for the real-money Premium card?
+function premiumOddsOk(odds){
+  if(odds==null)return false;
+  if(!PREMIUM_ALLOW_PLUS_MONEY&&odds>-100)return false; // exclude plus money (and even money)
+  if(odds<PREMIUM_ODDS_FLOOR)return false;               // too juiced (e.g. -150, -224)
+  return true;
 }
 
 // ‚îÄ‚îÄ CALIBRATION / TRACK RECORD ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
@@ -1787,7 +1804,7 @@ function renderPicks(){
 
   // How-to-read-the-score legend
   h+=modelPerfBlock();
-  h+='<div class="filter-note" style="background:var(--bbg);border-color:rgba(59,130,246,.3)"><div style="font-size:11px;font-weight:700;color:var(--blu);margin-bottom:3px">&#8505; v11.2 ‚Äî How to read the Score</div><div style="font-size:10px;color:var(--mut);line-height:1.5"><b>Score = modeled win probability</b> that the line clears (0&ndash;100%), not payout. Higher Score = higher hit likelihood. <b>Full odds range</b> &mdash; the +130 cap was overfit to one day and rolled back; watch the ROI-by-odds-bucket table, no new odds rule until a bucket is clearly negative over n&ge;40. Each prop fires only on its matching bat type, and <b>stolen bases are removed</b>. <b>Singles board only &mdash; no parlays</b>.</div></div>';
+  h+='<div class="filter-note" style="background:var(--bbg);border-color:rgba(59,130,246,.3)"><div style="font-size:11px;font-weight:700;color:var(--blu);margin-bottom:3px">&#8505; v11.3 ‚Äî How to read the Score</div><div style="font-size:10px;color:var(--mut);line-height:1.5"><b>Score = modeled win probability</b> that the line clears (0&ndash;100%), not payout. Higher Score = higher hit likelihood. <b>Premium card = staking band -140 to -100 only</b> (minus-money, &le;-140 juice) &mdash; out-of-band prices drop to Watch/bonus but are still fully tracked (all odds buckets measured in the background). Each prop fires only on its matching bat type, <b>stolen bases removed</b>, <b>singles board only &mdash; no parlays</b>.</div></div>';
 
   // Premium card header
   h+='<div class="card" style="background:var(--gbg);border-color:rgba(34,197,94,.3)">';
@@ -2253,7 +2270,7 @@ function copyPicks(){
   var watch=D.picks.filter(function(p){return p.grade==='B'||p.grade==='W';});
   var wins=BETS.filter(function(b){return b.result==='WIN';}).length;
   var tot=BETS.filter(function(b){return b.result!=='PENDING';}).length;
-  var txt='HITTERS EDGE v11.2 ‚Äî '+D.date+' (generated '+(D.generatedAt||'?')+', odds as of '+(D.oddsAsOf||'?')+')\n';
+  var txt='HITTERS EDGE v11.3 ‚Äî '+D.date+' (generated '+(D.generatedAt||'?')+', odds as of '+(D.oddsAsOf||'?')+')\n';
   txt+='Record: '+wins+'W/'+(tot-wins)+'L'+(tot?' ('+Math.round(wins/tot*100)+'%)':'')+'\n';
   txt+='Score = normalized 0-100 WITHIN each prop (a ranking, not a win probability). Value model% = real settled-bet hit rate for that score bucket.\n';
   if(D.aceNotes&&D.aceNotes.length){txt+='\nACE FILTERS (batters skipped):\n';D.aceNotes.forEach(function(n){txt+='  '+n.team+' vs '+n.pitcher+' ('+n.era+' ERA)\n';});}
