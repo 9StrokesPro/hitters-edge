@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-<title>Hitters Edge v11</title>
+<title>Hitters Edge v11.2</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -107,7 +107,7 @@ select.inp option{background:var(--sur2)}
 <body>
 <div class="hdr">
   <div>
-    <div class="logo">&#9918; Hitters Edge v11</div>
+    <div class="logo">&#9918; Hitters Edge v11.2</div>
     <div style="font-size:9px;color:var(--mut)" id="lu">Loading...</div>
     <div style="font-size:9px;color:var(--mut)" id="rtimer"></div>
   </div>
@@ -775,10 +775,8 @@ function applyFilters(pick){
     return{pass:false,reason:'K line 7.5+ excluded'};
   }
 
-  // Prop mismatch ‚Äî ELIMINATE entirely (bat type vs prop type):
-  //  power bat on a singles prop, or contact bat on a multi-path H+R+RBI prop.
-  if(pick.batKey==='POWER'&&k==='batter_singles')        return{pass:false,reason:'Mismatch: power bat on singles prop'};
-  if(pick.batKey==='CONTACT'&&k==='batter_hits_runs_rbis')return{pass:false,reason:'Mismatch: contact bat on multi-path prop'};
+  // v11.2: player-type matching now lives in profileMismatch() (loop-level). H+R+RBI
+  // is NOT hard-capped/killed here ‚Äî priority stays soft; ROI tracking decides.
 
   // Define hitter prop types ‚Äî H/G and career filters only apply to these
   var hitterProps=['batter_singles','batter_hits','batter_hits_runs_rbis',
@@ -817,11 +815,8 @@ function applyFilters(pick){
   // 3. Doubles excluded entirely
   if(k==='batter_doubles'){return{pass:false,reason:'Doubles excluded'};}
 
-  // 4. 2.5 H+R+RBI hard capped at B per spec
-  if(k==='batter_hits_runs_rbis'&&line>=HRI_25_LINE){
-    grade='B';
-    filters.push('2.5 line capped at B');
-  }
+  // v11.2: 2.5 H+R+RBI hard cap removed ‚Äî win-prob already scores high-bar lines low;
+  // no artificial cap. The by-prop ROI tracker decides if it's a real leak.
 
   // 5. Rookie gate: under 50 games ‚Üí multi-path props capped at B
   if(b&&b.games<ROOKIE_GAME_GATE){
@@ -1002,6 +997,8 @@ function buildSGPs(picks){
 var MSTATS=null; // cached aggregated model stats, refreshed on render
 function propShort(mktKey){return {batter_singles:'singles',batter_hits:'hits',batter_runs_scored:'runs',batter_rbis:'rbi',batter_total_bases:'total_bases',batter_hits_runs_rbis:'h_r_rbi',batter_walks:'walks',batter_stolen_bases:'stolen_bases',batter_home_runs:'home_runs',pitcher_strikeouts:'strikeouts'}[mktKey]||mktKey;}
 function scoreBucket(s){return s>=90?'90-100':s>=80?'80-89':s>=70?'70-79':s>=60?'60-69':s>=50?'50-59':'<50';}
+// ROI-by-odds bucket (v11.2): no odds filter ‚Äî track and let n>=~40 data set any future rule.
+function oddsBucket(o){if(o==null)return null;if(o<0)return'minus';if(o<=130)return'+100..130';if(o<=200)return'+131..200';return'+201+';}
 function pct(w,t,m){m=m||20;if(t<m)return'calibrating ('+t+'/'+m+')';return Math.round(w/t*100)+'% ('+w+'/'+t+')';}
 // Single-event (one PA can settle it) vs multi-event (needs accumulation across PAs)
 function eventClass(prop,line){
@@ -1126,7 +1123,7 @@ function buildModelStats(){
   var all=getAllLoggedPicks();
   var s={total_generated:all.length,total_resolved:0,total_pending:0,total_dnp:0,total_push:0,
     by_grade:{},by_score_bucket:{},by_prop_type:{},by_matchup_tag:{},by_platoon:{},
-    by_regression_due:{},by_trend:{},by_direction:{},by_prop_dir:{},by_clv:{},by_event:{},
+    by_regression_due:{},by_trend:{},by_direction:{},by_prop_dir:{},by_clv:{},by_event:{},by_odds_bucket:{},
     under_bt:{all:{w:0,t:0,p:0},by_grade:{},by_prop:{}},
     bench:{n:0,rec:0,blind_under:0,always_over:0,rec_over:0,rec_under:0,tcut:70},
     over_n:0,under_n:0,clv_sum:0,clv_n:0,clv_pos:0,clv_since:null,last_updated:new Date().toISOString()};
@@ -1153,6 +1150,7 @@ function buildModelStats(){
     bump(s.by_direction,dir,p); if(dir==='under')s.under_n++;else s.over_n++;
     bump(s.by_prop_dir,p.prop_type+'|'+dir,p);
     bump(s.by_event,eventClass(p.prop_type,p.line),p);
+    bump(s.by_odds_bucket,oddsBucket(p.odds),p);
     if(p.clv!=null){s.clv_sum+=p.clv;s.clv_n++;if(p.clv>0)s.clv_pos++;bump(s.by_clv,p.clv>=0?'pos':'neg',p);if(!s.clv_since||p.date<s.clv_since)s.clv_since=p.date;}
     // UNDER backtest: would fading THIS Over (taking the Under) have hit? (hit-rate only ‚Äî no historical Under odds)
     if(dir==='over'&&p.actual_stat!=null){
@@ -1435,8 +1433,9 @@ async function loadAll(){
         }else return;
         var rawScore=score, propMax=100; // win-prob already cross-prop comparable
 
-        // v11 ODDS BAND: floor (-160) + HARD long cap (+130). Amputate the longshot tail.
-        if(recOdds==null||recOdds<MIN_ODDS||recOdds>MAX_ODDS)return;
+        // v11.2: full odds range ‚Äî the +130 cap was overfit to one losing day
+        // (+131..+200 returned +65% on a full sample). Just require a price exists.
+        if(recOdds==null)return;
 
         if(score<52)return; // below a coin flip = no edge
 
@@ -1649,8 +1648,14 @@ function modelPerfBlock(){
     h+='<div style="font-size:11px;color:var(--mut)">Calibrating &mdash; '+s.total_resolved+'/'+MODEL_MIN+' settled. ROI needs ~30+ per bucket to stabilize.</div></div>';
     return h;
   }
-  // Grades broken out (A = real money) at the top
-  h+='<div style="font-size:10px;font-weight:700;color:var(--txt);margin:6px 0 2px">By grade (A = real money)</div>';
+  // ROI by ODDS bucket (v11.2 ‚Äî prominent; this is what decides any future odds rule)
+  var obOrder=['minus','+100..130','+131..200','+201+'];
+  if(obOrder.some(function(k){return s.by_odds_bucket[k]&&s.by_odds_bucket[k].t>0;})){
+    h+='<div style="font-size:10px;font-weight:700;color:var(--gld);margin:6px 0 2px">ROI by odds bucket ‚Äî no cap until n&ge;40 clearly negative</div>';
+    obOrder.forEach(function(k){if(s.by_odds_bucket[k])h+=bucketRow(k,s.by_odds_bucket[k]);});
+  }
+  // Grades broken out (A = real money)
+  h+='<div style="font-size:10px;font-weight:700;color:var(--txt);margin:8px 0 2px">By grade (A = real money)</div>';
   ['A','B','W'].forEach(function(g){h+=bucketRow('Grade '+g,s.by_grade[g]);});
   // Prop type, sorted by ROI (best first) ‚Äî localizes the leak
   var props=Object.keys(s.by_prop_type).filter(function(k){return s.by_prop_type[k].t>=MODEL_MIN;}).sort(function(a,b){return roiOf(s.by_prop_type[b])-roiOf(s.by_prop_type[a]);});
@@ -1782,7 +1787,7 @@ function renderPicks(){
 
   // How-to-read-the-score legend
   h+=modelPerfBlock();
-  h+='<div class="filter-note" style="background:var(--bbg);border-color:rgba(59,130,246,.3)"><div style="font-size:11px;font-weight:700;color:var(--blu);margin-bottom:3px">&#8505; v11 ‚Äî How to read the Score</div><div style="font-size:10px;color:var(--mut);line-height:1.5"><b>Score = modeled win probability</b> that the line clears (0&ndash;100%), not payout. Higher Score = higher hit likelihood, so a <b>-130 high-probability single outranks a +250 longshot</b>. Cards are capped to the <b>-160 to +130 odds band</b> (longshots past +130 were the proven leak) and each prop only fires on its matching bat type. <b>Singles board only ‚Äî no parlays</b> (multi-leg structure dilutes EV).</div></div>';
+  h+='<div class="filter-note" style="background:var(--bbg);border-color:rgba(59,130,246,.3)"><div style="font-size:11px;font-weight:700;color:var(--blu);margin-bottom:3px">&#8505; v11.2 ‚Äî How to read the Score</div><div style="font-size:10px;color:var(--mut);line-height:1.5"><b>Score = modeled win probability</b> that the line clears (0&ndash;100%), not payout. Higher Score = higher hit likelihood. <b>Full odds range</b> &mdash; the +130 cap was overfit to one day and rolled back; watch the ROI-by-odds-bucket table, no new odds rule until a bucket is clearly negative over n&ge;40. Each prop fires only on its matching bat type, and <b>stolen bases are removed</b>. <b>Singles board only &mdash; no parlays</b>.</div></div>';
 
   // Premium card header
   h+='<div class="card" style="background:var(--gbg);border-color:rgba(34,197,94,.3)">';
@@ -2248,7 +2253,7 @@ function copyPicks(){
   var watch=D.picks.filter(function(p){return p.grade==='B'||p.grade==='W';});
   var wins=BETS.filter(function(b){return b.result==='WIN';}).length;
   var tot=BETS.filter(function(b){return b.result!=='PENDING';}).length;
-  var txt='HITTERS EDGE v11 ‚Äî '+D.date+' (generated '+(D.generatedAt||'?')+', odds as of '+(D.oddsAsOf||'?')+')\n';
+  var txt='HITTERS EDGE v11.2 ‚Äî '+D.date+' (generated '+(D.generatedAt||'?')+', odds as of '+(D.oddsAsOf||'?')+')\n';
   txt+='Record: '+wins+'W/'+(tot-wins)+'L'+(tot?' ('+Math.round(wins/tot*100)+'%)':'')+'\n';
   txt+='Score = normalized 0-100 WITHIN each prop (a ranking, not a win probability). Value model% = real settled-bet hit rate for that score bucket.\n';
   if(D.aceNotes&&D.aceNotes.length){txt+='\nACE FILTERS (batters skipped):\n';D.aceNotes.forEach(function(n){txt+='  '+n.team+' vs '+n.pitcher+' ('+n.era+' ERA)\n';});}
