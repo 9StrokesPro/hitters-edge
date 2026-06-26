@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-<title>Hitters Edge v11.3</title>
+<title>Hitters Edge v11.3.1</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -107,7 +107,7 @@ select.inp option{background:var(--sur2)}
 <body>
 <div class="hdr">
   <div>
-    <div class="logo">&#9918; Hitters Edge v11.3</div>
+    <div class="logo">&#9918; Hitters Edge v11.3.1</div>
     <div style="font-size:9px;color:var(--mut)" id="lu">Loading...</div>
     <div style="font-size:9px;color:var(--mut)" id="rtimer"></div>
   </div>
@@ -839,6 +839,14 @@ function applyFilters(pick){
   // 7. Conflict check: if same game has pitcher K over AND hitter props, flag
   // (handled at game level below)
 
+  // 7b. v11.3.1 CONTACT-on-HRRBI player-type filter ‚Äî a contact bat lacks the XBH/RBI
+  // upside H+R+RBI rewards (mirror of the power-on-singles kill). Route to Watch (not
+  // delete), BEFORE the price-band gate, so it never reaches the Premium card.
+  if(pick.batKey==='CONTACT'&&k==='batter_hits_runs_rbis'&&grade==='A'){
+    grade='W';
+    filters.push('mismatch (contact-on-HRRBI)');
+  }
+
   // 8. v11.3 STAKING BAND (display only ‚Äî scoring/grading untouched): the real-money
   // Premium card only carries the prices Joe actually bets (-140..-100, minus money).
   // Out-of-band picks aren't deleted ‚Äî they drop to Watch/bonus, fully tracked.
@@ -1015,7 +1023,7 @@ var MSTATS=null; // cached aggregated model stats, refreshed on render
 function propShort(mktKey){return {batter_singles:'singles',batter_hits:'hits',batter_runs_scored:'runs',batter_rbis:'rbi',batter_total_bases:'total_bases',batter_hits_runs_rbis:'h_r_rbi',batter_walks:'walks',batter_stolen_bases:'stolen_bases',batter_home_runs:'home_runs',pitcher_strikeouts:'strikeouts'}[mktKey]||mktKey;}
 function scoreBucket(s){return s>=90?'90-100':s>=80?'80-89':s>=70?'70-79':s>=60?'60-69':s>=50?'50-59':'<50';}
 // ROI-by-odds bucket (v11.2): no odds filter ‚Äî track and let n>=~40 data set any future rule.
-function oddsBucket(o){if(o==null)return null;if(o<0)return'minus';if(o<=130)return'+100..130';if(o<=200)return'+131..200';return'+201+';}
+function oddsBucket(o){if(o==null)return null;if(o>=100)return'+money';if(o<-140)return'juiced <-140';if(o<=-120)return'-140..-120';return'-119..-100';} // in-band buckets first; out-of-band tracked too
 function pct(w,t,m){m=m||20;if(t<m)return'calibrating ('+t+'/'+m+')';return Math.round(w/t*100)+'% ('+w+'/'+t+')';}
 // Single-event (one PA can settle it) vs multi-event (needs accumulation across PAs)
 function eventClass(prop,line){
@@ -1140,7 +1148,7 @@ function buildModelStats(){
   var all=getAllLoggedPicks();
   var s={total_generated:all.length,total_resolved:0,total_pending:0,total_dnp:0,total_push:0,
     by_grade:{},by_score_bucket:{},by_prop_type:{},by_matchup_tag:{},by_platoon:{},
-    by_regression_due:{},by_trend:{},by_direction:{},by_prop_dir:{},by_clv:{},by_event:{},by_odds_bucket:{},
+    by_regression_due:{},by_trend:{},by_direction:{},by_prop_dir:{},by_clv:{},by_event:{},by_odds_bucket:{},by_overall:{},
     under_bt:{all:{w:0,t:0,p:0},by_grade:{},by_prop:{}},
     bench:{n:0,rec:0,blind_under:0,always_over:0,rec_over:0,rec_under:0,tcut:70},
     over_n:0,under_n:0,clv_sum:0,clv_n:0,clv_pos:0,clv_since:null,last_updated:new Date().toISOString()};
@@ -1168,6 +1176,7 @@ function buildModelStats(){
     bump(s.by_prop_dir,p.prop_type+'|'+dir,p);
     bump(s.by_event,eventClass(p.prop_type,p.line),p);
     bump(s.by_odds_bucket,oddsBucket(p.odds),p);
+    bump(s.by_overall,'all',p);
     if(p.clv!=null){s.clv_sum+=p.clv;s.clv_n++;if(p.clv>0)s.clv_pos++;bump(s.by_clv,p.clv>=0?'pos':'neg',p);if(!s.clv_since||p.date<s.clv_since)s.clv_since=p.date;}
     // UNDER backtest: would fading THIS Over (taking the Under) have hit? (hit-rate only ‚Äî no historical Under odds)
     if(dir==='over'&&p.actual_stat!=null){
@@ -1666,7 +1675,7 @@ function modelPerfBlock(){
     return h;
   }
   // ROI by ODDS bucket (v11.2 ‚Äî prominent; this is what decides any future odds rule)
-  var obOrder=['minus','+100..130','+131..200','+201+'];
+  var obOrder=['-140..-120','-119..-100','juiced <-140','+money'];
   if(obOrder.some(function(k){return s.by_odds_bucket[k]&&s.by_odds_bucket[k].t>0;})){
     h+='<div style="font-size:10px;font-weight:700;color:var(--gld);margin:6px 0 2px">ROI by odds bucket ‚Äî no cap until n&ge;40 clearly negative</div>';
     obOrder.forEach(function(k){if(s.by_odds_bucket[k])h+=bucketRow(k,s.by_odds_bucket[k]);});
@@ -2270,7 +2279,7 @@ function copyPicks(){
   var watch=D.picks.filter(function(p){return p.grade==='B'||p.grade==='W';});
   var wins=BETS.filter(function(b){return b.result==='WIN';}).length;
   var tot=BETS.filter(function(b){return b.result!=='PENDING';}).length;
-  var txt='HITTERS EDGE v11.3 ‚Äî '+D.date+' (generated '+(D.generatedAt||'?')+', odds as of '+(D.oddsAsOf||'?')+')\n';
+  var txt='HITTERS EDGE v11.3.1 ‚Äî '+D.date+' (generated '+(D.generatedAt||'?')+', odds as of '+(D.oddsAsOf||'?')+')\n';
   txt+='Record: '+wins+'W/'+(tot-wins)+'L'+(tot?' ('+Math.round(wins/tot*100)+'%)':'')+'\n';
   txt+='Score = normalized 0-100 WITHIN each prop (a ranking, not a win probability). Value model% = real settled-bet hit rate for that score bucket.\n';
   if(D.aceNotes&&D.aceNotes.length){txt+='\nACE FILTERS (batters skipped):\n';D.aceNotes.forEach(function(n){txt+='  '+n.team+' vs '+n.pitcher+' ('+n.era+' ERA)\n';});}
@@ -2287,8 +2296,30 @@ function copyPicks(){
   }
   txt+='\n========== GAME TOTALS ==========\n';
   D.totals.filter(function(t){return t.isUpcoming;}).forEach(function(t){txt+=t.game+' Line '+t.line+' O '+fmtOdds(t.overOdds)+' U '+fmtOdds(t.underOdds)+'\n';});
-  txt+='\nANALYZE:\n1. Rank the premium card by true edge using ALL data above ‚Äî weight bat-type/pitcher-vulnerability match, luck gap (regression), matchup tag, and the value gap.\n2. Best 2-3 leg cross-game parlay, plus any correlated SGP worth playing.\n3. Premium picks to fade (cooling 10-game trend, tough/avoid matchup, or negative value).\n';
-  txt+='\nRULES: Premium = real money $25. Watch = bonus only. -140 or better. No aces, no doubles, no power-on-singles / contact-on-HRRBI.';
+  // ‚îÄ‚îÄ PERFORMANCE (ROI-first) ‚Äî surface the brains, read-only ‚îÄ‚îÄ
+  var s=MSTATS||buildModelStats();
+  var ln=function(label,o){return '  '+label+': n='+o.t+' | '+Math.round(o.w/o.t*100)+'% | ROI '+(Math.round(o.u/o.t*100)>=0?'+':'')+Math.round(o.u/o.t*100)+'%'+(o.on?' | avg '+(Math.round(o.os/o.on)>0?'+':'')+Math.round(o.os/o.on):'')+'\n';};
+  txt+='\n========== PERFORMANCE (ROI-FIRST) ==========\n';
+  txt+='Overall: tracked '+s.total_generated+' | settled '+s.total_resolved+' | pending '+s.total_pending+' | void '+(s.total_dnp||0)+' | push '+(s.total_push||0)+(s.by_overall.all&&s.by_overall.all.t?' | '+Math.round(s.by_overall.all.w/s.by_overall.all.t*100)+'% | ROI '+(Math.round(s.by_overall.all.u/s.by_overall.all.t*100)>=0?'+':'')+Math.round(s.by_overall.all.u/s.by_overall.all.t*100)+'%':'')+'\n';
+  txt+='By odds bucket:\n';['-140..-120','-119..-100','juiced <-140','+money'].forEach(function(k){if(s.by_odds_bucket[k]&&s.by_odds_bucket[k].t)txt+=ln(k,s.by_odds_bucket[k]);});
+  txt+='By prop (ROI desc):\n';Object.keys(s.by_prop_type).sort(function(a,b){return (s.by_prop_type[b].u/s.by_prop_type[b].t)-(s.by_prop_type[a].u/s.by_prop_type[a].t);}).forEach(function(k){if(s.by_prop_type[k].t)txt+=ln(k,s.by_prop_type[k]);});
+  ['strikeouts|over','strikeouts|under'].forEach(function(k){if(s.by_prop_dir[k]&&s.by_prop_dir[k].t)txt+=ln(k.replace('strikeouts|','K-'),s.by_prop_dir[k]);});
+  txt+='By grade:\n';['A','B','W'].forEach(function(g){if(s.by_grade[g]&&s.by_grade[g].t)txt+=ln('Grade '+g,s.by_grade[g]);});
+  txt+='By side:\n';['over','under'].forEach(function(k){if(s.by_direction[k]&&s.by_direction[k].t)txt+=ln(k,s.by_direction[k]);});
+  txt+='CLV: '+(s.clv_n?('avg '+(Math.round(s.clv_sum/s.clv_n*10)/10)+' | '+Math.round(s.clv_pos/s.clv_n*100)+'% positive (n='+s.clv_n+')'):'null (not captured yet)')+'\n';
+
+  // ‚îÄ‚îÄ SETTLEMENT LOG (last 14 days) ‚Äî read-only ‚îÄ‚îÄ
+  txt+='\n========== SETTLEMENT LOG (last 14 days) ==========\n';
+  txt+='date | player | prop | line | side | odds | grade | result | graded_stat | closing_odds | clv\n';
+  var c14=new Date();c14.setDate(c14.getDate()-14);
+  var c14s=c14.getFullYear()+'-'+String(c14.getMonth()+1).padStart(2,'0')+'-'+String(c14.getDate()).padStart(2,'0');
+  var rmap={WIN:'W',LOSS:'L',DNP:'void',VOID:'void',PUSH:'push'};
+  var sl=getAllLoggedPicks().filter(function(p){return p.result&&p.result!=='PENDING'&&p.date>=c14s;}).sort(function(a,b){return(b.resolved_at||'').localeCompare(a.resolved_at||'');});
+  if(!sl.length)txt+='(none settled in window)\n';
+  sl.forEach(function(p){txt+=p.date+' | '+p.player_name+' | '+p.prop_type+' | '+p.line+' | '+p.direction+' | '+fmtOdds(p.odds)+' | '+p.grade+' | '+(rmap[p.result]||p.result)+' | '+(p.settle||'-')+' | '+(p.closing_odds!=null?fmtOdds(p.closing_odds):'null')+' | '+(p.clv!=null?p.clv:'null')+'\n';});
+
+  txt+='\nANALYZE:\n1. Rank the Premium singles by edge (Score = modeled win probability) + matchup/platoon/park context.\n2. Which Premium picks to fade (cooling 10-game trend, tough/AVOID matchup, regression-down).\n3. Read PERFORMANCE: which odds/prop/grade buckets are actually +ROI, and whether CLV is positive.\n';
+  txt+='\nRULES: Premium = real money, staking band -140..-100 only. Watch = bonus/out-of-band. Singles only, no parlays. No aces, no stolen bases, player-type matched. Everything tracked regardless of band.';
   copyText(txt,'copy-ok');
 }
 function copyParlay(){
