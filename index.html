@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-<title>Hitters Edge v11.3.1</title>
+<title>Hitters Edge v11.4</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -107,7 +107,7 @@ select.inp option{background:var(--sur2)}
 <body>
 <div class="hdr">
   <div>
-    <div class="logo">&#9918; Hitters Edge v11.3.1</div>
+    <div class="logo">&#9918; Hitters Edge v11.4</div>
     <div style="font-size:9px;color:var(--mut)" id="lu">Loading...</div>
     <div style="font-size:9px;color:var(--mut)" id="rtimer"></div>
   </div>
@@ -144,6 +144,8 @@ var MIN_ODDS             = -160;  // (unused in v11.2+ ‚Äî full-range genera
 var MAX_ODDS             = 130;   // (unused in v11.2+ ‚Äî +130 cap was rolled back)
 var PREMIUM_ODDS_FLOOR   = -140;  // v11.3 staking band: most juice allowed on the Premium card
 var PREMIUM_ALLOW_PLUS_MONEY = false; // v11.3: plus-money picks never hit the real-money card
+var RECENT_FORM_MIN_L5   = 3;     // v11.4: Premium needs >=3 of last 5 games clearing THIS line
+var INACTIVE_DAYS        = 5;     // v11.4: no appearance in this many days -> INACTIVE/RETURNING
 var RUNS_TOTAL_MIN       = 8.5;   // runs props need a high-total game
 var RBI_TOTAL_MIN        = 8.0;   // rbi props need run environment + runners
 var WALK_HITTER_BB_MIN   = 0.085; // walks props need a patient hitter (BB% proxy)
@@ -396,11 +398,16 @@ async function getPitcherRecentStarts(id,n){
     totH+=parseInt(r.stat.hits)||0;
     totER+=parseInt(r.stat.earnedRuns)||0;
   });
+  // Recent-form: per-start K counts (last 10 appeared starts) for L5/L10 prop-clear
+  var appeared=splits.filter(function(r){return (parseFloat(r.stat.inningsPitched)||0)>0;});
+  var kGames=appeared.slice(-10).map(function(r){return parseInt(r.stat.strikeOuts)||0;});
+  var lastDate=appeared.length?appeared[appeared.length-1].date:null;
   return{
     starts:recent.length,
     avgK:recent.length>0?Math.round(totK/recent.length*10)/10:0,
     avgH:recent.length>0?Math.round(totH/recent.length*10)/10:0,
-    era:totIP>0?Math.round(totER/totIP*9*100)/100:0
+    era:totIP>0?Math.round(totER/totIP*9*100)/100:0,
+    kGames:kGames, lastDate:lastDate
   };
 }
 
@@ -434,6 +441,12 @@ async function getBatterStats(name){
   // Rolling 10-game stats (more predictive than season per spec)
   var gl=await apiFetch(MLB+'/people/'+pid+'/stats?stats=gameLog&group=hitting&season='+SEASON+'&sportId=1');
   var gls=gl&&gl.stats&&gl.stats[0]&&gl.stats[0].splits||[];
+  // Recent-form: last 10 APPEARED games (AB+BB>0), per-game lines for L5/L10 prop-clear
+  var appearedG=gls.filter(function(r){return (parseInt(r.stat.atBats)||0)+(parseInt(r.stat.baseOnBalls)||0)>0;});
+  var recentGames=appearedG.slice(-10).map(function(r){var st=r.stat;return{
+    date:r.date, h:parseInt(st.hits)||0, dbl:parseInt(st.doubles)||0, tri:parseInt(st.triples)||0, hr:parseInt(st.homeRuns)||0,
+    r:parseInt(st.runs)||0, rbi:parseInt(st.rbi)||0, bb:parseInt(st.baseOnBalls)||0, tb:parseInt(st.totalBases)||0};});
+  var lastGameDate=appearedG.length?appearedG[appearedG.length-1].date:null;
   var recent10=gls.slice(-10);
   var r10H=0,r10AB=0,r10BB=0,r10sng=0;
   recent10.forEach(function(r){
@@ -468,6 +481,7 @@ async function getBatterStats(name){
     playerId:pid,
     team:team,
     batSide:batSide, splitVsL:splitVsL, splitVsR:splitVsR,
+    recentGames:recentGames, lastGameDate:lastGameDate,
     games:g,
     avg,obp,slg,
     iso:Math.round(Math.max(slg-avg,0)*1000)/1000, // Isolated Power = SLG - AVG (bat-type input)
@@ -765,6 +779,29 @@ function profileMismatch(k,b,batKey,spot,gameTotal,oppBB9){
   return null;
 }
 
+// ‚îÄ‚îÄ RECENT-FORM PROP HIT-RATE (v11.4): did the player clear THIS exact line lately? ‚îÄ‚îÄ
+// Per-game "cleared the Over line?" test (Over X.5 => stat > line).
+function clearsLine(g,mktKey,line){
+  if(mktKey==='batter_total_bases')return g.tb>line;
+  if(mktKey==='batter_hits')return g.h>line;
+  if(mktKey==='batter_hits_runs_rbis')return (g.h+g.r+g.rbi)>line;
+  if(mktKey==='batter_singles')return (g.h-g.dbl-g.tri-g.hr)>line;
+  if(mktKey==='batter_rbis')return g.rbi>line;
+  if(mktKey==='batter_runs_scored')return g.r>line;
+  if(mktKey==='batter_walks')return g.bb>line;
+  if(mktKey==='batter_home_runs')return g.hr>line;
+  return false;
+}
+function recentRate(games,mktKey,line,n){ // hitters
+  if(!games||!games.length)return{c:0,n:0};
+  var slice=games.slice(-n),c=0; slice.forEach(function(g){if(clearsLine(g,mktKey,line))c++;}); return{c:c,n:slice.length};
+}
+function recentK(kGames,line,over,n){ // pitcher strikeouts
+  if(!kGames||!kGames.length)return{c:0,n:0};
+  var slice=kGames.slice(-n),c=0; slice.forEach(function(k){if(over?(k>line):(k<line))c++;}); return{c:c,n:slice.length};
+}
+function daysSince(dateStr){if(!dateStr)return 999;var d=new Date(dateStr+'T12:00:00');return Math.floor((new Date()-d)/86400000);}
+
 // ‚îÄ‚îÄ APPLY ALL FILTERS AND GRADE (spec) ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
 function applyFilters(pick){
   var k=pick.mktKey, b=pick.bStats, p=pick.pitSt, l3=pick.l3, line=pick.line;
@@ -845,6 +882,13 @@ function applyFilters(pick){
   if(pick.batKey==='CONTACT'&&k==='batter_hits_runs_rbis'&&grade==='A'){
     grade='W';
     filters.push('mismatch (contact-on-HRRBI)');
+  }
+
+  // 7c. v11.4 RECENT-FORM gate ‚Äî Premium needs the player active and clearing THIS line
+  // lately. Cold/returning bats drop to Watch (still tracked), never real money.
+  if(grade==='A'){
+    if(pick.inactive){grade='W';filters.push('INACTIVE/RETURNING ‚Äî Watch only');}
+    else if(pick.l5n>=4&&pick.l5c<RECENT_FORM_MIN_L5){grade='W';filters.push('cold recent form (L5 '+pick.l5c+'/'+pick.l5n+') ‚Äî Watch only');}
   }
 
   // 8. v11.3 STAKING BAND (display only ‚Äî scoring/grading untouched): the real-money
@@ -1502,6 +1546,20 @@ async function loadAll(){
         var pSav=(oppPitId&&statcast.pit)?statcast.pit[oppPitId]:null;
         var oppVuln=(!isPitcher)?classifyPitcher(oppPit,pSav):null;
 
+        // Recent-form prop-clear rate (L5/L10) on THIS exact line + inactivity flag
+        var l5={c:0,n:0},l10={c:0,n:0},lastDt=null;
+        if(isPitcher){
+          var over=(sideOver==='Over');
+          l5=recentK(pitL3?pitL3.kGames:null,mkt.line,over,5);
+          l10=recentK(pitL3?pitL3.kGames:null,mkt.line,over,10);
+          lastDt=pitL3?pitL3.lastDate:null;
+        }else if(bStats){
+          l5=recentRate(bStats.recentGames,k,mkt.line,5);
+          l10=recentRate(bStats.recentGames,k,mkt.line,10);
+          lastDt=bStats.lastGameDate;
+        }
+        var inactive=daysSince(lastDt)>INACTIVE_DAYS;
+
         rawPicks.push({
           name:pName,game:gameStr,time:fmtTime(og2.commence_time),
           park,mktKey:k,propLabel,line:mkt.line,
@@ -1528,6 +1586,7 @@ async function loadAll(){
           wx:(weather[gameStr]||null),
           pid:pickPid, teamAbbr:teamAbbr, oppAbbr:oppAbbr, gamePk:(ai2.gamePk||null),
           direction:(sideOver==='Under'?'under':'over'),
+          l5c:l5.c,l5n:l5.n,l10c:l10.c,l10n:l10.n,inactive:inactive,lastGame:lastDt,
           oppTypeKey:oppVuln?oppVuln.key:null, oppTypeLabel:oppVuln?oppVuln.label:null, oppTypeBest:oppVuln?oppVuln.best:null
         });
       });
@@ -1907,6 +1966,13 @@ function pickCard(p){
   // Score bar
   h+='<div class="sbar"><div class="sbar-fill" style="width:'+p.score+'%;background:'+col+'"></div></div>';
   h+='<div style="font-size:10px;color:'+col+';font-weight:700;margin-bottom:5px">Score: '+p.score+'/100'+(p.rawScore!=null?' <span style="color:var(--mut);font-weight:600">(raw model '+p.rawScore+'/'+(p.propMax||100)+')</span>':'')+'</div>';
+  // Recent form: how often THIS line cleared in the player's last 5/10 appearances
+  if(p.l5n||p.l10n){
+    var rfc=(p.l5n>=4)?((p.l5c/p.l5n>=0.6)?'var(--grn)':(p.l5c/p.l5n<=0.4)?'var(--red)':'var(--amb)'):'var(--mut)';
+    h+='<div style="font-size:10px;color:'+rfc+';font-weight:700;margin-bottom:5px">Recent form: L5 '+p.l5c+'/'+p.l5n+' &middot; L10 '+p.l10c+'/'+p.l10n+' on this line'+(p.inactive?' &middot; <span style="color:var(--red)">&#9888; INACTIVE/RETURNING</span>':'')+'</div>';
+  } else if(p.inactive){
+    h+='<div style="font-size:10px;color:var(--red);font-weight:700;margin-bottom:5px">&#9888; INACTIVE/RETURNING ‚Äî no recent games</div>';
+  }
 
   // Line movement (first-seen odds -> current, for the recommended side)
   if(p.oddsOpen!=null){
@@ -2246,6 +2312,7 @@ function pickDump(p){
   if(p.sgpPartner)T.push('  ** CORRELATED SGP OPPORTUNITY ‚Äî pairs with '+p.sgpPartner+' vs '+p.pitcher+' (same vulnerability); build as a same-game parlay **');
   else if(p.sameGame)T.push('  ** SAME-GAME as another pick ‚Äî do not combine in a CROSS-game parlay **');
   if(p.conflictFlag)T.push('  ** CONFLICT: same game has a pitcher K over **');
+  if(p.l5n||p.l10n||p.inactive)T.push('  Recent form on this line: L5 '+p.l5c+'/'+p.l5n+' | L10 '+p.l10c+'/'+p.l10n+(p.inactive?' | INACTIVE/RETURNING':''));
   if(b){
     var bt=batType(b.iso);
     T.push('  BAT TYPE: '+(bt?bt.label:'-')+' (ISO '+fmt3(b.iso)+') | '+b.games+' games');
@@ -2279,7 +2346,7 @@ function copyPicks(){
   var watch=D.picks.filter(function(p){return p.grade==='B'||p.grade==='W';});
   var wins=BETS.filter(function(b){return b.result==='WIN';}).length;
   var tot=BETS.filter(function(b){return b.result!=='PENDING';}).length;
-  var txt='HITTERS EDGE v11.3.1 ‚Äî '+D.date+' (generated '+(D.generatedAt||'?')+', odds as of '+(D.oddsAsOf||'?')+')\n';
+  var txt='HITTERS EDGE v11.4 ‚Äî '+D.date+' (generated '+(D.generatedAt||'?')+', odds as of '+(D.oddsAsOf||'?')+')\n';
   txt+='Record: '+wins+'W/'+(tot-wins)+'L'+(tot?' ('+Math.round(wins/tot*100)+'%)':'')+'\n';
   txt+='Score = normalized 0-100 WITHIN each prop (a ranking, not a win probability). Value model% = real settled-bet hit rate for that score bucket.\n';
   if(D.aceNotes&&D.aceNotes.length){txt+='\nACE FILTERS (batters skipped):\n';D.aceNotes.forEach(function(n){txt+='  '+n.team+' vs '+n.pitcher+' ('+n.era+' ERA)\n';});}
