@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-<title>Hitters Edge v11.4</title>
+<title>Hitters Edge v11.5</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -107,7 +107,7 @@ select.inp option{background:var(--sur2)}
 <body>
 <div class="hdr">
   <div>
-    <div class="logo">&#9918; Hitters Edge v11.4</div>
+    <div class="logo">&#9918; Hitters Edge v11.5</div>
     <div style="font-size:9px;color:var(--mut)" id="lu">Loading...</div>
     <div style="font-size:9px;color:var(--mut)" id="rtimer"></div>
   </div>
@@ -774,7 +774,7 @@ function profileMismatch(k,b,batKey,spot,gameTotal,oppBB9){
   if(k==='batter_total_bases'||k==='batter_home_runs'){ if(batKey==='CONTACT')return'contact bat on a power prop'; }
   if(k==='batter_singles'){ if(batKey==='POWER')return'power bat on singles'; }
   if(k==='batter_runs_scored'){ if(!spot||spot>3)return'runs need a top-3 lineup spot'; if(gameTotal!=null&&gameTotal<RUNS_TOTAL_MIN)return'runs need a high-total game'; }
-  if(k==='batter_rbis'){ if(!spot||spot<3||spot>6)return'rbi need a 3-6 lineup spot'; if(gameTotal!=null&&gameTotal<RBI_TOTAL_MIN)return'rbi need run environment'; }
+  // batter_rbis is gated in the dedicated v11.5 RBI path (recent form + spot + run env)
   if(k==='batter_walks'){ if((b.bbRate||0)<WALK_HITTER_BB_MIN)return'walks need a patient hitter'; if(oppBB9!=null&&oppBB9<WALK_OPP_BB9_MIN)return'walks need a wild pitcher'; }
   return null;
 }
@@ -896,7 +896,7 @@ function applyFilters(pick){
   // Out-of-band picks aren't deleted ‚Äî they drop to Watch/bonus, fully tracked.
   if(grade==='A'&&!premiumOddsOk(pick.recOdds)){
     grade='W';
-    filters.push('out-of-band (price) ‚Äî Watch/bonus only');
+    filters.push(pick.accelerator?'Accelerator (plus-money flier) ‚Äî stake small':'out-of-band (price) ‚Äî Watch/bonus only');
   }
 
   return{pass:true,grade:grade,filters:filters};
@@ -1503,11 +1503,41 @@ async function loadAll(){
         }else return;
         var rawScore=score, propMax=100; // win-prob already cross-prop comparable
 
+        // Recent-form prop-clear rate (L5/L10) on THIS exact line + inactivity (computed
+        // BEFORE the gates so RBI can be gated on recent form, not season rate).
+        var l5={c:0,n:0},l10={c:0,n:0},lastDt=null;
+        if(isPitcher){
+          var over=(sideOver==='Over');
+          l5=recentK(pitL3?pitL3.kGames:null,mkt.line,over,5);
+          l10=recentK(pitL3?pitL3.kGames:null,mkt.line,over,10);
+          lastDt=pitL3?pitL3.lastDate:null;
+        }else if(bStats){
+          l5=recentRate(bStats.recentGames,k,mkt.line,5);
+          l10=recentRate(bStats.recentGames,k,mkt.line,10);
+          lastDt=bStats.lastGameDate;
+        }
+        var inactive=daysSince(lastDt)>INACTIVE_DAYS;
+
+        // v11.5 RBI path: RBI Over 0.5 is a binary, lineup-dependent bet ‚Äî gate on
+        // recent form + spot + run-environment, NOT season RBI/game. Plus-money flier.
+        var accelerator=false;
+        if(k==='batter_rbis'){
+          if(!bStats)return;
+          var gt=(totalMap[gameStr]!=null?totalMap[gameStr]:null);
+          var spotOk=lineupConfirmed&&lineupSpot&&lineupSpot>=3&&lineupSpot<=6;   // run-producer slot, confirmed
+          var envOk=(gt!=null&&gt>=9)||park>=112;                                 // high total OR Coors
+          var formOk=l5.n>=5&&l5.c>=4;                                            // drove in a run in >=4 of last 5
+          var platOk=!pm||pm.side!=='UNFAVORABLE';
+          if(!(spotOk&&envOk&&formOk&&platOk))return;
+          score=Math.round((l5.c/l5.n*0.6+(l10.n?l10.c/l10.n:l5.c/l5.n)*0.4)*100); // score = recent form, not season
+          rawScore=score; accelerator=true;
+        }
+
         // v11.2: full odds range ‚Äî the +130 cap was overfit to one losing day
         // (+131..+200 returned +65% on a full sample). Just require a price exists.
         if(recOdds==null)return;
 
-        if(score<52)return; // below a coin flip = no edge
+        if(score<52)return; // below a coin flip = no edge (RBI gate already enforces form)
 
         // Grade off win probability (premium = high-probability common events)
         var rawGrade=score>=65?'A':score>=52?'B':'C';
@@ -1546,20 +1576,6 @@ async function loadAll(){
         var pSav=(oppPitId&&statcast.pit)?statcast.pit[oppPitId]:null;
         var oppVuln=(!isPitcher)?classifyPitcher(oppPit,pSav):null;
 
-        // Recent-form prop-clear rate (L5/L10) on THIS exact line + inactivity flag
-        var l5={c:0,n:0},l10={c:0,n:0},lastDt=null;
-        if(isPitcher){
-          var over=(sideOver==='Over');
-          l5=recentK(pitL3?pitL3.kGames:null,mkt.line,over,5);
-          l10=recentK(pitL3?pitL3.kGames:null,mkt.line,over,10);
-          lastDt=pitL3?pitL3.lastDate:null;
-        }else if(bStats){
-          l5=recentRate(bStats.recentGames,k,mkt.line,5);
-          l10=recentRate(bStats.recentGames,k,mkt.line,10);
-          lastDt=bStats.lastGameDate;
-        }
-        var inactive=daysSince(lastDt)>INACTIVE_DAYS;
-
         rawPicks.push({
           name:pName,game:gameStr,time:fmtTime(og2.commence_time),
           park,mktKey:k,propLabel,line:mkt.line,
@@ -1586,7 +1602,7 @@ async function loadAll(){
           wx:(weather[gameStr]||null),
           pid:pickPid, teamAbbr:teamAbbr, oppAbbr:oppAbbr, gamePk:(ai2.gamePk||null),
           direction:(sideOver==='Under'?'under':'over'),
-          l5c:l5.c,l5n:l5.n,l10c:l10.c,l10n:l10.n,inactive:inactive,lastGame:lastDt,
+          l5c:l5.c,l5n:l5.n,l10c:l10.c,l10n:l10.n,inactive:inactive,lastGame:lastDt,accelerator:accelerator,
           oppTypeKey:oppVuln?oppVuln.key:null, oppTypeLabel:oppVuln?oppVuln.label:null, oppTypeBest:oppVuln?oppVuln.best:null
         });
       });
@@ -1973,6 +1989,7 @@ function pickCard(p){
   } else if(p.inactive){
     h+='<div style="font-size:10px;color:var(--red);font-weight:700;margin-bottom:5px">&#9888; INACTIVE/RETURNING ‚Äî no recent games</div>';
   }
+  if(p.accelerator)h+='<div style="font-size:10px;color:var(--pur);font-weight:700;margin-bottom:5px">&#128640; ACCELERATOR ‚Äî plus-money flier (recent-form + 3-6 spot); stake small, not a core single</div>';
 
   // Line movement (first-seen odds -> current, for the recommended side)
   if(p.oddsOpen!=null){
@@ -2346,7 +2363,7 @@ function copyPicks(){
   var watch=D.picks.filter(function(p){return p.grade==='B'||p.grade==='W';});
   var wins=BETS.filter(function(b){return b.result==='WIN';}).length;
   var tot=BETS.filter(function(b){return b.result!=='PENDING';}).length;
-  var txt='HITTERS EDGE v11.4 ‚Äî '+D.date+' (generated '+(D.generatedAt||'?')+', odds as of '+(D.oddsAsOf||'?')+')\n';
+  var txt='HITTERS EDGE v11.5 ‚Äî '+D.date+' (generated '+(D.generatedAt||'?')+', odds as of '+(D.oddsAsOf||'?')+')\n';
   txt+='Record: '+wins+'W/'+(tot-wins)+'L'+(tot?' ('+Math.round(wins/tot*100)+'%)':'')+'\n';
   txt+='Score = normalized 0-100 WITHIN each prop (a ranking, not a win probability). Value model% = real settled-bet hit rate for that score bucket.\n';
   if(D.aceNotes&&D.aceNotes.length){txt+='\nACE FILTERS (batters skipped):\n';D.aceNotes.forEach(function(n){txt+='  '+n.team+' vs '+n.pitcher+' ('+n.era+' ERA)\n';});}
