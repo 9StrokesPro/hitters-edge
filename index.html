@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-<title>Hitters Edge v11.5</title>
+<title>Hitters Edge v11.5.1</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -107,7 +107,7 @@ select.inp option{background:var(--sur2)}
 <body>
 <div class="hdr">
   <div>
-    <div class="logo">&#9918; Hitters Edge v11.5</div>
+    <div class="logo">&#9918; Hitters Edge v11.5.1</div>
     <div style="font-size:9px;color:var(--mut)" id="lu">Loading...</div>
     <div style="font-size:9px;color:var(--mut)" id="rtimer"></div>
   </div>
@@ -146,6 +146,8 @@ var PREMIUM_ODDS_FLOOR   = -140;  // v11.3 staking band: most juice allowed on t
 var PREMIUM_ALLOW_PLUS_MONEY = false; // v11.3: plus-money picks never hit the real-money card
 var RECENT_FORM_MIN_L5   = 3;     // v11.4: Premium needs >=3 of last 5 games clearing THIS line
 var INACTIVE_DAYS        = 5;     // v11.4: no appearance in this many days -> INACTIVE/RETURNING
+var RBI_L5_MIN           = 3;     // v11.5.1: RBI recent-form bar (>=3 of last ~5 drove in a run)
+var RBI_TOTAL_FLOOR      = 8.5;   // v11.5.1: RBI run-environment floor (or Coors)
 var RUNS_TOTAL_MIN       = 8.5;   // runs props need a high-total game
 var RBI_TOTAL_MIN        = 8.0;   // rbi props need run environment + runners
 var WALK_HITTER_BB_MIN   = 0.085; // walks props need a patient hitter (BB% proxy)
@@ -1524,9 +1526,9 @@ async function loadAll(){
         if(k==='batter_rbis'){
           if(!bStats)return;
           var gt=(totalMap[gameStr]!=null?totalMap[gameStr]:null);
-          var spotOk=lineupConfirmed&&lineupSpot&&lineupSpot>=3&&lineupSpot<=6;   // run-producer slot, confirmed
-          var envOk=(gt!=null&&gt>=9)||park>=112;                                 // high total OR Coors
-          var formOk=l5.n>=5&&l5.c>=4;                                            // drove in a run in >=4 of last 5
+          var spotOk=lineupSpot&&lineupSpot>=3&&lineupSpot<=6;                    // run-producer slot (needs posted lineup)
+          var envOk=(gt!=null&&gt>=RBI_TOTAL_FLOOR)||park>=112;                    // run environment OR Coors
+          var formOk=l5.n>=4&&l5.c>=RBI_L5_MIN;                                   // drove in a run in >=3 of last ~5
           var platOk=!pm||pm.side!=='UNFAVORABLE';
           if(!(spotOk&&envOk&&formOk&&platOk))return;
           score=Math.round((l5.c/l5.n*0.6+(l10.n?l10.c/l10.n:l5.c/l5.n)*0.4)*100); // score = recent form, not season
@@ -1696,6 +1698,7 @@ async function loadAll(){
 
   D={picks,totals,aceNotes,bestParlays,mismatchNotes:mismatchNotes,
     sgps:buildSGPs(picks),
+    lineupsPosted:upcoming.filter(function(og){return (aceInfo[og.id]||{}).lineupPosted;}).length,
     upcoming:upcoming.length,live:live.length,finished:finished.length,
     date:new Date().toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'}),
     oddsAsOf:oddsAsOf,
@@ -1875,6 +1878,12 @@ function renderPicks(){
   // Card timestamp / odds-lock
   if(D.generatedAt||D.oddsAsOf){
     h+='<div style="font-size:10px;color:var(--mut);margin-bottom:8px">&#128197; Card generated '+(D.generatedAt||'--')+' &middot; odds current as of '+(D.oddsAsOf||'--')+' &middot; <span style="color:var(--amb)">bet early ‚Äî lines move</span></div>';
+  }
+  // Lineup-posted indicator ‚Äî RBI & Runs need confirmed batting orders (post ~2-3 hrs pre-game)
+  if(D.upcoming>0){
+    var lp=D.lineupsPosted||0;
+    var lpc=lp>=D.upcoming?'var(--grn)':lp>0?'var(--amb)':'var(--red)';
+    h+='<div style="font-size:10px;color:'+lpc+';font-weight:700;margin-bottom:8px">&#9776; Lineups posted: '+lp+'/'+D.upcoming+' games'+(lp<D.upcoming?' ‚Äî RBI/Runs picks fill in as lineups lock (~2-3 hrs before each game)':'')+'</div>';
   }
 
   // Ace notes
@@ -2363,7 +2372,7 @@ function copyPicks(){
   var watch=D.picks.filter(function(p){return p.grade==='B'||p.grade==='W';});
   var wins=BETS.filter(function(b){return b.result==='WIN';}).length;
   var tot=BETS.filter(function(b){return b.result!=='PENDING';}).length;
-  var txt='HITTERS EDGE v11.5 ‚Äî '+D.date+' (generated '+(D.generatedAt||'?')+', odds as of '+(D.oddsAsOf||'?')+')\n';
+  var txt='HITTERS EDGE v11.5.1 ‚Äî '+D.date+' (generated '+(D.generatedAt||'?')+', odds as of '+(D.oddsAsOf||'?')+')\n';
   txt+='Record: '+wins+'W/'+(tot-wins)+'L'+(tot?' ('+Math.round(wins/tot*100)+'%)':'')+'\n';
   txt+='Score = normalized 0-100 WITHIN each prop (a ranking, not a win probability). Value model% = real settled-bet hit rate for that score bucket.\n';
   if(D.aceNotes&&D.aceNotes.length){txt+='\nACE FILTERS (batters skipped):\n';D.aceNotes.forEach(function(n){txt+='  '+n.team+' vs '+n.pitcher+' ('+n.era+' ERA)\n';});}
