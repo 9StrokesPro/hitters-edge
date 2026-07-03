@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-<title>Hitters Edge v11.5.1</title>
+<title>Hitters Edge v12</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -107,7 +107,7 @@ select.inp option{background:var(--sur2)}
 <body>
 <div class="hdr">
   <div>
-    <div class="logo">&#9918; Hitters Edge v11.5.1</div>
+    <div class="logo">&#9918; Hitters Edge v12</div>
     <div style="font-size:9px;color:var(--mut)" id="lu">Loading...</div>
     <div style="font-size:9px;color:var(--mut)" id="rtimer"></div>
   </div>
@@ -146,8 +146,16 @@ var PREMIUM_ODDS_FLOOR   = -140;  // v11.3 staking band: most juice allowed on t
 var PREMIUM_ALLOW_PLUS_MONEY = false; // v11.3: plus-money picks never hit the real-money card
 var RECENT_FORM_MIN_L5   = 3;     // v11.4: Premium needs >=3 of last 5 games clearing THIS line
 var INACTIVE_DAYS        = 5;     // v11.4: no appearance in this many days -> INACTIVE/RETURNING
-var RBI_L5_MIN           = 3;     // v11.5.1: RBI recent-form bar (>=3 of last ~5 drove in a run)
+var RBI_L5_MIN           = 4;     // v12: restored to spec (>=4 of last 5 drove in a run) ‚Äî projected-spot cache un-sticks early boards instead
 var RBI_TOTAL_FLOOR      = 8.5;   // v11.5.1: RBI run-environment floor (or Coors)
+// ‚îÄ‚îÄ v12 TIER + RANKING (real-money eligibility earned by DATA, not price alone) ‚îÄ‚îÄ
+var K_OVER_MIN_LINE      = 5.5;   // v12 P4: no K-OVER below this line (4.5 = weak-arm line; unders unaffected)
+var ACCEL_MIN_N          = 50;    // v12 P0: prop needs >=N settled to earn the Accelerator tier...
+var ACCEL_MIN_ROI        = 10;    // ...AND realized ROI >= +10%. Auto-revokes if the prop regresses.
+var PROP_DEMOTE_N        = 100;   // v12 P2: prop with >=N settled AND...
+var PROP_DEMOTE_ROI      = -10;   // ...ROI <= -10% is paper-only (never real money) until it recovers
+var PROP_ROI_WEIGHT      = 0.5;   // v12 P2: rank weight ‚Äî score +/- up to 10 pts from realized prop ROI
+var SPOT_CACHE_DAYS      = 7;     // v12 P3: projected lineup spot valid this many days after last posted lineup
 var RUNS_TOTAL_MIN       = 8.5;   // runs props need a high-total game
 var RBI_TOTAL_MIN        = 8.0;   // rbi props need run environment + runners
 var WALK_HITTER_BB_MIN   = 0.085; // walks props need a patient hitter (BB% proxy)
@@ -335,13 +343,55 @@ async function apiFetch(url){
   try{var r=await fetch(url);if(!r.ok)throw new Error('HTTP '+r.status);return await r.json();}
   catch(e){console.warn('fetch',e.message,url.slice(0,60));return null;}
 }
+// ‚îÄ‚îÄ v12 ODDS-API BUDGET GUARD (per odds-api-budget-spec.md) ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+// Every Odds API call reads x-requests-remaining/-used/-last (CORS-exposed, verified).
+// Guard widens the auto-refresh cadence when projected burn exceeds the daily
+// allowance, and alerts at 80% of monthly quota. MLB statsapi stays free/unlimited.
+var ODDS_BUDGET=sg('odds_budget',{remaining:null,used:null,last:null,loadCost:null,ts:null});
+async function oddsFetch(url){
+  try{
+    var r=await fetch(url);
+    var rem=parseFloat(r.headers.get('x-requests-remaining'));
+    if(!isNaN(rem)){
+      ODDS_BUDGET.remaining=rem;
+      ODDS_BUDGET.used=parseFloat(r.headers.get('x-requests-used'))||ODDS_BUDGET.used;
+      ODDS_BUDGET.last=parseFloat(r.headers.get('x-requests-last'))||null;
+      ODDS_BUDGET.ts=new Date().toISOString();
+      ss('odds_budget',ODDS_BUDGET);
+    }
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    return await r.json();
+  }catch(e){console.warn('odds fetch',e.message,url.slice(0,60));return null;}
+}
+function budgetAllowance(){ // credits/day left in the current month
+  if(ODDS_BUDGET.remaining==null)return null;
+  var n=new Date(), daysLeft=(new Date(n.getFullYear(),n.getMonth()+1,0).getDate())-n.getDate()+1;
+  return Math.round(ODDS_BUDGET.remaining/Math.max(daysLeft,1));
+}
+function budgetAlert(){ // true when >=80% of monthly quota burned
+  if(ODDS_BUDGET.remaining==null||ODDS_BUDGET.used==null)return false;
+  var quota=ODDS_BUDGET.remaining+ODDS_BUDGET.used;
+  return quota>0&&(ODDS_BUDGET.used/quota)>=0.8;
+}
+// Auto-widen: if a full load at current cadence would blow the daily allowance,
+// step the refresh interval up (60 -> 90 -> 120 min). Never tightens on its own.
+function budgetGuard(){
+  var allow=budgetAllowance();
+  if(allow==null||ODDS_BUDGET.loadCost==null)return;
+  var perDay=Math.ceil(24*60/(REFRESH_MS/60000))*ODDS_BUDGET.loadCost;
+  while(perDay>allow&&REFRESH_MS<120*60*1000){
+    REFRESH_MS+=30*60*1000;
+    perDay=Math.ceil(24*60/(REFRESH_MS/60000))*ODDS_BUDGET.loadCost;
+    console.warn('budget guard: refresh widened to '+(REFRESH_MS/60000)+'m');
+  }
+}
 async function loadOddsGames(){
-  return await apiFetch(ODDS_BASE+'/sports/baseball_mlb/odds?regions=us&markets=h2h,totals&oddsFormat=american&apiKey='+ODDS_KEY);
+  return await oddsFetch(ODDS_BASE+'/sports/baseball_mlb/odds?regions=us&markets=h2h,totals&oddsFormat=american&apiKey='+ODDS_KEY);
 }
 async function loadEventProps(eventId){
   // Doubles excluded per spec
   var mkts='batter_hits,batter_hits_runs_rbis,batter_singles,batter_total_bases,batter_home_runs,batter_rbis,batter_runs_scored,batter_walks,pitcher_strikeouts'; // v11: stolen_bases removed (kill-list)
-  return await apiFetch(ODDS_BASE+'/sports/baseball_mlb/events/'+eventId+'/odds?regions=us&markets='+mkts+'&oddsFormat=american&apiKey='+ODDS_KEY);
+  return await oddsFetch(ODDS_BASE+'/sports/baseball_mlb/events/'+eventId+'/odds?regions=us&markets='+mkts+'&oddsFormat=american&apiKey='+ODDS_KEY);
 }
 
 // ‚îÄ‚îÄ MLB DATA ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
@@ -893,22 +943,49 @@ function applyFilters(pick){
     else if(pick.l5n>=4&&pick.l5c<RECENT_FORM_MIN_L5){grade='W';filters.push('cold recent form (L5 '+pick.l5c+'/'+pick.l5n+') ‚Äî Watch only');}
   }
 
-  // 8. v11.3 STAKING BAND (display only ‚Äî scoring/grading untouched): the real-money
-  // Premium card only carries the prices Joe actually bets (-140..-100, minus money).
-  // Out-of-band picks aren't deleted ‚Äî they drop to Watch/bonus, fully tracked.
-  if(grade==='A'&&!premiumOddsOk(pick.recOdds)){
-    grade='W';
-    filters.push(pick.accelerator?'Accelerator (plus-money flier) ‚Äî stake small':'out-of-band (price) ‚Äî Watch/bonus only');
-  }
+  // 8. v12 TIER ASSIGNMENT ‚Äî real-money eligibility is EARNED BY DATA, not price alone.
+  //    CORE  = in-band price (-140..-100) + prop not proven-negative -> real money, 2% stake
+  //    ACCEL = any price, prop with settled n>=ACCEL_MIN_N and realized ROI>=ACCEL_MIN_ROI
+  //            (RBI today) -> real money, SMALL stake (~1%). Auto-revokes if the prop regresses.
+  //    WATCH = everything else. Chronic -ROI props (n>=PROP_DEMOTE_N, ROI<=PROP_DEMOTE_ROI)
+  //            are paper-only regardless of price (h_r_rbi today).
+  var pr=propRoiOf(k);
+  if(grade==='A'&&pr&&pr.n>=PROP_DEMOTE_N&&pr.roi<=PROP_DEMOTE_ROI){
+    grade='W';pick.tier='WATCH';
+    filters.push('prop proven -ROI ('+Math.round(pr.roi)+'% @ n='+pr.n+') ‚Äî paper-only until it recovers');
+  }else if(grade==='A'&&premiumOddsOk(pick.recOdds)){
+    pick.tier='CORE';
+  }else if(grade==='A'&&pr&&pr.n>=ACCEL_MIN_N&&pr.roi>=ACCEL_MIN_ROI){
+    pick.tier='ACCEL';
+    filters.push('ACCELERATOR ‚Äî prop +'+Math.round(pr.roi)+'% ROI (n='+pr.n+'): real money, small stake (~1%)');
+  }else if(grade==='A'){
+    grade='W';pick.tier='WATCH';
+    filters.push(pick.accelerator?'plus-money flier ‚Äî Watch/bonus only (prop not yet Accelerator-proven)':'out-of-band (price) ‚Äî Watch/bonus only');
+  }else pick.tier='WATCH';
 
   return{pass:true,grade:grade,filters:filters};
 }
-// v11.3: is this price eligible for the real-money Premium card?
+// v11.3: is this price eligible for the real-money CORE tier?
 function premiumOddsOk(odds){
   if(odds==null)return false;
   if(!PREMIUM_ALLOW_PLUS_MONEY&&odds>-100)return false; // exclude plus money (and even money)
   if(odds<PREMIUM_ODDS_FLOOR)return false;               // too juiced (e.g. -150, -224)
   return true;
+}
+// v12: realized settled ROI + sample size for a prop, from the auto-tracker.
+// Derived fresh each load, so tier eligibility follows the data automatically.
+function propRoiOf(mktKey){
+  var s=MSTATS||sg('model_stats',null);
+  if(!s||!s.by_prop_type)return null;
+  var o=s.by_prop_type[propShort(mktKey)];
+  if(!o||!o.t)return null;
+  return{roi:o.u/o.t*100,n:o.t};
+}
+// v12 P2: rank weight from realized prop ROI (needs n>=30; capped at +/-10 pts)
+function propRoiWeight(p){
+  var pr=propRoiOf(p.mktKey);
+  if(!pr||pr.n<30)return 0;
+  return PROP_ROI_WEIGHT*Math.max(-20,Math.min(20,pr.roi));
 }
 
 // ‚îÄ‚îÄ CALIBRATION / TRACK RECORD ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
@@ -1195,6 +1272,7 @@ function buildModelStats(){
   var s={total_generated:all.length,total_resolved:0,total_pending:0,total_dnp:0,total_push:0,
     by_grade:{},by_score_bucket:{},by_prop_type:{},by_matchup_tag:{},by_platoon:{},
     by_regression_due:{},by_trend:{},by_direction:{},by_prop_dir:{},by_clv:{},by_event:{},by_odds_bucket:{},by_overall:{},
+    by_grade_prop:{},clv_by_prop:{},
     under_bt:{all:{w:0,t:0,p:0},by_grade:{},by_prop:{}},
     bench:{n:0,rec:0,blind_under:0,always_over:0,rec_over:0,rec_under:0,tcut:70},
     over_n:0,under_n:0,clv_sum:0,clv_n:0,clv_pos:0,clv_since:null,last_updated:new Date().toISOString()};
@@ -1223,7 +1301,13 @@ function buildModelStats(){
     bump(s.by_event,eventClass(p.prop_type,p.line),p);
     bump(s.by_odds_bucket,oddsBucket(p.odds),p);
     bump(s.by_overall,'all',p);
-    if(p.clv!=null){s.clv_sum+=p.clv;s.clv_n++;if(p.clv>0)s.clv_pos++;bump(s.by_clv,p.clv>=0?'pos':'neg',p);if(!s.clv_since||p.date<s.clv_since)s.clv_since=p.date;}
+    bump(s.by_grade_prop,p.grade+'|'+p.prop_type,p); // v12 P1: per grade-x-prop calibration
+    if(p.clv!=null){
+      s.clv_sum+=p.clv;s.clv_n++;if(p.clv>0)s.clv_pos++;bump(s.by_clv,p.clv>=0?'pos':'neg',p);
+      if(!s.clv_since||p.date<s.clv_since)s.clv_since=p.date;
+      var cp=s.clv_by_prop[p.prop_type]=s.clv_by_prop[p.prop_type]||{sum:0,n:0,pos:0}; // v12 P5
+      cp.sum+=p.clv;cp.n++;if(p.clv>0)cp.pos++;
+    }
     // UNDER backtest: would fading THIS Over (taking the Under) have hit? (hit-rate only ‚Äî no historical Under odds)
     if(dir==='over'&&p.actual_stat!=null){
       var uw=p.actual_stat<p.line, push=p.actual_stat===p.line;
@@ -1252,6 +1336,7 @@ async function loadAll(){
 
   // Step 1: Odds API
   setP('Fetching odds...');
+  var creditsAtStart=ODDS_BUDGET.remaining; // v12: measure this load's credit cost
   var oddsGames=await loadOddsGames();
   if(!oddsGames||!oddsGames.length){
     document.getElementById('pg-picks').innerHTML='<div style="padding:10px"><div class="card" style="border-color:var(--red)"><div style="color:var(--red);font-weight:700;margin-bottom:8px">&#9888; Cannot reach The Odds API</div><button class="btn" onclick="loadAll()">Retry</button></div></div>';
@@ -1298,6 +1383,16 @@ async function loadAll(){
   // Step 2: MLB schedule for pitchers + lineups
   setP('Checking pitchers and lineups...');
   var mlbGames=await loadMLBSchedule();
+
+  // v12 P3: persist posted lineup spots (playerId -> {spot,date}) so early cards can
+  // surface PROJECTED candidates for spot-gated props (RBI, runs) before lineups lock.
+  var spotCache=sg('spots',{});
+  mlbGames.forEach(function(mg){
+    (mg.awayLineup||[]).concat(mg.homeLineup||[]).forEach(function(pl){
+      if(pl.id&&pl.spot)spotCache[pl.id]={s:pl.spot,d:todayStr()};
+    });
+  });
+  ss('spots',spotCache);
 
   // Statcast (Baseball Savant) ‚Äî cached once per day, keyed by MLB player_id
   setP('Loading Statcast profiles...');
@@ -1365,6 +1460,7 @@ async function loadAll(){
   var rawPicks=[];
   var batterCache={};
   var h2hCache={}; // career batter-vs-pitcher, keyed by batterId_pitcherId
+  var rbiDiag={cand:0,noSpot:0,badSpot:0,form:0,env:0,plat:0,pass:0}; // v12 P3: why-empty diagnostics
   // Line-movement store: first odds this app saw today for each pick (per browser).
   // The Odds API free tier has no true "opening line", so we anchor on first-seen.
   var openLines=sg('open_'+todayStr(),{});
@@ -1437,6 +1533,14 @@ async function loadAll(){
         if(awaySpot)lineupSpot=awaySpot.spot;
         else if(homeSpot)lineupSpot=homeSpot.spot;
       }
+      // v12 P3: no posted lineup for this game yet -> use the player's last posted
+      // spot (<= SPOT_CACHE_DAYS old) as a PROJECTED spot. Never overrides a posted
+      // lineup: if lineups ARE posted and the player isn't in them, he stays spotless.
+      var spotProjected=false;
+      if(!isPitcher&&bStats&&!lineupConfirmed&&!lineupSpot&&bStats.playerId){
+        var scv=spotCache[bStats.playerId];
+        if(scv&&daysSince(scv.d)<=SPOT_CACHE_DAYS){lineupSpot=scv.s;spotProjected=true;}
+      }
 
       // Ace filter for batters ‚Äî skip ONLY if THIS batter's opposing SP is an ace
       // (spec: the other team's batters in the same game stay eligible). If the
@@ -1497,6 +1601,9 @@ async function loadAll(){
           var pOver=poisAtLeast(krate,Math.ceil(mkt.line));
           if(pOver>=0.5){score=Math.round(pOver*100);sideOver='Over';recOdds=mkt.over;}
           else{score=Math.round((1-pOver)*100);sideOver='Under';recOdds=mkt.under;}
+          // v12 P4: a line at/below 4.5 means the market sees a weak K arm ‚Äî never take
+          // the OVER there (we only win at 5.5+). The UNDER at any line is unaffected.
+          if(sideOver==='Over'&&mkt.line<K_OVER_MIN_LINE)return;
         }else if(bStats){
           var formMult=bStats.hotCold==='HOT'?1.08:bStats.hotCold==='Warming'?1.04:bStats.hotCold==='COLD'?0.88:bStats.hotCold==='Cooling'?0.94:1;
           var ctxMult=1+(mAdj+pAdj+wAdj)/200; // matchup+platoon+temp, gentle
@@ -1520,17 +1627,24 @@ async function loadAll(){
         }
         var inactive=daysSince(lastDt)>INACTIVE_DAYS;
 
-        // v11.5 RBI path: RBI Over 0.5 is a binary, lineup-dependent bet ‚Äî gate on
-        // recent form + spot + run-environment, NOT season RBI/game. Plus-money flier.
+        // v12 RBI path: RBI Over 0.5 is a binary, lineup-dependent bet ‚Äî gate on
+        // recent form + spot + run-environment, NOT season RBI/game. Projected spots
+        // (v12 P3 cache) let candidates surface BEFORE lineups post, tagged PROJECTED.
+        // Every gate failure is counted so the card can explain an empty RBI board.
         var accelerator=false;
         if(k==='batter_rbis'){
           if(!bStats)return;
+          rbiDiag.cand++;
           var gt=(totalMap[gameStr]!=null?totalMap[gameStr]:null);
-          var spotOk=lineupSpot&&lineupSpot>=3&&lineupSpot<=6;                    // run-producer slot (needs posted lineup)
           var envOk=(gt!=null&&gt>=RBI_TOTAL_FLOOR)||park>=112;                    // run environment OR Coors
-          var formOk=l5.n>=4&&l5.c>=RBI_L5_MIN;                                   // drove in a run in >=3 of last ~5
+          var formOk=l5.n>=4&&l5.c>=RBI_L5_MIN;                                   // drove in a run in >=RBI_L5_MIN of last 5
           var platOk=!pm||pm.side!=='UNFAVORABLE';
-          if(!(spotOk&&envOk&&formOk&&platOk))return;
+          if(!lineupSpot){rbiDiag.noSpot++;return;}
+          if(lineupSpot<3||lineupSpot>6){rbiDiag.badSpot++;return;}
+          if(!formOk){rbiDiag.form++;return;}
+          if(!envOk){rbiDiag.env++;return;}
+          if(!platOk){rbiDiag.plat++;return;}
+          rbiDiag.pass++;
           score=Math.round((l5.c/l5.n*0.6+(l10.n?l10.c/l10.n:l5.c/l5.n)*0.4)*100); // score = recent form, not season
           rawScore=score; accelerator=true;
         }
@@ -1605,6 +1719,7 @@ async function loadAll(){
           pid:pickPid, teamAbbr:teamAbbr, oppAbbr:oppAbbr, gamePk:(ai2.gamePk||null),
           direction:(sideOver==='Under'?'under':'over'),
           l5c:l5.c,l5n:l5.n,l10c:l10.c,l10n:l10.n,inactive:inactive,lastGame:lastDt,accelerator:accelerator,
+          spotProjected:spotProjected,
           oppTypeKey:oppVuln?oppVuln.key:null, oppTypeLabel:oppVuln?oppVuln.label:null, oppTypeBest:oppVuln?oppVuln.best:null
         });
       });
@@ -1633,9 +1748,11 @@ async function loadAll(){
   });
 
   // Sort: A first then B, by score
+  // v12 P2: within grade, rank by score ADJUSTED for the prop's realized ROI ‚Äî
+  // an RBI pick (+ROI prop) outranks an equal-scored h_r_rbi pick (-ROI prop).
   picks.sort(function(a,b){
     if(a.grade!==b.grade)return a.grade<b.grade?-1:1;
-    return b.score-a.score;
+    return (b.score+propRoiWeight(b))-(a.score+propRoiWeight(a));
   });
 
   // Same-team filter: max 1 premium pick per team per game
@@ -1660,6 +1777,29 @@ async function loadAll(){
       group[gi].isWatchList=true;
       if(!group[gi].filterNotes)group[gi].filterNotes=[];
       group[gi].filterNotes.push('Same-team filter: kept '+group[0].name+' ('+group[0].score+') over this pick');
+    }
+  });
+
+  // v12 M3: ONE real-money exposure per player across buckets. If a player carries
+  // multiple grade-A picks (e.g. TB Core + RBI Accel), keep the best (CORE first,
+  // then ROI-adjusted score) and demote the rest to Watch, cross-referenced.
+  var byPlayer={};
+  picks.forEach(function(p){
+    if(p.grade!=='A')return;
+    var pk2=p.pid!=null?String(p.pid):p.name;
+    (byPlayer[pk2]=byPlayer[pk2]||[]).push(p);
+  });
+  Object.values(byPlayer).forEach(function(arr){
+    if(arr.length<=1)return;
+    arr.sort(function(a,b){
+      var ta=a.tier==='CORE'?0:1, tb=b.tier==='CORE'?0:1;
+      if(ta!==tb)return ta-tb;
+      return (b.score+propRoiWeight(b))-(a.score+propRoiWeight(a));
+    });
+    for(var di=1;di<arr.length;di++){
+      arr[di].grade='W';arr[di].tier='WATCH';
+      if(!arr[di].filterNotes)arr[di].filterNotes=[];
+      arr[di].filterNotes.push('duplicate exposure ‚Äî one bet per player; best: '+arr[0].propLabel);
     }
   });
 
@@ -1698,6 +1838,7 @@ async function loadAll(){
 
   D={picks,totals,aceNotes,bestParlays,mismatchNotes:mismatchNotes,
     sgps:buildSGPs(picks),
+    rbiDiag:rbiDiag,
     lineupsPosted:upcoming.filter(function(og){return (aceInfo[og.id]||{}).lineupPosted;}).length,
     upcoming:upcoming.length,live:live.length,finished:finished.length,
     date:new Date().toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'}),
@@ -1709,9 +1850,16 @@ async function loadAll(){
   updateClosing();    // capture latest odds as the running closing line (for CLV)
   buildModelStats();  // refresh aggregate win rates from whatever has resolved so far
 
-  var premCount=picks.filter(function(p){return p.grade==='A';}).length;
+  // v12 budget guard: record what this load cost, widen cadence if burning too fast
+  if(creditsAtStart!=null&&ODDS_BUDGET.remaining!=null&&creditsAtStart>=ODDS_BUDGET.remaining){
+    ODDS_BUDGET.loadCost=creditsAtStart-ODDS_BUDGET.remaining;ss('odds_budget',ODDS_BUDGET);
+  }
+  budgetGuard();
+
+  var coreCount=picks.filter(function(p){return p.grade==='A'&&p.tier!=='ACCEL';}).length;
+  var accelCount=picks.filter(function(p){return p.tier==='ACCEL';}).length;
   var watchCount=picks.filter(function(p){return p.grade==='B'||p.grade==='W';}).length;
-  setP('Updated '+D.loadedAt+' \u2022 '+premCount+' premium \u2022 '+watchCount+' watch');
+  setP('Updated '+D.loadedAt+' \u2022 '+coreCount+' core \u2022 '+accelCount+' accel \u2022 '+watchCount+' watch');
   renderPicks();renderTotals();updPnLHdr();
   if(!REFRESH_T)startAR();
   resolvePending(); // resolve any finished games (fire-and-forget; refreshes display when done)
@@ -1745,6 +1893,7 @@ function modelPerfBlock(){
   var s=MSTATS||sg('model_stats',null); if(!s)return'';
   var h='<div class="card" style="border-color:var(--gld);background:var(--sur)">';
   h+='<div style="font-size:13px;font-weight:700;color:var(--gld);margin-bottom:2px">&#128202; Model Performance (ROI-first)</div>';
+  h+='<div style="font-size:9px;color:var(--amb);margin-bottom:3px">All tracked picks ‚Äî BOTH boards (Core + Accel + Watch). This is the model&rsquo;s record, NOT a real-money betting record.</div>';
   h+='<div style="font-size:10px;color:var(--mut);margin-bottom:4px">Tracked '+s.total_generated+' &middot; Settled '+s.total_resolved+' &middot; Pending '+s.total_pending+' &middot; DNP/Void '+(s.total_dnp||0)+' &middot; Push '+(s.total_push||0)+'</div>';
   h+='<div style="font-size:9px;color:var(--mut);margin-bottom:4px">Hit% excludes DNP/Push. ROI = units won per unit staked at the logged odds &mdash; the headline metric. A low hit% at plus-odds can still be +ROI.</div>';
   h+='<button class="btn-s" onclick="reauditAll()" style="margin-bottom:6px">&#128270; Re-audit settled picks (backfill grading + fix mis-grades)</button>';
@@ -1820,6 +1969,13 @@ function modelPerfBlock(){
     h+='<div style="font-size:10px;font-weight:700;color:var(--txt);margin:8px 0 2px">Closing line value'+(s.clv_since?' (since '+s.clv_since+')':'')+'</div>';
     h+='<div style="font-size:11px;color:'+(avgClv>=0?'var(--grn)':'var(--red)')+'">Avg CLV '+(avgClv>0?'+':'')+avgClv+' pts &middot; '+posPct+'% beat the close ('+s.clv_n+')</div>';
     h+=bucketRow('+CLV picks',s.by_clv.pos)+bucketRow('-CLV picks',s.by_clv.neg);
+    // v12 P5: CLV by prop + divergence flag (+ROI without CLV = variance, don't upsize)
+    Object.keys(s.clv_by_prop||{}).sort().forEach(function(cpk){
+      var cp=s.clv_by_prop[cpk], cAvg=Math.round(cp.sum/cp.n*1000)/10;
+      var pRoi=s.by_prop_type[cpk]&&s.by_prop_type[cpk].t?s.by_prop_type[cpk].u/s.by_prop_type[cpk].t*100:null;
+      var diverge=pRoi!=null&&pRoi>=10&&s.by_prop_type[cpk].t>=30&&cAvg<=0.5&&cp.n>=20;
+      h+='<div style="font-size:11px;color:'+(cAvg>0?'var(--grn)':'var(--mut)')+'">'+cpk+': avg '+(cAvg>0?'+':'')+cAvg+' pts &middot; '+Math.round(cp.pos/cp.n*100)+'% pos (n='+cp.n+')'+(diverge?' <span style="color:var(--amb);font-weight:700">&#9888; +ROI without CLV ‚Äî variance-driven; do not upsize</span>':'')+'</div>';
+    });
   }else{
     h+='<div style="font-size:10px;color:var(--mut);margin:8px 0 2px">Closing line value: capturing from today forward (resolved picks will show CLV once games finish).</div>';
   }
@@ -1856,7 +2012,8 @@ function resultsLogBlock(){
 function renderPicks(){
   if(!D)return;
   CALIB=calibration(); // rebuild the score‚Üíhit-rate table from settled bets
-  var premium=D.picks.filter(function(p){return p.grade==='A';});
+  var premium=D.picks.filter(function(p){return p.grade==='A'&&p.tier!=='ACCEL';}); // CORE only
+  var accel=D.picks.filter(function(p){return p.tier==='ACCEL';});                   // real money, small stake
   var watchlist=D.picks.filter(function(p){return p.grade==='B'||p.grade==='W';});
 
   var h='';
@@ -1886,6 +2043,12 @@ function renderPicks(){
     h+='<div style="font-size:10px;color:'+lpc+';font-weight:700;margin-bottom:8px">&#9776; Lineups posted: '+lp+'/'+D.upcoming+' games'+(lp<D.upcoming?' ‚Äî RBI/Runs picks fill in as lineups lock (~2-3 hrs before each game)':'')+'</div>';
   }
 
+  // v12 budget guard status
+  if(ODDS_BUDGET.remaining!=null){
+    var allow=budgetAllowance();
+    h+='<div style="font-size:10px;color:'+(budgetAlert()?'var(--red)':'var(--mut)')+';margin-bottom:8px">&#128179; API credits: '+Math.round(ODDS_BUDGET.remaining).toLocaleString()+' left'+(allow!=null?' &middot; ~'+allow.toLocaleString()+'/day allowance':'')+(ODDS_BUDGET.loadCost!=null?' &middot; last load '+ODDS_BUDGET.loadCost:'')+' &middot; refresh '+(REFRESH_MS/60000)+'m'+(budgetAlert()?' &middot; <b>&#9888; 80%+ OF MONTHLY QUOTA USED</b>':'')+'</div>';
+  }
+
   // Ace notes
   if(D.aceNotes&&D.aceNotes.length){
     h+='<div class="ace-note"><div style="font-size:11px;font-weight:700;color:var(--red);margin-bottom:4px">&#9940; ACE PITCHERS ‚Äî BATTERS SKIPPED</div>';
@@ -1897,7 +2060,7 @@ function renderPicks(){
 
   // How-to-read-the-score legend
   h+=modelPerfBlock();
-  h+='<div class="filter-note" style="background:var(--bbg);border-color:rgba(59,130,246,.3)"><div style="font-size:11px;font-weight:700;color:var(--blu);margin-bottom:3px">&#8505; v11.3 ‚Äî How to read the Score</div><div style="font-size:10px;color:var(--mut);line-height:1.5"><b>Score = modeled win probability</b> that the line clears (0&ndash;100%), not payout. Higher Score = higher hit likelihood. <b>Premium card = staking band -140 to -100 only</b> (minus-money, &le;-140 juice) &mdash; out-of-band prices drop to Watch/bonus but are still fully tracked (all odds buckets measured in the background). Each prop fires only on its matching bat type, <b>stolen bases removed</b>, <b>singles board only &mdash; no parlays</b>.</div></div>';
+  h+='<div class="filter-note" style="background:var(--bbg);border-color:rgba(59,130,246,.3)"><div style="font-size:11px;font-weight:700;color:var(--blu);margin-bottom:3px">&#8505; v12 ‚Äî How to read this board</div><div style="font-size:10px;color:var(--mut);line-height:1.5"><b>Score = model win-probability estimate (UNCALIBRATED until its grade&times;prop bucket shows n&ge;30)</b> ‚Äî each pick prints its own realized record or an UNCALIBRATED flag. <b>Two real-money tiers:</b> CORE = in-band (-140..-100) singles, ~2% stake; <b>&#128640; ACCELERATOR</b> = any price on a prop that EARNED it with realized ROI &ge;+'+ACCEL_MIN_ROI+'% at n&ge;'+ACCEL_MIN_N+' (auto-revokes on regression). Props proven -ROI at n&ge;'+PROP_DEMOTE_N+' are paper-only regardless of price. Ranking is ROI-weighted (+ROI props float). K-overs only at 5.5+. One exposure per player. <b>Singles only &mdash; no parlays.</b></div></div>';
 
   // Premium card header
   h+='<div class="card" style="background:var(--gbg);border-color:rgba(34,197,94,.3)">';
@@ -1922,6 +2085,21 @@ function renderPicks(){
   if(!D.picks.length){
     h+='<div class="empty">No props yet.<br>Props post 2-3 hrs before first pitch.<br><br><button class="rbtn" onclick="loadAll()">&#8635; Refresh</button></div>';
     document.getElementById('pg-picks').innerHTML=h;return;
+  }
+
+  // v12 ACCELERATOR ‚Äî real-money small-stake tier (prop earned it with realized +ROI)
+  if(accel.length){
+    h+='<div class="card" style="border-color:var(--pur);background:var(--sur)">';
+    h+='<div style="font-size:13px;font-weight:700;color:var(--pur);margin-bottom:2px">&#128640; ACCELERATOR ‚Äî real money, small stake (~1%)</div>';
+    h+='<div style="font-size:10px;color:var(--mut);margin-bottom:8px">Plus-money picks on props that EARNED it with realized ROI (&ge;+'+ACCEL_MIN_ROI+'% at n&ge;'+ACCEL_MIN_N+'). Eligibility auto-revokes if the prop regresses. Half a core unit, never chased.</div>';
+    accel.forEach(function(p){h+=pickCard(p);});
+    h+='</div>';
+  }
+
+  // v12 RBI empty-state ‚Äî never silently zero (P3 acceptance)
+  if(D.rbiDiag&&!D.picks.some(function(p){return p.mktKey==='batter_rbis';})){
+    var rd=D.rbiDiag;
+    h+='<div style="font-size:10px;color:var(--mut);margin-bottom:8px">&#9432; RBI: 0 on board ‚Äî '+rd.cand+' candidates seen: '+rd.noSpot+' no lineup/spot yet, '+rd.badSpot+' not batting 3-6, '+rd.form+' failed L5&ge;'+RBI_L5_MIN+'/5 form, '+rd.env+' low game total, '+rd.plat+' unfavorable platoon</div>';
   }
 
   // Render sections ‚Äî Premium only in A sections, watchlist in B sections
@@ -1982,7 +2160,7 @@ function pickCard(p){
   h+='<div class="prow"><div>';
   h+='<div class="pname">'+p.name+(p.bStats?hotBadge(p.bStats.hotCold,p.bStats&&p.bStats.games):'')+'</div>';
   // Lineup + confirmed status
-  var spotTxt=p.lineupSpot?'#'+p.lineupSpot+' ':' ';
+  var spotTxt=p.lineupSpot?((p.spotProjected?'~#':'#')+p.lineupSpot+' '):' '; // ~ = projected from last posted lineup
   var confTag=p.lineupConfirmed?'<span class="conf-badge conf-yes">&#10003; CONFIRMED</span>':'<span class="conf-badge conf-proj">&#8987; PROJECTED</span>';
   h+='<div class="pgame">'+spotTxt+p.game+' &middot; '+p.time+confTag+'</div>';
   h+='</div>';
@@ -2011,11 +2189,16 @@ function pickCard(p){
   // Value indicator ‚Äî book-implied % vs the model's REAL tracked hit% + ROI (auto-resolved)
   if(p.recOdds!=null){
     var vrow='&#128202; Book '+(impliedProb(p.recOdds)*100).toFixed(1)+'%';
-    var segShort=function(o){if(!o||o.t<20)return'calibrating ('+(o?o.t:0)+'/20)';var roi=Math.round(o.u/o.t*100);return Math.round(o.w/o.t*100)+'% (ROI '+(roi>0?'+':'')+roi+'%)';};
-    var gseg=MSTATS&&MSTATS.by_grade[p.grade], bseg=MSTATS&&MSTATS.by_score_bucket[scoreBucket(p.score)];
-    if(gseg)vrow+=' &middot; Grade '+p.grade+': '+segShort(gseg);
-    if(bseg)vrow+=' &middot; '+scoreBucket(p.score)+': '+segShort(bseg);
-    if(!gseg&&!bseg)vrow+=' &middot; <span style="color:var(--mut)">tracking ('+((MSTATS&&MSTATS.total_resolved)||0)+'/20)</span>';
+    // v12 P1: the ONLY honest calibration for this pick is its own grade-x-prop
+    // bucket's realized record. n<30 = UNCALIBRATED, printed plainly. A letter grade
+    // whose own bucket is -ROI gets flagged rather than presented as confidence.
+    var seg=MSTATS&&MSTATS.by_grade_prop&&MSTATS.by_grade_prop[p.grade+'|'+propShort(p.mktKey)];
+    if(seg&&seg.t>=30){
+      var segRoi=Math.round(seg.u/seg.t*100);
+      vrow+=' &middot; this grade+prop: '+Math.round(seg.w/seg.t*100)+'% (ROI '+(segRoi>=0?'+':'')+segRoi+'%, n='+seg.t+')'+(segRoi<0?' <span style="color:var(--red);font-weight:700">&#9660; grade not ROI-backed</span>':' <span style="color:var(--grn)">&#10003;</span>');
+    }else{
+      vrow+=' &middot; <span style="color:var(--amb)">UNCALIBRATED ('+(seg?seg.t:0)+'/30 settled for Grade '+p.grade+' &times; '+propShort(p.mktKey)+')</span>';
+    }
     h+='<div style="font-size:10px;color:var(--mut);margin-bottom:4px">'+vrow+'</div>';
   }
 
@@ -2251,7 +2434,7 @@ function renderPnL(){
 }
 
 // ‚îÄ‚îÄ LOG ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
-var MKTS=['Over 1.5 H+R+RBI','Over 2.5 H+R+RBI','Over 0.5 Singles','Over 0.5 Hits','Over 1.5 Hits','Over 1.5 Total Bases','Over 2.5 Total Bases','Over 0.5 HR','Over 0.5 RBI','Over 1.5 RBI','Over 0.5 Runs Scored','Over 0.5 Stolen Bases','Over 0.5 Walks','Over 4.5 Strikeouts','Over 5.5 Strikeouts','Over 6.5 Strikeouts','Under 3.5 Strikeouts','Under 4.5 Strikeouts','Over Game Total','Under Game Total','Other'];
+var MKTS=['Over 1.5 H+R+RBI','Over 2.5 H+R+RBI','Over 0.5 Singles','Over 0.5 Hits','Over 1.5 Hits','Over 1.5 Total Bases','Over 2.5 Total Bases','Over 0.5 HR','Over 0.5 RBI','Over 1.5 RBI','Over 0.5 Runs Scored','Over 0.5 Stolen Bases','Over 0.5 Walks','Over 5.5 Strikeouts','Over 6.5 Strikeouts','Under 3.5 Strikeouts','Under 4.5 Strikeouts','Over Game Total','Under Game Total','Other'];
 function renderLog(){
   var tabs='<div class="tabrow"><div class="tabb'+(LOG_MODE==='single'?' on':'')+'" onclick="setLogMode(\'single\')">Single</div><div class="tabb'+(LOG_MODE==='parlay'?' on':'')+'" onclick="setLogMode(\'parlay\')">Parlay</div></div>';
   document.getElementById('pg-log').innerHTML=tabs+(LOG_MODE==='single'?renderSingle():renderParlay());
@@ -2327,7 +2510,7 @@ function removeBet(id){
 function pickDump(p){
   var b=p.bStats, hs=p.hitStat, os=p.oppStat, T=[];
   var pc=function(v){return v==null?'--':v;};
-  T.push((p.isPitcher?'[PITCHER] ':'[HITTER] ')+p.name+' ‚Äî '+p.propLabel+'  (Grade '+p.grade+' | Score '+p.score+'/100, raw '+p.rawScore+'/'+p.propMax+')');
+  T.push((p.isPitcher?'[PITCHER] ':'[HITTER] ')+p.name+' ‚Äî '+p.propLabel+'  (Grade '+p.grade+(p.tier?' '+p.tier:'')+' | Score '+p.score+'/100, raw '+p.rawScore+'/'+p.propMax+')');
   T.push('  Lineup: '+(p.lineupConfirmed?'CONFIRMED':'PROJECTED')+(p.lineupSpot?' #'+p.lineupSpot:'')+' | '+p.game+' '+p.time+(p.gameTotal!=null?' | Game total '+p.gameTotal:''));
   T.push('  Odds: '+fmtOdds(p.recOdds)+' (open '+fmtOdds(p.oddsOpen)+', move '+(p.oddsMove>0?'+':'')+p.oddsMove+')');
   if(p.recOdds!=null){
@@ -2372,7 +2555,7 @@ function copyPicks(){
   var watch=D.picks.filter(function(p){return p.grade==='B'||p.grade==='W';});
   var wins=BETS.filter(function(b){return b.result==='WIN';}).length;
   var tot=BETS.filter(function(b){return b.result!=='PENDING';}).length;
-  var txt='HITTERS EDGE v11.5.1 ‚Äî '+D.date+' (generated '+(D.generatedAt||'?')+', odds as of '+(D.oddsAsOf||'?')+')\n';
+  var txt='HITTERS EDGE v12 ‚Äî '+D.date+' (generated '+(D.generatedAt||'?')+', odds as of '+(D.oddsAsOf||'?')+')\n';
   txt+='Record: '+wins+'W/'+(tot-wins)+'L'+(tot?' ('+Math.round(wins/tot*100)+'%)':'')+'\n';
   txt+='Score = normalized 0-100 WITHIN each prop (a ranking, not a win probability). Value model% = real settled-bet hit rate for that score bucket.\n';
   if(D.aceNotes&&D.aceNotes.length){txt+='\nACE FILTERS (batters skipped):\n';D.aceNotes.forEach(function(n){txt+='  '+n.team+' vs '+n.pitcher+' ('+n.era+' ERA)\n';});}
@@ -2393,6 +2576,7 @@ function copyPicks(){
   var s=MSTATS||buildModelStats();
   var ln=function(label,o){return '  '+label+': n='+o.t+' | '+Math.round(o.w/o.t*100)+'% | ROI '+(Math.round(o.u/o.t*100)>=0?'+':'')+Math.round(o.u/o.t*100)+'%'+(o.on?' | avg '+(Math.round(o.os/o.on)>0?'+':'')+Math.round(o.os/o.on):'')+'\n';};
   txt+='\n========== PERFORMANCE (ROI-FIRST) ==========\n';
+  txt+='(all tracked picks ‚Äî both boards; NOT a real-money record)\n';
   txt+='Overall: tracked '+s.total_generated+' | settled '+s.total_resolved+' | pending '+s.total_pending+' | void '+(s.total_dnp||0)+' | push '+(s.total_push||0)+(s.by_overall.all&&s.by_overall.all.t?' | '+Math.round(s.by_overall.all.w/s.by_overall.all.t*100)+'% | ROI '+(Math.round(s.by_overall.all.u/s.by_overall.all.t*100)>=0?'+':'')+Math.round(s.by_overall.all.u/s.by_overall.all.t*100)+'%':'')+'\n';
   txt+='By odds bucket:\n';['-140..-120','-119..-100','juiced <-140','+money'].forEach(function(k){if(s.by_odds_bucket[k]&&s.by_odds_bucket[k].t)txt+=ln(k,s.by_odds_bucket[k]);});
   txt+='By prop (ROI desc):\n';Object.keys(s.by_prop_type).sort(function(a,b){return (s.by_prop_type[b].u/s.by_prop_type[b].t)-(s.by_prop_type[a].u/s.by_prop_type[a].t);}).forEach(function(k){if(s.by_prop_type[k].t)txt+=ln(k,s.by_prop_type[k]);});
@@ -2400,6 +2584,10 @@ function copyPicks(){
   txt+='By grade:\n';['A','B','W'].forEach(function(g){if(s.by_grade[g]&&s.by_grade[g].t)txt+=ln('Grade '+g,s.by_grade[g]);});
   txt+='By side:\n';['over','under'].forEach(function(k){if(s.by_direction[k]&&s.by_direction[k].t)txt+=ln(k,s.by_direction[k]);});
   txt+='CLV: '+(s.clv_n?('avg '+(Math.round(s.clv_sum/s.clv_n*10)/10)+' | '+Math.round(s.clv_pos/s.clv_n*100)+'% positive (n='+s.clv_n+')'):'null (not captured yet)')+'\n';
+  if(s.clv_by_prop&&Object.keys(s.clv_by_prop).length){
+    txt+='CLV by prop:\n';
+    Object.keys(s.clv_by_prop).sort().forEach(function(cpk){var cp=s.clv_by_prop[cpk],ca=Math.round(cp.sum/cp.n*10)/10;var pr2=s.by_prop_type[cpk]&&s.by_prop_type[cpk].t?s.by_prop_type[cpk].u/s.by_prop_type[cpk].t*100:null;txt+='  '+cpk+': avg '+(ca>0?'+':'')+ca+' | '+Math.round(cp.pos/cp.n*100)+'% pos (n='+cp.n+')'+(pr2!=null&&pr2>=10&&s.by_prop_type[cpk].t>=30&&ca<=0.5&&cp.n>=20?' [!] +ROI without CLV ‚Äî variance-driven, do not upsize':'')+'\n';});
+  }
 
   // ‚îÄ‚îÄ SETTLEMENT LOG (last 14 days) ‚Äî read-only ‚îÄ‚îÄ
   txt+='\n========== SETTLEMENT LOG (last 14 days) ==========\n';
@@ -2427,10 +2615,18 @@ function copyText(txt,okId){
 function showOk(id){var el=document.getElementById(id);if(el){el.style.display='block';setTimeout(function(){el.style.display='none';},5000);}}
 // ‚îÄ‚îÄ AUTO REFRESH ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
 var RESOLVE_T=null;
+var REFRESH_MS=60*60*1000; // v12: guard-controlled ‚Äî budgetGuard() widens this (60->90->120m) when burn > allowance
 function startAR(){
   if(REFRESH_T)return;
-  NEXT_R=Date.now()+60*60*1000;
-  REFRESH_T=setInterval(function(){loadAll();NEXT_R=Date.now()+60*60*1000;},60*60*1000);
+  NEXT_R=Date.now()+REFRESH_MS;
+  function tick(){
+    // v12 off-hours: slate done -> no odds pulls, just settle results via free statsapi
+    if(D&&D.upcoming===0&&D.live===0){resolvePending();NEXT_R=Date.now()+REFRESH_MS;return;}
+    loadAll();NEXT_R=Date.now()+REFRESH_MS;
+    // re-arm with the (possibly widened) interval
+    clearInterval(REFRESH_T);REFRESH_T=setInterval(tick,REFRESH_MS);
+  }
+  REFRESH_T=setInterval(tick,REFRESH_MS);
   // Outcome resolution: own hourly timer so it runs even between card reloads
   if(!RESOLVE_T)RESOLVE_T=setInterval(function(){resolvePending();},60*60*1000);
   if(COUNTDOWN_T)clearInterval(COUNTDOWN_T);
