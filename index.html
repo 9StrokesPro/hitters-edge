@@ -2648,7 +2648,7 @@ function renderPicks(){
   h+='<div class="ptype-box"><div class="ptype-val" style="color:var(--mut)">'+t3+'</div><div class="ptype-lbl">Other</div></div>';
   h+='</div></div>';
 
-  h+='<button class="btn-s" onclick="copyPicks()" style="margin-bottom:8px">&#129302; Copy Picks for Claude</button>';
+  h+='<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px"><button class="btn-s" onclick="copyPicks()">&#129302; Copy Picks (short)</button><button class="btn-s" onclick="copyFullReport()">&#128203; Copy full report</button></div>';
   h+='<div id="copy-ok" style="display:none;background:var(--gbg);border:1px solid rgba(34,197,94,.3);border-radius:8px;padding:8px;margin-bottom:8px;font-size:12px;color:var(--grn)">&#10003; Copied! Paste into Claude.</div>';
 
   if(!D.picks.length){
@@ -3138,7 +3138,42 @@ function pickDump(p){
   if(p.filterNotes&&p.filterNotes.length)T.push('  Notes: '+p.filterNotes.join('; '));
   return T.join('\n');
 }
+// v13.1: CONCISE picks-only export (default). Just the actionable picks ‚Äî no settlement
+// log, no performance dump, no 30-line-per-pick blocks. Use copyFullReport() for the rest.
+function pickLine(p){
+  var tag=p.fire?(p.paper===false?'[REAL] ':'[FIRE/paper] '):'[paper] ';
+  var val='';
+  if(p.pModel!=null){
+    if(p.edge!=null)val=' | edge '+(p.pModel>=p.pMarket?'+':'')+(p.edge*100).toFixed(1)+'pp (model '+(p.pModel*100).toFixed(0)+'% vs mkt '+(p.pMarket*100).toFixed(0)+'%)';
+    else val=' | model '+(p.pModel*100).toFixed(0)+'% (one-way, no edge)';
+  }
+  var price=fmtOdds(p.recOdds)+(p.bestBook?' @'+p.bestBook:'');
+  var lu=(p.lineupConfirmed?'CONF':'PROJ')+(p.lineupSpot?' #'+p.lineupSpot:'');
+  var form=(p.l5n?' | L5 '+p.l5c+'/'+p.l5n:'');
+  return tag+p.name+' ‚Äî '+p.propLabel+' '+price+val+' | '+(p.module||'')+' | '+lu+form;
+}
 function copyPicks(){
+  if(!D){toast('No data');return;}
+  var fires=D.picks.filter(function(p){return p.fire;});
+  var near=D.picks.filter(function(p){return !p.fire && p.edge!=null;})
+                  .sort(function(a,b){return b.edge-a.edge;}).slice(0,10); // top-10 near-misses only
+  var live=(REAL_MONEY_MODULES||[]);
+  var txt='HITTERS EDGE v13.1 ‚Äî '+D.date+(D.generatedAt?' ('+D.generatedAt+')':'')+'\n';
+  txt+='Real-money modules: '+(live.length?live.join(', '):'none ‚Äî all paper')+'\n';
+  txt+='\n===== FIRES ('+fires.length+') ‚Äî cleared the edge gate =====\n';
+  txt+= fires.length ? fires.map(function(p){return '  '+pickLine(p);}).join('\n')+'\n'
+                     : '  none today ‚Äî no pick cleared edge >= '+(EDGE_THRESHOLD*100)+'pp on 3+ books\n';
+  txt+='\n===== NEAR MISSES (top '+near.length+' by edge, NOT bet) =====\n';
+  txt+= near.length ? near.map(function(p){return '  '+pickLine(p);}).join('\n')+'\n' : '  none\n';
+  if(D.totals){
+    var gt=D.totals.filter(function(t){return t.isUpcoming;});
+    if(gt.length){txt+='\n===== GAME TOTALS =====\n';gt.forEach(function(t){txt+='  '+t.game+' '+t.line+' O'+fmtOdds(t.overOdds)+' U'+fmtOdds(t.underOdds)+'\n';});}
+  }
+  txt+='\nKEY: FIRE = edge>=3pp on 3+ de-vig books (clamped 10pp). REAL = a calibration-passed module in -140..-100. Everything else is paper. Singles only, no parlays.\n';
+  copyText(txt,'copy-ok');
+}
+// Full detailed report (per-pick dumps + performance + settlement log). On demand only.
+function copyFullReport(){
   if(!D){toast('No data');return;}
   var premium=D.picks.filter(function(p){return p.grade==='A';});
   var watch=D.picks.filter(function(p){return p.grade==='B'||p.grade==='W';});
