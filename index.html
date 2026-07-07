@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-<title>Hitters Edge v12</title>
+<title>Hitters Edge v13</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -107,7 +107,7 @@ select.inp option{background:var(--sur2)}
 <body>
 <div class="hdr">
   <div>
-    <div class="logo">&#9918; Hitters Edge v12</div>
+    <div class="logo">&#9918; Hitters Edge v13</div>
     <div style="font-size:9px;color:var(--mut)" id="lu">Loading...</div>
     <div style="font-size:9px;color:var(--mut)" id="rtimer"></div>
   </div>
@@ -156,6 +156,26 @@ var PROP_DEMOTE_N        = 100;   // v12 P2: prop with >=N settled AND...
 var PROP_DEMOTE_ROI      = -10;   // ...ROI <= -10% is paper-only (never real money) until it recovers
 var PROP_ROI_WEIGHT      = 0.5;   // v12 P2: rank weight ‚Äî score +/- up to 10 pts from realized prop ROI
 var SPOT_CACHE_DAYS      = 7;     // v12 P3: projected lineup spot valid this many days after last posted lineup
+// ‚îÄ‚îÄ v13 VALUE MODEL (pick what's MISPRICED, judged by CLV ‚Äî not what's most likely) ‚îÄ‚îÄ
+var PAPER_ONLY           = true;  // v13 Phase 0: ALL picks paper until forward-tested CLV proves out. Flip false only per module in Phase 1.
+var EDGE_THRESHOLD       = 0.03;  // v13 ¬ß3.3: fire only if p_model - p_market >= 3 percentage points
+var DEVIG_MIN_BOOKS      = 3;     // v13 ¬ß3.1: need >=N two-way books to trust a no-vig consensus fair price
+var CALIB_TOL            = 0.07;  // v13 ¬ß3.2: model is "calibrated" only if |predicted - actual| <= tol across buckets
+var CALIB_MIN_N          = 200;   // ...and >= this many settled picks with a logged p_model
+var KELLY_FRACTION       = 0.25;  // v13 ¬ß3.4: fractional Kelly (only applied once calibrated; else display-only)
+var KELLY_MAX_STAKE      = 0.02;  // hard cap: never stake >2% of roll on one bet, Kelly or not
+var CLV_KILL_N           = 40;    // v13 ¬ß4: module needs >=N settled with CLV before the kill switch can judge it
+var CLV_KILL_PCT         = 50;    // ...if <this% of its picks beat the close, auto-demote the module to paper-only
+// v13 ¬ß6 bet menu: module class per market. 'primary'=push it, 'core'=ok, 'experimental'=breakeven watch, 'bleeder'=paper-gated.
+var MODULE_CLASS={
+  'pitcher_strikeouts_Under':'primary',      // the only tracked +ROI module (+6%). Widen it.
+  'pitcher_strikeouts_Over':'experimental',
+  'batter_total_bases':'experimental',       // breakeven ‚Äî keep as experimental
+  'batter_rbis':'experimental',
+  'batter_walks':'experimental',
+  'batter_hits':'bleeder','batter_hits_runs_rbis':'bleeder','batter_runs_scored':'bleeder',
+  'batter_singles':'bleeder','batter_stolen_bases':'bleeder','batter_home_runs':'experimental'
+};
 var RUNS_TOTAL_MIN       = 8.5;   // runs props need a high-total game
 var RBI_TOTAL_MIN        = 8.0;   // rbi props need run environment + runners
 var WALK_HITTER_BB_MIN   = 0.085; // walks props need a patient hitter (BB% proxy)
@@ -963,6 +983,25 @@ function applyFilters(pick){
     filters.push(pick.accelerator?'plus-money flier ‚Äî Watch/bonus only (prop not yet Accelerator-proven)':'out-of-band (price) ‚Äî Watch/bonus only');
   }else pick.tier='WATCH';
 
+  // 9. v13 EDGE GATE ‚Äî the real arbiter. A bet fires on MISPRICING vs the de-vig market,
+  //    judged by CLV, not by the letter grade. Phase 0: everything is paper regardless.
+  var hasEdge = pick.edge!=null && pick.edge>=EDGE_THRESHOLD && (pick.nBooks||0)>=DEVIG_MIN_BOOKS;
+  var killed  = moduleClvKilled(pick.module);
+  var bleeder = pick.moduleClass==='bleeder';
+  pick.fire = hasEdge && !killed && !bleeder;              // would-fire on value
+  var clvProven = (function(){var s=MSTATS||sg('model_stats',null);var c=s&&s.clv_by_module&&s.clv_by_module[pick.module];return c&&c.n>=CLV_KILL_N&&(c.pos/c.n*100)>CLV_KILL_PCT;})();
+  // Real money requires: value edge, module CLV-proven, in-band price, calibrated model,
+  // and PAPER_ONLY switched off. In Phase 0 this is always false by design.
+  pick.realMoney = pick.fire && !PAPER_ONLY && clvProven && modelCalibrated() && premiumOddsOk(pick.recOdds);
+  pick.paper = !pick.realMoney;
+  pick.stakeSuggest = pick.recOdds!=null ? kellyStake(pick.pModel,pick.recOdds) : 0;
+  if(bleeder) filters.push('module gated (proven bleeder) ‚Äî paper/log only');
+  else if(killed) filters.push('module CLV-killed (<'+CLV_KILL_PCT+'% beat close, n>='+CLV_KILL_N+') ‚Äî paper only');
+  else if(pick.edge==null) filters.push('one-way market ‚Äî no de-vig, no edge ‚Äî paper/log only');
+  else if(!hasEdge) filters.push('edge '+(pick.edge*100).toFixed(1)+'pp < '+(EDGE_THRESHOLD*100)+'pp threshold ‚Äî logged, not fired');
+  else if(pick.fire&&PAPER_ONLY) filters.push('EDGE +'+(pick.edge*100).toFixed(1)+'pp vs market ('+pick.nBooks+' books) ‚Äî WOULD FIRE, held PAPER (Phase 0)');
+  else if(pick.fire&&!clvProven) filters.push('EDGE +'+(pick.edge*100).toFixed(1)+'pp ‚Äî module CLV not yet proven ‚Äî paper');
+
   return{pass:true,grade:grade,filters:filters};
 }
 // v11.3: is this price eligible for the real-money CORE tier?
@@ -986,6 +1025,79 @@ function propRoiWeight(p){
   var pr=propRoiOf(p.mktKey);
   if(!pr||pr.n<30)return 0;
   return PROP_ROI_WEIGHT*Math.max(-20,Math.min(20,pr.roi));
+}
+
+// ‚îÄ‚îÄ v13 VALUE MATH ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+// (impliedProb defined below near CLV; null-safe.) American price -> decimal payout.
+function decimalOdds(american){
+  if(american==null||isNaN(american))return null;
+  return american<0 ? 1+100/(-american) : 1+american/100;
+}
+// De-vig ONE book's two-way market (proportional method) -> fair prob of Over.
+function devigOver(overAm,underAm){
+  var qo=impliedProb(overAm), qu=impliedProb(underAm);
+  if(qo==null||qu==null)return null;
+  var s=qo+qu; if(s<=0)return null;
+  return qo/s;
+}
+// Consensus no-vig fair prob of Over across books that quote BOTH sides at `line`.
+// Returns {p_over, nBooks} or null. Median is robust to one off book.
+function marketFairOver(bookRows,line){
+  var fs=[];
+  bookRows.forEach(function(r){
+    if(r.line!==line||r.over==null||r.under==null)return;
+    var f=devigOver(r.over,r.under); if(f!=null)fs.push(f);
+  });
+  if(fs.length<DEVIG_MIN_BOOKS)return null;
+  fs.sort(function(a,b){return a-b;});
+  var mid=Math.floor(fs.length/2);
+  var med=fs.length%2?fs[mid]:(fs[mid-1]+fs[mid])/2;
+  return {p_over:med,nBooks:fs.length};
+}
+// Best (highest) available price for a side across books at `line`.
+function bestPrice(bookRows,line,side){
+  var best=null,book=null;
+  bookRows.forEach(function(r){
+    if(r.line!==line)return;
+    var px=side==='Over'?r.over:r.under;
+    if(px==null)return;
+    if(best==null||px>best){best=px;book=r.book;}
+  });
+  return best==null?null:{price:best,book:book};
+}
+// Fractional-Kelly stake as a fraction of roll. edge in prob points, price American.
+// DISPLAY-ONLY until the model is calibrated (Kelly on a bad prob blows up).
+function kellyStake(pModel,american){
+  var b=decimalOdds(american); if(b==null||b<=1)return 0;
+  var q=1-pModel;
+  var f=(pModel*(b-1)-q)/(b-1);          // full Kelly
+  if(f<=0)return 0;
+  return Math.min(KELLY_MAX_STAKE, KELLY_FRACTION*f);
+}
+// Is the model calibrated enough to earn real money? Reads logged p_model buckets.
+function modelCalibrated(){
+  var s=MSTATS||sg('model_stats',null);
+  if(!s||!s.calib||!s.calib_n||s.calib_n<CALIB_MIN_N)return false;
+  var bad=Object.keys(s.calib).some(function(b){
+    var c=s.calib[b]; if(!c.n||c.n<20)return false;
+    return Math.abs(c.pred/c.n - c.hit/c.n) > CALIB_TOL;
+  });
+  return !bad;
+}
+// Module key + class for a pick (side matters for strikeouts: under=primary, over=experimental).
+function moduleKey(mktKey,side){
+  return mktKey==='pitcher_strikeouts' ? mktKey+'_'+side : mktKey;
+}
+function moduleClass(mktKey,side){
+  return MODULE_CLASS[moduleKey(mktKey,side)] || 'experimental';
+}
+// v13 ¬ß4 kill switch: has this module's realized CLV proven negative? -> force paper.
+function moduleClvKilled(modKey){
+  var s=MSTATS||sg('model_stats',null);
+  if(!s||!s.clv_by_module)return false;
+  var c=s.clv_by_module[modKey];
+  if(!c||c.n<CLV_KILL_N)return false;          // not enough data to judge yet
+  return (c.pos/c.n*100) < CLV_KILL_PCT;       // <50% beat the close -> killed
 }
 
 // ‚îÄ‚îÄ CALIBRATION / TRACK RECORD ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
@@ -1015,7 +1127,8 @@ function calibration(){
 
 // ‚îÄ‚îÄ PARLAY BUILDER ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
 function impliedProb(odds){
-  // Convert American odds to implied probability
+  // Convert American odds to implied probability (null-safe for v13 de-vig)
+  if(odds==null||isNaN(odds))return null;
   if(odds<0)return Math.abs(odds)/(Math.abs(odds)+100);
   return 100/(odds+100);
 }
@@ -1180,7 +1293,16 @@ function logPick(p){
     platoon:p.platoonSide||null,platoon_value:p.platoonAdj||0,game_total:(p.gameTotal!=null?p.gameTotal:null),
     bat_type:p.batKey||null,iso:(p.bStats?p.bStats.iso:null),pitcher_vulnerability:p.oppTypeKey||null,
     luck_gap:(p.luckSum!=null?p.luckSum:null),regression_due:(p.luckSum!=null&&p.luckSum>0.100),
-    ten_game_trend:(p.bStats?p.bStats.hotCold:null),result:'PENDING',actual_stat:null,resolved_at:null};
+    ten_game_trend:(p.bStats?p.bStats.hotCold:null),
+    // v13 value layer (logged for every pick so CLV/edge can be judged retrospectively)
+    p_model:(p.pModel!=null?Math.round(p.pModel*1000)/1000:null),
+    p_market:(p.pMarket!=null?Math.round(p.pMarket*1000)/1000:null),
+    edge:(p.edge!=null?Math.round(p.edge*1000)/1000:null),
+    n_books:p.nBooks||0,best_book:p.bestBook||null,best_price:(p.bestPrice!=null?p.bestPrice:null),
+    price_taken:(p.priceTaken!=null?p.priceTaken:p.recOdds),
+    module:p.module||prop,module_class:p.moduleClass||null,
+    fired:!!p.fire,paper:(p.paper!==false),
+    result:'PENDING',actual_stat:null,resolved_at:null};
   try{localStorage.setItem(key,JSON.stringify(rec));}catch(e){}
 }
 function logAllPicks(){ if(!D||!D.picks)return; D.picks.forEach(logPick); } // parlay legs are individual picks, already logged
@@ -1273,6 +1395,7 @@ function buildModelStats(){
     by_grade:{},by_score_bucket:{},by_prop_type:{},by_matchup_tag:{},by_platoon:{},
     by_regression_due:{},by_trend:{},by_direction:{},by_prop_dir:{},by_clv:{},by_event:{},by_odds_bucket:{},by_overall:{},
     by_grade_prop:{},clv_by_prop:{},
+    by_module:{},clv_by_module:{},calib:{},calib_n:0,edge_sum:0,edge_n:0,fired_n:0,gated_n:0, // v13
     under_bt:{all:{w:0,t:0,p:0},by_grade:{},by_prop:{}},
     bench:{n:0,rec:0,blind_under:0,always_over:0,rec_over:0,rec_under:0,tcut:70},
     over_n:0,under_n:0,clv_sum:0,clv_n:0,clv_pos:0,clv_since:null,last_updated:new Date().toISOString()};
@@ -1302,11 +1425,23 @@ function buildModelStats(){
     bump(s.by_odds_bucket,oddsBucket(p.odds),p);
     bump(s.by_overall,'all',p);
     bump(s.by_grade_prop,p.grade+'|'+p.prop_type,p); // v12 P1: per grade-x-prop calibration
+    // v13: per-module ROI/record (side-aware for strikeouts) + fire/gate counts
+    bump(s.by_module,p.module||p.prop_type,p);
+    if(p.fired)s.fired_n++;else s.gated_n++;
+    if(p.edge!=null){s.edge_sum+=p.edge;s.edge_n++;}
+    // v13 ¬ß3.2 calibration curve: predicted p_model vs actual hit, bucketed by 10%.
+    if(p.p_model!=null){
+      var cb=Math.min(9,Math.floor(p.p_model*10)); // 0..9 -> "0-10%".."90-100%"
+      var c=s.calib[cb]=s.calib[cb]||{n:0,pred:0,hit:0};
+      c.n++;c.pred+=p.p_model;if(p.result==='WIN')c.hit++;s.calib_n++;
+    }
     if(p.clv!=null){
       s.clv_sum+=p.clv;s.clv_n++;if(p.clv>0)s.clv_pos++;bump(s.by_clv,p.clv>=0?'pos':'neg',p);
       if(!s.clv_since||p.date<s.clv_since)s.clv_since=p.date;
       var cp=s.clv_by_prop[p.prop_type]=s.clv_by_prop[p.prop_type]||{sum:0,n:0,pos:0}; // v12 P5
       cp.sum+=p.clv;cp.n++;if(p.clv>0)cp.pos++;
+      var cm=s.clv_by_module[p.module||p.prop_type]=s.clv_by_module[p.module||p.prop_type]||{sum:0,n:0,pos:0}; // v13 ¬ß4
+      cm.sum+=p.clv;cm.n++;if(p.clv>0)cm.pos++;
     }
     // UNDER backtest: would fading THIS Over (taking the Under) have hit? (hit-rate only ‚Äî no historical Under odds)
     if(dir==='over'&&p.actual_stat!=null){
@@ -1476,19 +1611,51 @@ async function loadAll(){
     var pd=await loadEventProps(og2.id);
     if(!pd||!pd.bookmakers||!pd.bookmakers.length){await slp(150);continue;}
 
-    var bestBook=(pd.bookmakers||[]).find(function(b){return b.key==='draftkings';})||(pd.bookmakers||[])[0];
-    if(!bestBook)continue;
+    // v13 ¬ß3.1/¬ß5: keep EVERY book (regions=us returns ~8 at no extra credit cost),
+    // grouped by player/market/line, so we can de-vig a consensus fair price and
+    // line-shop the best number. raw[player][mkt] = { rows:[{book,line,over,under}] }
+    var raw={};
+    (pd.bookmakers||[]).forEach(function(b){
+      (b.markets||[]).forEach(function(mkt){
+        (mkt.outcomes||[]).forEach(function(o){
+          if(!o.description)return;
+          var n=o.description;
+          if(!raw[n])raw[n]={};
+          if(!raw[n][mkt.key])raw[n][mkt.key]={};
+          var lk=String(o.point);
+          var row=raw[n][mkt.key][b.key+'|'+lk] || (raw[n][mkt.key][b.key+'|'+lk]={book:b.key,line:o.point,over:null,under:null});
+          if(o.name==='Over')row.over=o.price;
+          if(o.name==='Under')row.under=o.price;
+        });
+      });
+    });
 
-    // Build player map
+    // Finalize: pick the PRIMARY line (most books quoting it two-way, else most-quoted),
+    // compute p_market (de-vig consensus) + best line-shopped price per side.
     var pmap={};
-    (bestBook.markets||[]).forEach(function(mkt){
-      (mkt.outcomes||[]).forEach(function(o){
-        if(!o.description)return;
-        var n=o.description;
-        if(!pmap[n])pmap[n]={};
-        if(!pmap[n][mkt.key])pmap[n][mkt.key]={line:o.point,over:null,under:null};
-        if(o.name==='Over')pmap[n][mkt.key].over=o.price;
-        if(o.name==='Under')pmap[n][mkt.key].under=o.price;
+    Object.keys(raw).forEach(function(n){
+      pmap[n]={};
+      Object.keys(raw[n]).forEach(function(mk){
+        var rows=Object.keys(raw[n][mk]).map(function(kk){return raw[n][mk][kk];});
+        var byLine={};
+        rows.forEach(function(r){var lk=String(r.line);(byLine[lk]=byLine[lk]||[]).push(r);});
+        var primary=null,bestTwoWay=-1,bestCount=-1;
+        Object.keys(byLine).forEach(function(lk){
+          var arr=byLine[lk];
+          var tw=arr.filter(function(r){return r.over!=null&&r.under!=null;}).length;
+          if(tw>bestTwoWay||(tw===bestTwoWay&&arr.length>bestCount)){bestTwoWay=tw;bestCount=arr.length;primary=lk;}
+        });
+        if(primary==null)return;
+        var pRows=byLine[primary], line=pRows[0].line;
+        var fair=marketFairOver(pRows,line);            // consensus no-vig fair prob of Over (or null)
+        var bo=bestPrice(pRows,line,'Over'), bu=bestPrice(pRows,line,'Under');
+        pmap[n][mk]={
+          line:line,
+          over:bo?bo.price:null, under:bu?bu.price:null,      // backward-compat: best available
+          bestOver:bo, bestUnder:bu,
+          pMarketOver:fair?fair.p_over:null, nBooks:fair?fair.nBooks:0,
+          books:pRows
+        };
       });
     });
 
@@ -1594,22 +1761,39 @@ async function loadAll(){
         var mAdj=0,mTag='',wAdj=0,pAdj=(pm?pm.adj:0);
         if(!isPitcher){var mu=pitcherMatchupAdj(oppPit,oppPitL3,k);mAdj=mu.adj;mTag=mu.tag;wAdj=weatherMod(weather[gameStr]);}
 
-        // v11 SCORE = modeled WIN PROBABILITY (0-100). Ranks by likelihood, not payout.
-        var score=0,sideOver='Over',recOdds=mkt.over;
+        // v13: the model outputs p_model_over (prob the Over hits, 0-1). We then bet the
+        // side we're MISPRICED on vs the de-vigged market ‚Äî not simply the likelier side.
+        var score=0,sideOver='Over',recOdds=mkt.over,pModelOver=null;
         if(k==='pitcher_strikeouts'){
           var krate=((pitL3&&pitL3.avgK)||(pitSt&&pitSt.avgK)||0);
-          var pOver=poisAtLeast(krate,Math.ceil(mkt.line));
-          if(pOver>=0.5){score=Math.round(pOver*100);sideOver='Over';recOdds=mkt.over;}
-          else{score=Math.round((1-pOver)*100);sideOver='Under';recOdds=mkt.under;}
-          // v12 P4: a line at/below 4.5 means the market sees a weak K arm ‚Äî never take
-          // the OVER there (we only win at 5.5+). The UNDER at any line is unaffected.
-          if(sideOver==='Over'&&mkt.line<K_OVER_MIN_LINE)return;
+          pModelOver=poisAtLeast(krate,Math.ceil(mkt.line));
         }else if(bStats){
           var formMult=bStats.hotCold==='HOT'?1.08:bStats.hotCold==='Warming'?1.04:bStats.hotCold==='COLD'?0.88:bStats.hotCold==='Cooling'?0.94:1;
           var ctxMult=1+(mAdj+pAdj+wAdj)/200; // matchup+platoon+temp, gentle
-          var wp=winProbOver(k,mkt.line,bStats,formMult*ctxMult);
-          score=Math.round(Math.max(0,Math.min(100,wp*100)));
+          pModelOver=winProbOver(k,mkt.line,bStats,formMult*ctxMult);
         }else return;
+        pModelOver=Math.max(0,Math.min(1,pModelOver));
+
+        // v13 ¬ß3.1/¬ß3.3 VALUE: p_market = de-vig consensus fair prob (median across books).
+        // edge = |p_model - p_market|; side = wherever the model sits ABOVE the market.
+        var pMarketOver=mkt.pMarketOver, edge=null, pModel=null, pMarket=null;
+        if(pMarketOver!=null){
+          var eOver=pModelOver-pMarketOver;
+          sideOver=eOver>=0?'Over':'Under';
+          edge=Math.abs(eOver);
+          pMarket=sideOver==='Over'?pMarketOver:(1-pMarketOver);
+        }else{
+          // one-way market: no de-vig, no edge. Take the side that actually has a price
+          // (RBI/singles books quote Over only) ‚Äî never a null-priced side.
+          var hasO=mkt.over!=null, hasU=mkt.under!=null;
+          sideOver=(hasO&&!hasU)?'Over':(hasU&&!hasO)?'Under':(pModelOver>=0.5?'Over':'Under');
+        }
+        pModel=sideOver==='Over'?pModelOver:(1-pModelOver);
+        recOdds=sideOver==='Over'?mkt.over:mkt.under;                 // best line-shopped price for the side
+        var bestSel=sideOver==='Over'?mkt.bestOver:mkt.bestUnder;     // {price,book} for line-shop logging
+        score=Math.round(Math.max(0,Math.min(100,pModel*100)));      // display only ‚Äî no longer gates bets
+        // v12 P4: line at/below 4.5 means the market sees a weak K arm ‚Äî never take the K-OVER there.
+        if(k==='pitcher_strikeouts'&&sideOver==='Over'&&mkt.line<K_OVER_MIN_LINE)return;
         var rawScore=score, propMax=100; // win-prob already cross-prop comparable
 
         // Recent-form prop-clear rate (L5/L10) on THIS exact line + inactivity (computed
@@ -1720,6 +1904,10 @@ async function loadAll(){
           direction:(sideOver==='Under'?'under':'over'),
           l5c:l5.c,l5n:l5.n,l10c:l10.c,l10n:l10.n,inactive:inactive,lastGame:lastDt,accelerator:accelerator,
           spotProjected:spotProjected,
+          // v13 value layer
+          pModel:pModel, pMarket:pMarket, edge:edge, nBooks:mkt.nBooks||0,
+          bestBook:bestSel?bestSel.book:null, bestPrice:bestSel?bestSel.price:null, priceTaken:recOdds,
+          module:moduleKey(k,sideOver), moduleClass:moduleClass(k,sideOver),
           oppTypeKey:oppVuln?oppVuln.key:null, oppTypeLabel:oppVuln?oppVuln.label:null, oppTypeBest:oppVuln?oppVuln.best:null
         });
       });
@@ -1889,6 +2077,36 @@ function signalGroup(title,obj,sideKey,oppKey,others){
   return html;
 }
 // Model Performance dashboard ‚Äî ROI-first, with controls and grade breakout.
+// v13 ¬ß9: edge/CLV-first reporting ‚Äî the new scoreboard. CLV is the objective.
+function valuePerfBlock(){
+  var s=MSTATS||sg('model_stats',null); if(!s)return'';
+  var cal=modelCalibrated();
+  var h='<div class="card" style="border-color:var(--pur);background:var(--sur)">';
+  h+='<div style="font-size:13px;font-weight:700;color:var(--pur);margin-bottom:2px">&#127919; Value Scoreboard (CLV-first) &middot; v13</div>';
+  h+='<div style="font-size:9px;color:var(--amb);margin-bottom:5px">The objective is beating the closing line. A module earns real money only when its CLV is proven positive. Model calibration: <b style="color:'+(cal?'var(--grn)':'var(--amb)')+'">'+(cal?'CALIBRATED':'UNCALIBRATED')+'</b> ('+ (s.calib_n||0) +'/'+CALIB_MIN_N+' logged). Fired '+(s.fired_n||0)+' &middot; gated '+(s.gated_n||0)+' &middot; avg edge '+(s.edge_n?((s.edge_sum/s.edge_n*100).toFixed(1)+'pp'):'n/a')+'.</div>';
+  // Per-module: n, win%, ROI, CLV avg, %CLV+, with kill-switch status
+  h+='<div style="font-size:10px;font-weight:700;color:var(--txt);margin:4px 0 2px">By module (the arbiter of real money)</div>';
+  var mods=Object.keys(s.by_module||{}).sort(function(a,b){return (s.by_module[b].t)-(s.by_module[a].t);});
+  if(!mods.length)h+='<div style="font-size:11px;color:var(--mut)">No settled picks yet.</div>';
+  mods.forEach(function(mk){
+    var m=s.by_module[mk], cm=(s.clv_by_module||{})[mk];
+    var roi=m.t?Math.round(m.u/m.t*100):0, win=m.t?Math.round(m.w/m.t*100):0;
+    var clvAvg=cm&&cm.n?Math.round(cm.sum/cm.n*1000)/10:null, clvPos=cm&&cm.n?Math.round(cm.pos/cm.n*100):null;
+    var killed=moduleClvKilled(mk), cls=MODULE_CLASS[mk]||'experimental';
+    var col=killed?'var(--red)':(cls==='primary'?'var(--grn)':'var(--mut)');
+    h+='<div style="font-size:11px;color:'+col+'">'+(cls==='primary'?'&#11088; ':'')+mk+': '+win+'% / ROI '+(roi>=0?'+':'')+roi+'% (n='+m.t+')'+(clvAvg!=null?' &middot; CLV '+(clvAvg>0?'+':'')+clvAvg+'pts, '+clvPos+'% pos':' &middot; CLV n/a')+(killed?' &#9760; KILLED (paper)':'')+'</div>';
+  });
+  // Calibration curve
+  h+='<div style="font-size:10px;font-weight:700;color:var(--txt);margin:8px 0 2px">Calibration curve (predicted vs actual)</div>';
+  var any=false;
+  for(var b=0;b<10;b++){var c=(s.calib||{})[b];if(!c||!c.n)continue;any=true;
+    var pred=Math.round(c.pred/c.n*100), act=Math.round(c.hit/c.n*100), off=Math.abs(pred-act);
+    h+='<div style="font-size:11px;color:'+(off<=CALIB_TOL*100?'var(--grn)':'var(--amb)')+'">'+(b*10)+'-'+(b*10+10)+'% predicted &rarr; '+act+'% actual (n='+c.n+')'+(off>CALIB_TOL*100?' &#9888; off '+off+'pp':'')+'</div>';
+  }
+  if(!any)h+='<div style="font-size:11px;color:var(--mut)">No p_model logged yet ‚Äî populates as v13 picks settle.</div>';
+  h+='</div>';
+  return h;
+}
 function modelPerfBlock(){
   var s=MSTATS||sg('model_stats',null); if(!s)return'';
   var h='<div class="card" style="border-color:var(--gld);background:var(--sur)">';
@@ -2058,9 +2276,14 @@ function renderPicks(){
 
   if(D.upcoming===0&&D.live===0)h+='<div class="card" style="text-align:center;color:var(--mut);padding:20px">All games finished. Check back tomorrow.</div>';
 
-  // How-to-read-the-score legend
+  // v13 Phase-0 PAPER banner ‚Äî loud, so an empty real-money card is never a surprise.
+  if(PAPER_ONLY){
+    h+='<div class="card" style="border-color:var(--amb);background:var(--sur)"><div style="font-size:12px;font-weight:700;color:var(--amb)">&#9209; v13 PHASE 0 ‚Äî PAPER ONLY</div><div style="font-size:10px;color:var(--mut);line-height:1.5;margin-top:3px">Every pick is being tracked, none is a real-money recommendation. The model now bets <b>mispricing vs the de-vigged market</b> (edge &ge; '+(EDGE_THRESHOLD*100)+'pp across &ge;'+DEVIG_MIN_BOOKS+' books), and is judged by <b>closing-line value</b>. Real money turns on per-module only after CLV is proven positive on ~300 paper bets ‚Äî starting with strikeout unders. Flip <code>PAPER_ONLY=false</code> to begin Phase 1.</div></div>';
+  }
+  // Scoreboards
+  h+=valuePerfBlock();
   h+=modelPerfBlock();
-  h+='<div class="filter-note" style="background:var(--bbg);border-color:rgba(59,130,246,.3)"><div style="font-size:11px;font-weight:700;color:var(--blu);margin-bottom:3px">&#8505; v12 ‚Äî How to read this board</div><div style="font-size:10px;color:var(--mut);line-height:1.5"><b>Score = model win-probability estimate (UNCALIBRATED until its grade&times;prop bucket shows n&ge;30)</b> ‚Äî each pick prints its own realized record or an UNCALIBRATED flag. <b>Two real-money tiers:</b> CORE = in-band (-140..-100) singles, ~2% stake; <b>&#128640; ACCELERATOR</b> = any price on a prop that EARNED it with realized ROI &ge;+'+ACCEL_MIN_ROI+'% at n&ge;'+ACCEL_MIN_N+' (auto-revokes on regression). Props proven -ROI at n&ge;'+PROP_DEMOTE_N+' are paper-only regardless of price. Ranking is ROI-weighted (+ROI props float). K-overs only at 5.5+. One exposure per player. <b>Singles only &mdash; no parlays.</b></div></div>';
+  h+='<div class="filter-note" style="background:var(--bbg);border-color:rgba(59,130,246,.3)"><div style="font-size:11px;font-weight:700;color:var(--blu);margin-bottom:3px">&#8505; v13 ‚Äî How to read this board</div><div style="font-size:10px;color:var(--mut);line-height:1.5"><b>We bet mispricing, not likelihood.</b> Each pick shows <b>p_model</b> (our probability), <b>p_market</b> (de-vig consensus across books), and <b>EDGE</b> = the gap. A pick "fires" only when EDGE &ge; '+(EDGE_THRESHOLD*100)+'pp on &ge;'+DEVIG_MIN_BOOKS+' two-way books ‚Äî Score no longer decides bets. Prices are <b>line-shopped</b> (best of ~8 books). CLV is the scoreboard; any module that goes CLV-negative auto-demotes to paper. Strikeout <b>unders</b> are the primary market. K-overs only at 5.5+. One exposure per player. <b>Singles only &mdash; no parlays.</b></div></div>';
 
   // Premium card header
   h+='<div class="card" style="background:var(--gbg);border-color:rgba(34,197,94,.3)">';
@@ -2166,9 +2389,24 @@ function pickCard(p){
   h+='</div>';
   h+='<span class="pbadge '+(isA?'ba':isW?'bw':'bb')+'">'+(isA?'&#9733; A':isW?'&#9873; WATCH':'&#9889; B')+'</span></div>';
 
-  // Score bar
+  // v13 VALUE LINE ‚Äî the headline: our probability vs the market's, and the edge.
+  if(p.pModel!=null){
+    var pm=(p.pModel*100).toFixed(0), mm=(p.pMarket!=null?(p.pMarket*100).toFixed(0):null);
+    if(p.edge!=null){
+      var edgePct=(p.edge*100).toFixed(1), fired=p.fire;
+      var ecol=fired?'var(--grn)':'var(--mut)';
+      h+='<div style="font-size:11px;font-weight:700;color:'+ecol+';margin-bottom:4px">'+(fired?'&#128293; FIRES':'&#8226; no-fire')+' &middot; EDGE '+(p.pModel>=p.pMarket?'+':'')+edgePct+'pp <span style="font-weight:600;color:var(--mut)">(p_model '+pm+'% vs market '+mm+'%, '+p.nBooks+' books)</span></div>';
+    }else{
+      h+='<div style="font-size:11px;color:var(--mut);margin-bottom:4px">p_model '+pm+'% &middot; <span style="color:var(--amb)">one-way market ‚Äî no de-vig / no edge (paper)</span></div>';
+    }
+  }
+  // Line-shopping: best price + book, flag if the taken price isn't the best.
+  if(p.bestPrice!=null){
+    h+='<div style="font-size:10px;color:var(--mut);margin-bottom:4px">Best price: '+(p.bestPrice>0?'+':'')+p.bestPrice+' @ '+(p.bestBook||'?')+(p.priceTaken!=null&&p.priceTaken<p.bestPrice?' <span style="color:var(--red)">&#9888; taken '+p.priceTaken+' &lt; best</span>':'')+'</div>';
+  }
+  // Score bar (display only in v13 ‚Äî does NOT decide bets)
   h+='<div class="sbar"><div class="sbar-fill" style="width:'+p.score+'%;background:'+col+'"></div></div>';
-  h+='<div style="font-size:10px;color:'+col+';font-weight:700;margin-bottom:5px">Score: '+p.score+'/100'+(p.rawScore!=null?' <span style="color:var(--mut);font-weight:600">(raw model '+p.rawScore+'/'+(p.propMax||100)+')</span>':'')+'</div>';
+  h+='<div style="font-size:10px;color:'+col+';font-weight:700;margin-bottom:5px">Score: '+p.score+'/100 <span style="color:var(--mut);font-weight:600">(likelihood only ‚Äî not the bet signal)</span></div>';
   // Recent form: how often THIS line cleared in the player's last 5/10 appearances
   if(p.l5n||p.l10n){
     var rfc=(p.l5n>=4)?((p.l5c/p.l5n>=0.6)?'var(--grn)':(p.l5c/p.l5n<=0.4)?'var(--red)':'var(--amb)'):'var(--mut)';
@@ -2510,9 +2748,14 @@ function removeBet(id){
 function pickDump(p){
   var b=p.bStats, hs=p.hitStat, os=p.oppStat, T=[];
   var pc=function(v){return v==null?'--':v;};
-  T.push((p.isPitcher?'[PITCHER] ':'[HITTER] ')+p.name+' ‚Äî '+p.propLabel+'  (Grade '+p.grade+(p.tier?' '+p.tier:'')+' | Score '+p.score+'/100, raw '+p.rawScore+'/'+p.propMax+')');
+  T.push((p.isPitcher?'[PITCHER] ':'[HITTER] ')+p.name+' ‚Äî '+p.propLabel+'  ('+(p.fire?'FIRES':'no-fire')+(p.paper===false?' REAL':' PAPER')+' | '+(p.module||'')+'/'+(p.moduleClass||'')+')');
+  // v13 value headline
+  if(p.pModel!=null){
+    if(p.edge!=null)T.push('  VALUE: edge '+(p.pModel>=p.pMarket?'+':'')+(p.edge*100).toFixed(1)+'pp | p_model '+(p.pModel*100).toFixed(0)+'% vs market '+(p.pMarket*100).toFixed(0)+'% ('+p.nBooks+' books)'+(p.fire?' -> FIRES':' -> below '+(EDGE_THRESHOLD*100)+'pp / gated'));
+    else T.push('  VALUE: p_model '+(p.pModel*100).toFixed(0)+'% | one-way market, no de-vig, no edge (paper/log only)');
+  }
   T.push('  Lineup: '+(p.lineupConfirmed?'CONFIRMED':'PROJECTED')+(p.lineupSpot?' #'+p.lineupSpot:'')+' | '+p.game+' '+p.time+(p.gameTotal!=null?' | Game total '+p.gameTotal:''));
-  T.push('  Odds: '+fmtOdds(p.recOdds)+' (open '+fmtOdds(p.oddsOpen)+', move '+(p.oddsMove>0?'+':'')+p.oddsMove+')');
+  T.push('  Odds: '+fmtOdds(p.recOdds)+(p.bestBook?' (best of '+p.nBooks+' books: '+fmtOdds(p.bestPrice)+' @ '+p.bestBook+')':'')+' | Score '+p.score+'/100 (likelihood only)');
   if(p.recOdds!=null){
     var bookP=(impliedProb(p.recOdds)*100).toFixed(1);
     var cb=CALIB?CALIB[bucketOf(p.score)]:null;
@@ -2555,7 +2798,7 @@ function copyPicks(){
   var watch=D.picks.filter(function(p){return p.grade==='B'||p.grade==='W';});
   var wins=BETS.filter(function(b){return b.result==='WIN';}).length;
   var tot=BETS.filter(function(b){return b.result!=='PENDING';}).length;
-  var txt='HITTERS EDGE v12 ‚Äî '+D.date+' (generated '+(D.generatedAt||'?')+', odds as of '+(D.oddsAsOf||'?')+')\n';
+  var txt='HITTERS EDGE v13 ‚Äî '+D.date+' (generated '+(D.generatedAt||'?')+', odds as of '+(D.oddsAsOf||'?')+')\n';
   txt+='Record: '+wins+'W/'+(tot-wins)+'L'+(tot?' ('+Math.round(wins/tot*100)+'%)':'')+'\n';
   txt+='Score = normalized 0-100 WITHIN each prop (a ranking, not a win probability). Value model% = real settled-bet hit rate for that score bucket.\n';
   if(D.aceNotes&&D.aceNotes.length){txt+='\nACE FILTERS (batters skipped):\n';D.aceNotes.forEach(function(n){txt+='  '+n.team+' vs '+n.pitcher+' ('+n.era+' ERA)\n';});}
@@ -2575,6 +2818,16 @@ function copyPicks(){
   // ‚îÄ‚îÄ PERFORMANCE (ROI-first) ‚Äî surface the brains, read-only ‚îÄ‚îÄ
   var s=MSTATS||buildModelStats();
   var ln=function(label,o){return '  '+label+': n='+o.t+' | '+Math.round(o.w/o.t*100)+'% | ROI '+(Math.round(o.u/o.t*100)>=0?'+':'')+Math.round(o.u/o.t*100)+'%'+(o.on?' | avg '+(Math.round(o.os/o.on)>0?'+':'')+Math.round(o.os/o.on):'')+'\n';};
+  // ‚îÄ‚îÄ v13 VALUE / CLV-FIRST (the new scoreboard) ‚îÄ‚îÄ
+  txt+='\n========== VALUE SCOREBOARD (CLV-FIRST) ‚Äî v13 ==========\n';
+  txt+='Phase: '+(PAPER_ONLY?'0 (PAPER ONLY)':'1+ (real money enabled)')+' | model '+(modelCalibrated()?'CALIBRATED':'UNCALIBRATED')+' ('+(s.calib_n||0)+'/'+CALIB_MIN_N+') | fired '+(s.fired_n||0)+' | gated '+(s.gated_n||0)+' | avg edge '+(s.edge_n?(s.edge_sum/s.edge_n*100).toFixed(1)+'pp':'n/a')+'\n';
+  txt+='By module (n | win% | ROI | CLV avg | %CLV+ | status):\n';
+  Object.keys(s.by_module||{}).sort(function(a,b){return s.by_module[b].t-s.by_module[a].t;}).forEach(function(mk){
+    var m=s.by_module[mk],cm=(s.clv_by_module||{})[mk];
+    txt+='  '+mk+': n='+m.t+' | '+Math.round(m.w/m.t*100)+'% | ROI '+(Math.round(m.u/m.t*100)>=0?'+':'')+Math.round(m.u/m.t*100)+'%'+(cm&&cm.n?' | CLV '+(Math.round(cm.sum/cm.n*10)/10)+' | '+Math.round(cm.pos/cm.n*100)+'%+':' | CLV n/a')+' | '+(moduleClvKilled(mk)?'KILLED':(MODULE_CLASS[mk]||'experimental'))+'\n';
+  });
+  txt+='Calibration (predicted -> actual):\n';
+  for(var cbn=0;cbn<10;cbn++){var cc=(s.calib||{})[cbn];if(cc&&cc.n)txt+='  '+(cbn*10)+'-'+(cbn*10+10)+'%: '+Math.round(cc.hit/cc.n*100)+'% actual (n='+cc.n+')\n';}
   txt+='\n========== PERFORMANCE (ROI-FIRST) ==========\n';
   txt+='(all tracked picks ‚Äî both boards; NOT a real-money record)\n';
   txt+='Overall: tracked '+s.total_generated+' | settled '+s.total_resolved+' | pending '+s.total_pending+' | void '+(s.total_dnp||0)+' | push '+(s.total_push||0)+(s.by_overall.all&&s.by_overall.all.t?' | '+Math.round(s.by_overall.all.w/s.by_overall.all.t*100)+'% | ROI '+(Math.round(s.by_overall.all.u/s.by_overall.all.t*100)>=0?'+':'')+Math.round(s.by_overall.all.u/s.by_overall.all.t*100)+'%':'')+'\n';
