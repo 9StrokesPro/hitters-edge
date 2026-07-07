@@ -116,6 +116,12 @@ select.inp option{background:var(--sur2)}
     <div style="font-size:9px;color:var(--mut)">All Time P&L</div>
   </div>
 </div>
+<div style="display:flex;gap:6px;flex-wrap:wrap;padding:6px 10px;border-bottom:1px solid var(--bord,#222)">
+  <button class="btn-s" onclick="exportData()" title="Download all logged bets as JSON">&#128190; Export data</button>
+  <label class="btn-s" style="cursor:pointer" title="Restore/merge a JSON export">&#128194; Import<input type="file" accept=".json,application/json" onchange="importDataFile(this)" style="display:none"></label>
+  <button class="btn-s" onclick="promptIngestLog()" title="Rebuild rows from a pasted settlement log">&#128229; Re-ingest</button>
+  <span id="data-count" style="font-size:9px;color:var(--mut);align-self:center"></span>
+</div>
 <div id="pg-picks"  class="pg on"><div class="load"><div class="spnr"></div>Loading...</div></div>
 <div id="pg-totals" class="pg"><div class="load"><div class="spnr"></div>Loading...</div></div>
 <div id="pg-pnl"    class="pg"></div>
@@ -1449,7 +1455,7 @@ function standardize(X){
 }
 // Logistic regression via batch gradient descent + L2. Returns weights (incl. bias at [0]).
 function logisticFit(Z,y,opts){
-  opts=opts||{}; var iter=opts.iter||400, lr=opts.lr||0.3, l2=opts.l2||1.0;
+  opts=opts||{}; var iter=opts.iter||200, lr=opts.lr||0.4, l2=opts.l2||1.0; // 200 iters keeps background training fast
   var n=Z.length, d=Z[0].length, w=new Array(d+1).fill(0);
   for(var it=0;it<iter;it++){
     var g=new Array(d+1).fill(0);
@@ -1540,24 +1546,39 @@ function moduleGate(recs,oof,iso){
     n:recs.length, trainN:trainN, buckets:buck, clvAvg:clvAvg, clvPos:clvPos, clvN:clvs.length};
 }
 // Train every module with enough data; compute REAL_MONEY_MODULES from the gates.
-// Cached by settled-count: retrains only when new bets settle (not every page load).
+// NON-BLOCKING: on the critical path (force falsy) this only LOADS the cache ‚Äî it never
+// runs the logistic loops, so the page load can never hang on training. If the cache is
+// cold/stale it schedules the heavy train in the BACKGROUND (see scheduleTrain) and
+// returns immediately with whatever (possibly stale) cache exists.
+var TRAINING=false;
 function trainModels(force){
+  var sig=getAllLoggedPicks().filter(function(r){return r.result==='WIN'||r.result==='LOSS';}).length;
+  var cached=sg('models_cache',null);
+  if(cached&&cached.models){ MODELS=cached.models; REAL_MONEY_MODULES=cached.real||[]; }
+  if(!force){
+    if(cached&&cached.sig===sig) return MODELS;   // warm cache -> instant, done
+    scheduleTrain();                              // cold/stale -> train later, off the critical path
+    return MODELS;                                // this load uses stale/empty cache (safe: paper)
+  }
+  return trainModelsNow(sig);
+}
+// The heavy work. Capped rows/iterations keep even a full retrain to ~1-2s in-browser.
+function trainModelsNow(sig){
   var all=getAllLoggedPicks().filter(function(r){return r.result==='WIN'||r.result==='LOSS';});
-  var sig=all.length;
-  if(!force){ var cached=sg('models_cache',null);
-    if(cached&&cached.sig===sig&&cached.models){ MODELS=cached.models; REAL_MONEY_MODULES=cached.real||[]; return MODELS; } }
+  if(sig==null)sig=all.length;
   var byMod={};
   all.forEach(function(r){ var m=r.module||r.prop_type; if(!m)return; (byMod[m]=byMod[m]||[]).push(r); });
   MODELS={}; var passed=[];
   Object.keys(byMod).forEach(function(m){
     var recs=byMod[m];
+    // cap to most-recent 2500 by date so a huge module can't blow up training time
+    if(recs.length>2500){ recs=recs.slice().sort(function(a,b){return (a.date<b.date?1:-1);}).slice(0,2500); }
     if(recs.length<TRAIN_MIN_N){ MODELS[m]={gate:{pass:false,sampleOk:false,n:recs.length,reason:'n<'+TRAIN_MIN_N}}; return; }
     var X=recs.map(featRow), y=recs.map(function(r){return r.result==='WIN'?1:0;});
     var oof=kFoldOOF(X,y,5);
     var oofPairs=[]; for(var i=0;i<oof.length;i++)if(oof[i]!=null)oofPairs.push({x:oof[i],y:y[i]});
     var iso=isotonic(oofPairs);
     var gate=moduleGate(recs,oof,iso);
-    // refit on ALL data for live scoring (calibration map from OOF stays honest)
     var st=standardize(X), w=logisticFit(st.Z,y);
     MODELS[m]={weights:w,mean:st.mean,sd:st.sd,iso:iso,gate:gate,feats:FEAT_NAMES};
     if(gate.pass)passed.push(m);
@@ -1565,6 +1586,15 @@ function trainModels(force){
   REAL_MONEY_MODULES=passed;
   try{ss('models_cache',{sig:sig,models:MODELS,real:passed});}catch(e){}
   return MODELS;
+}
+// Run the heavy train after the current render, so the UI shows first. One at a time.
+function scheduleTrain(){
+  if(TRAINING)return; TRAINING=true;
+  setTimeout(function(){
+    try{ trainModelsNow(null); buildModelStats(); if(D)renderPicks(); if(typeof toast==='function')toast('Models trained'); }
+    catch(e){ console.warn('bg train',e.message); }
+    finally{ TRAINING=false; }
+  }, 50);
 }
 // Calibrated p_model for a LIVE pick from its module model. null if no calibrated model.
 function modelProb(moduleKey,featObj){
@@ -1614,7 +1644,7 @@ function ingestSettlementLog(text){
       game_total:null,iso:null,platoon_value:0,matchup_value:0,luck_gap:null,ten_game_trend:null};
     try{localStorage.setItem(key,JSON.stringify(rec));added++;}catch(e){bad++;}
   });
-  if(added){trainModels(true);buildModelStats();if(D)renderPicks();}
+  if(added){trainModels(true);buildModelStats();if(D)renderPicks();} if(typeof updDataCount==="function")updDataCount();
   return {added:added,skipped:skipped,bad:bad};
 }
 function promptIngestLog(){
@@ -1622,6 +1652,37 @@ function promptIngestLog(){
   if(!t)return;
   var r=ingestSettlementLog(t);
   toast('Re-ingest: +'+r.added+' rows ('+r.skipped+' existed, '+r.bad+' skipped)');
+}
+// v13.1: EXPORT the full settled-bet history to a JSON file. This is the snapshot the
+// developer reads to verify/improve the model against REAL data, and a backup against a
+// localStorage wipe. Live storage stays in localStorage ‚Äî this is a downloadable copy.
+function exportData(){
+  var picks=getAllLoggedPicks();
+  var blob={app:'hitters-edge',version:'v13.1',exported_at:new Date().toISOString(),
+    count:picks.length, picks:picks, model_stats:sg('model_stats',null),
+    real_money_modules:(REAL_MONEY_MODULES||[])};
+  var url=URL.createObjectURL(new Blob([JSON.stringify(blob)],{type:'application/json'}));
+  var a=document.createElement('a'); a.href=url; a.download='hitters-edge-data_'+todayStr()+'.json';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(function(){URL.revokeObjectURL(url);},2000);
+  toast('Exported '+picks.length+' picks ‚Äî save it in your Hitters Edge folder');
+}
+// v13.1: IMPORT a previously-exported JSON (or another browser's) ‚Äî merges rows not
+// already present, then retrains. Restores history after a wipe / moves it between devices.
+function importDataFile(input){
+  var f=input.files&&input.files[0]; if(!f)return;
+  var r=new FileReader();
+  r.onload=function(){
+    try{
+      var d=JSON.parse(r.result); var arr=d.picks||(Array.isArray(d)?d:[]); var added=0,skip=0,bad=0;
+      arr.forEach(function(rec){ if(!rec||!rec.id){bad++;return;} var k='he9_pick_'+rec.id;
+        if(localStorage.getItem(k)){skip++;return;} try{localStorage.setItem(k,JSON.stringify(rec));added++;}catch(e){bad++;} });
+      if(added){trainModels(true);buildModelStats();if(D)renderPicks();} if(typeof updDataCount==="function")updDataCount();
+      toast('Imported +'+added+' ('+skip+' existed, '+bad+' skipped)');
+    }catch(e){toast('Import failed: '+e.message);}
+    input.value='';
+  };
+  r.readAsText(f);
 }
 
 // Aggregate per bucket: w/t (settled, excl DNP+Push+Void), units P/L, and odds sum
@@ -1827,10 +1888,12 @@ async function loadAll(){
     if(ai.awayIsAce)aceNotes.push({team:og.home_team,pitcher:ai.awayPitName,era:ai.awayERA});
   });
 
-  // v13.1: train per-module models on settled history BEFORE scoring, so live picks get
-  // calibrated p_model and the real-money gate knows which modules passed ¬ß2. Cached.
-  setP('Training models...');
-  try{trainModels();}catch(e){console.warn('trainModels',e.message);}
+  // v13.1: use CACHED models only on the critical path (instant ‚Äî never blocks the load).
+  // If the cache is cold (first load after new bets settle), we skip live calibration THIS
+  // load (picks fall back to the uncalibrated baseline = all paper, which is safe) and train
+  // in the BACKGROUND after render, so the next load is fully calibrated. Training the
+  // logistic on thousands of rows synchronously was what made the page hang.
+  try{trainModels();}catch(e){console.warn('trainModels',e.message);} // returns instantly if cache warm; see cache-gate below
   // Step 3: Props per game
   setP('Loading props...');
   var rawPicks=[];
@@ -2356,7 +2419,11 @@ function valuePerfBlock(){
     var yn=function(b){return b?'<span style="color:var(--grn)">&#10003;</span>':'<span style="color:var(--red)">&#10007;</span>';};
     h+='<div style="font-size:11px;color:'+(pass?'var(--grn)':'var(--mut)')+'">'+(pass?'&#128176; REAL':'&#9209; paper')+' '+m+': n='+(g.n||0)+' | sample '+yn(g.sampleOk)+' calib '+yn(g.calibOk)+' CLV '+yn(g.clvOk)+(g.clvAvg!=null?' ('+(g.clvAvg>0?'+':'')+(Math.round(g.clvAvg*1000)/10)+'pts)':'')+'</div>';
   });
-  h+='<button class="btn-s" onclick="promptIngestLog()" style="margin:6px 0">&#128229; Re-ingest settlement log (recover history)</button>';
+  h+='<div style="margin:6px 0;display:flex;gap:6px;flex-wrap:wrap">';
+  h+='<button class="btn-s" onclick="exportData()">&#128190; Export data (JSON)</button>';
+  h+='<label class="btn-s" style="cursor:pointer">&#128194; Import data<input type="file" accept=".json,application/json" onchange="importDataFile(this)" style="display:none"></label>';
+  h+='<button class="btn-s" onclick="promptIngestLog()">&#128229; Re-ingest settlement log</button>';
+  h+='</div>';
   h+='<div style="font-size:10px;font-weight:700;color:var(--txt);margin:8px 0 2px">Realized by module</div>';
   // Per-module: n, win%, ROI, CLV avg, %CLV+, with kill-switch status
   h+='<div style="font-size:10px;font-weight:700;color:var(--txt);margin:4px 0 2px">By module (the arbiter of real money)</div>';
@@ -3164,6 +3231,11 @@ function startAR(){
   if(COUNTDOWN_T)clearInterval(COUNTDOWN_T);
   COUNTDOWN_T=setInterval(function(){var el=document.getElementById('rtimer');if(!el)return;var diff=NEXT_R-Date.now();if(diff<=0){el.textContent='Refreshing...';return;}var m=Math.floor(diff/60000),s=Math.floor((diff%60000)/1000);el.textContent='Refresh in '+m+'m '+('0'+s).slice(-2)+'s';},1000);
 }
+// Show the logged-record count immediately (before the slate loads) so Export is usable now.
+function updDataCount(){ var el=document.getElementById('data-count'); if(!el)return;
+  var n=0; for(var i=0;i<localStorage.length;i++){ if((localStorage.key(i)||'').indexOf('he9_pick_')===0)n++; }
+  el.textContent=n+' bets stored'; }
+updDataCount();
 loadAll();
 </script>
 </body>
