@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-<title>Hitters Edge v13.1</title>
+<title>Hitters Edge v13.2</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -107,7 +107,7 @@ select.inp option{background:var(--sur2)}
 <body>
 <div class="hdr">
   <div>
-    <div class="logo">&#9918; Hitters Edge v13.1</div>
+    <div class="logo">&#9918; Hitters Edge v13.2</div>
     <div style="font-size:9px;color:var(--mut)" id="lu">Loading...</div>
     <div style="font-size:9px;color:var(--mut)" id="rtimer"></div>
   </div>
@@ -169,6 +169,16 @@ var PHASE                = 1;     // v13.1 ¬ß3: 1 = real money enabled for mod
 var PAPER_MODE           = false; // v13.1 ¬ß3: global paper flag OFF. Per-module gate now decides real vs paper.
 var EDGE_CLAMP_MAX       = 0.10;  // v13.1 ¬ß1.5: fire on at most a 10pp edge (bigger "edges" are model noise, not value)
 var EDGE_IMPLAUSIBLE     = 0.12;  // v13.1 ¬ß1.5: above this -> DO NOT fire, flag "implausible ‚Äî model check"
+// ‚îÄ‚îÄ v13.2 LINE-VALUE EDGE (the real, market-based edge: best price vs PEER-book consensus) ‚îÄ‚îÄ
+// Prediction is dead (features + umpires both proven flat). This edge doesn't predict the
+// game ‚Äî it catches a book pricing a side better than the de-vig consensus of the OTHER books.
+// That's +CLV by construction (the outlier moves toward the pack). Judged by CLV, paper first.
+var LV_ON                = true;  // line-value is now the primary FIRE signal (model edge -> display only)
+var LV_THRESHOLD         = 0.02;  // fire when best price beats peer-consensus fair by >= 2pp
+var LV_MIN_PEERS         = 3;     // need >= this many OTHER two-way books for a trustworthy consensus
+var LV_IMPLAUSIBLE       = 0.10;  // > this vs peers = a stale/mismatched line, not value -> flag, no fire
+var LV_CLV_MIN_N         = 40;    // line-value goes REAL only after >= this many fired picks have settled CLV
+var LV_CLV_MIN_PCT       = 52;    // ...and >= this % of them beat the close (proven +CLV)
 var TRAIN_MIN_N          = 300;   // v13.1 ¬ß2.2: module needs >=N settled bets to be trainable/eligible
 var MODEL_MIN_TRAIN      = 200;   // v13.1 ¬ß2.2: calibration model must have trained on >=N
 var CALIB_BUCKET_TOL     = 0.04;  // v13.1 ¬ß2.1: predicted vs actual within +/-4pp in every bucket with >=N
@@ -1001,31 +1011,25 @@ function applyFilters(pick){
     filters.push(pick.accelerator?'plus-money flier ‚Äî Watch/bonus only (prop not yet Accelerator-proven)':'out-of-band (price) ‚Äî Watch/bonus only');
   }else pick.tier='WATCH';
 
-  // 9. v13.1 REAL-MONEY GATE ‚Äî a bet fires real ONLY if its module passed the ¬ß2
-  //    calibration gate AND this pick clears every guardrail. Everything else = PAPER
-  //    (still fired-on-paper + logged so the forward CLV test keeps running).
-  var killed   = moduleClvKilled(pick.module);
-  var bleeder  = pick.moduleClass==='bleeder';
-  var clampedEdge = pick.edgeFire; // edge capped at EDGE_CLAMP_MAX (null if no de-vig)
-  var edgeOk   = clampedEdge!=null && pick.edge>=EDGE_THRESHOLD && !pick.edgeImplausible && (pick.nBooks||0)>=DEVIG_MIN_BOOKS;
-  pick.fire = edgeOk && !killed && !bleeder;                 // would-fire on value (paper or real)
-  var moduleReal = moduleIsReal(pick.module);                // passed ¬ß2 calibration gate this session
-  var bandOk   = premiumOddsOk(pick.recOdds);                // -140..-100 real-money band
-  // REAL money ‚Äî ALL of ¬ß3: module passed ¬ß2, calibrated model, edge in [thr,clamp],
-  // in band, not killed, global paper off, not implausible, daily loss-stop not tripped.
-  pick.realMoney = pick.fire && PHASE>=1 && !PAPER_MODE && !PAPER_ONLY
-                   && moduleReal && pick.calibrated && bandOk && !lossStopTripped();
+  // 9. v13.2 LINE-VALUE GATE ‚Äî a bet FIRES when the best price beats the peer-book consensus
+  //    (that's +CLV by construction, no prediction needed). Model calibration no longer gates
+  //    firing (prediction is proven flat). REAL money only after the line-value strategy has
+  //    proven +CLV forward. Everything else = PAPER, still logged for the forward CLV test.
+  var killed = moduleClvKilled(pick.module);                    // a chronically CLV-negative module can still be paused
+  pick.fire = !!pick.lvFire && !killed;                         // primary signal = line value
+  var lvProven = lineValueClvProven();                          // has the strategy shown +CLV on settled fired picks?
+  // REAL money: line value fires, strategy CLV-proven, master switches off, loss-stop clear.
+  // No -140..-100 band here ‚Äî line value is often on plus-money outliers (that's the point).
+  pick.realMoney = pick.fire && PHASE>=1 && !PAPER_MODE && !PAPER_ONLY && lvProven && !lossStopTripped();
   pick.paper = !pick.realMoney;
-  pick.stakeSuggest = (pick.realMoney && pick.recOdds!=null) ? kellyStake(pick.pModel,pick.recOdds) : 0;
-  if(bleeder) filters.push('module gated (proven bleeder) ‚Äî paper/log only');
-  else if(killed) filters.push('module CLV-killed (<'+CLV_KILL_PCT+'% beat close) ‚Äî paper only');
-  else if(pick.edgeImplausible) filters.push('IMPLAUSIBLE edge '+(pick.edge*100).toFixed(1)+'pp (>'+(EDGE_IMPLAUSIBLE*100)+'pp) ‚Äî model check, NOT fired');
-  else if(pick.edge==null) filters.push('one-way market ‚Äî no de-vig, no edge ‚Äî paper/log only');
-  else if(pick.edge<EDGE_THRESHOLD) filters.push('edge '+(pick.edge*100).toFixed(1)+'pp < '+(EDGE_THRESHOLD*100)+'pp ‚Äî logged, not fired');
-  else if(pick.realMoney) filters.push('REAL MONEY ‚Äî '+pick.module+' passed calibration; edge '+(clampedEdge*100).toFixed(1)+'pp, '+fmtOdds(pick.recOdds)+', stake '+(pick.stakeSuggest*100).toFixed(1)+'% (0.25x Kelly)');
-  else if(pick.fire&&!moduleReal) filters.push('EDGE +'+(clampedEdge*100).toFixed(1)+'pp but module not yet calibration-passed ‚Äî PAPER');
-  else if(pick.fire&&!pick.calibrated) filters.push('EDGE +'+(clampedEdge*100).toFixed(1)+'pp on UNCALIBRATED baseline ‚Äî PAPER');
-  else if(pick.fire&&!bandOk) filters.push('EDGE +'+(clampedEdge*100).toFixed(1)+'pp but price out of -140..-100 band ‚Äî PAPER');
+  pick.stakeSuggest = (pick.realMoney && pick.recOdds!=null) ? kellyStake(pick.pModel||impliedProb(pick.recOdds),pick.recOdds) : 0;
+  if(pick.lvImplausible) filters.push('line-value '+(pick.lvEdge*100).toFixed(1)+'pp > '+(LV_IMPLAUSIBLE*100)+'pp ‚Äî stale/mismatched line, NOT fired');
+  else if(pick.lvEdge==null) filters.push('no peer consensus (need '+LV_MIN_PEERS+'+ two-way books) ‚Äî paper/log only');
+  else if(!pick.lvFire && pick.lvPeers<LV_MIN_PEERS) filters.push('only '+pick.lvPeers+' peer books (<'+LV_MIN_PEERS+') ‚Äî paper/log only');
+  else if(!pick.lvFire) filters.push('line value '+(pick.lvEdge*100).toFixed(1)+'pp < '+(LV_THRESHOLD*100)+'pp vs peers ‚Äî logged, not fired');
+  else if(killed) filters.push('module paused (CLV-negative) ‚Äî paper only');
+  else if(pick.realMoney) filters.push('REAL MONEY (line value) ‚Äî best '+fmtOdds(pick.recOdds)+' @'+(pick.bestBook||'?')+' beats '+pick.lvPeers+'-book consensus by '+(pick.lvEdge*100).toFixed(1)+'pp; stake '+(pick.stakeSuggest*100).toFixed(1)+'% (0.25x Kelly)');
+  else if(pick.fire&&!lvProven) filters.push('LINE VALUE +'+(pick.lvEdge*100).toFixed(1)+'pp (best '+fmtOdds(pick.recOdds)+' @'+(pick.bestBook||'?')+' vs '+pick.lvPeers+' peers) ‚Äî WOULD FIRE, held PAPER until strategy CLV proven ('+LV_CLV_MIN_N+'+ settled, '+LV_CLV_MIN_PCT+'%+ beat close)');
   else if(pick.fire&&lossStopTripped()) filters.push('daily loss-stop tripped ‚Äî forced PAPER rest of day');
 
   return{pass:true,grade:grade,filters:filters};
@@ -1091,6 +1095,44 @@ function bestPrice(bookRows,line,side){
   });
   return best==null?null:{price:best,book:book};
 }
+// v13.2: consensus no-vig fair prob of Over from books OTHER than excludeBook (the outlier
+// we're pricing against). Median over peers that quote BOTH sides at `line`. null if <2 peers.
+function consensusFairOverExcl(bookRows,line,excludeBook){
+  var fs=[];
+  bookRows.forEach(function(r){
+    if(r.line!==line||r.book===excludeBook||r.over==null||r.under==null)return;
+    var f=devigOver(r.over,r.under); if(f!=null)fs.push(f);
+  });
+  if(fs.length<2)return null;
+  fs.sort(function(a,b){return a-b;});
+  var m=Math.floor(fs.length/2);
+  return {p:fs.length%2?fs[m]:(fs[m-1]+fs[m])/2, nPeers:fs.length};
+}
+// v13.2 LINE VALUE: the best available price for a side vs the peer-consensus fair prob of
+// that side (peers = all books except the one giving that best price). Returns the better
+// side's {side, edge, consensus, bestPrice, bestBook, nPeers}, or null. edge>0 = value.
+function lineValueOf(mkt){
+  if(!mkt||!mkt.books||!mkt.books.length)return null;
+  var out=null;
+  ['Over','Under'].forEach(function(side){
+    var best=side==='Over'?mkt.bestOver:mkt.bestUnder;
+    if(!best||best.price==null)return;
+    var cons=consensusFairOverExcl(mkt.books,mkt.line,best.book);
+    if(!cons)return;
+    var fairSide=side==='Over'?cons.p:(1-cons.p);
+    var edge=fairSide-impliedProb(best.price);       // peer fair minus best-price implied (conservative: best price incl vig)
+    if(edge==null)return;
+    if(out==null||edge>out.edge)out={side:side,edge:edge,consensus:fairSide,bestPrice:best.price,bestBook:best.book,nPeers:cons.nPeers};
+  });
+  return out;
+}
+// Has the line-value STRATEGY proven +CLV on settled fired picks? (its real-money gate)
+function lineValueClvProven(){
+  var s=MSTATS||sg('model_stats',null);
+  if(!s||!s.lv_clv)return false;
+  var c=s.lv_clv;
+  return c.n>=LV_CLV_MIN_N && (c.pos/c.n*100)>=LV_CLV_MIN_PCT && (c.sum/c.n)>=0;
+}
 // Fractional-Kelly stake as a fraction of roll. edge in prob points, price American.
 // DISPLAY-ONLY until the model is calibrated (Kelly on a bad prob blows up).
 function kellyStake(pModel,american){
@@ -1113,6 +1155,15 @@ function modelCalibrated(){
 // Module key + class for a pick (side matters for strikeouts: under=primary, over=experimental).
 function moduleKey(mktKey,side){
   return mktKey==='pitcher_strikeouts' ? mktKey+'_'+side : mktKey;
+}
+// v13.1 FIX: reconstruct the side-aware module key for a LOGGED record. Historical rows
+// (pre-v13) have no `module` field and store prop_type in SHORT form ('strikeouts',
+// 'total_bases'). Live picks look up 'pitcher_strikeouts_Under' / 'batter_total_bases',
+// so without this the 3,727-bet history never maps to the live models. K props split by side.
+function moduleOf(r){
+  if(r.module)return r.module;
+  if(r.prop_type==='strikeouts')return 'pitcher_strikeouts_'+(r.direction==='under'?'Under':'Over');
+  return 'batter_'+r.prop_type;
 }
 function moduleClass(mktKey,side){
   return MODULE_CLASS[moduleKey(mktKey,side)] || 'experimental';
@@ -1331,6 +1382,7 @@ function logPick(p){
     opp_era:(p.oppEra!=null?p.oppEra:null),opp_k9:(p.oppK9v!=null?p.oppK9v:null),
     opp_whip:(p.oppWhipv!=null?p.oppWhipv:null),rate_pg:(p.ratePg!=null?p.ratePg:null),
     calibrated:!!p.calibrated,
+    lv_edge:(p.lvEdge!=null?Math.round(p.lvEdge*1000)/1000:null),lv_peers:(p.lvPeers||0),lv_book:(p.bestBook||null),
     fired:!!p.fire,paper:(p.paper!==false),
     result:'PENDING',actual_stat:null,resolved_at:null};
   try{localStorage.setItem(key,JSON.stringify(rec));}catch(e){}
@@ -1551,12 +1603,13 @@ function moduleGate(recs,oof,iso){
 // cold/stale it schedules the heavy train in the BACKGROUND (see scheduleTrain) and
 // returns immediately with whatever (possibly stale) cache exists.
 var TRAINING=false;
+var MODELS_CACHE_VER='v13.1b-modulefix'; // bump to invalidate stale caches after a training-logic change
 function trainModels(force){
   var sig=getAllLoggedPicks().filter(function(r){return r.result==='WIN'||r.result==='LOSS';}).length;
   var cached=sg('models_cache',null);
-  if(cached&&cached.models){ MODELS=cached.models; REAL_MONEY_MODULES=cached.real||[]; }
+  if(cached&&cached.ver===MODELS_CACHE_VER&&cached.models){ MODELS=cached.models; REAL_MONEY_MODULES=cached.real||[]; }
   if(!force){
-    if(cached&&cached.sig===sig) return MODELS;   // warm cache -> instant, done
+    if(cached&&cached.ver===MODELS_CACHE_VER&&cached.sig===sig) return MODELS;   // warm cache -> instant, done
     scheduleTrain();                              // cold/stale -> train later, off the critical path
     return MODELS;                                // this load uses stale/empty cache (safe: paper)
   }
@@ -1567,7 +1620,7 @@ function trainModelsNow(sig){
   var all=getAllLoggedPicks().filter(function(r){return r.result==='WIN'||r.result==='LOSS';});
   if(sig==null)sig=all.length;
   var byMod={};
-  all.forEach(function(r){ var m=r.module||r.prop_type; if(!m)return; (byMod[m]=byMod[m]||[]).push(r); });
+  all.forEach(function(r){ var m=moduleOf(r); if(!m)return; (byMod[m]=byMod[m]||[]).push(r); });
   MODELS={}; var passed=[];
   Object.keys(byMod).forEach(function(m){
     var recs=byMod[m];
@@ -1584,7 +1637,7 @@ function trainModelsNow(sig){
     if(gate.pass)passed.push(m);
   });
   REAL_MONEY_MODULES=passed;
-  try{ss('models_cache',{sig:sig,models:MODELS,real:passed});}catch(e){}
+  try{ss('models_cache',{ver:MODELS_CACHE_VER,sig:sig,models:MODELS,real:passed});}catch(e){}
   return MODELS;
 }
 // Run the heavy train after the current render, so the UI shows first. One at a time.
@@ -1694,6 +1747,7 @@ function buildModelStats(){
     by_regression_due:{},by_trend:{},by_direction:{},by_prop_dir:{},by_clv:{},by_event:{},by_odds_bucket:{},by_overall:{},
     by_grade_prop:{},clv_by_prop:{},
     by_module:{},clv_by_module:{},calib:{},calib_n:0,edge_sum:0,edge_n:0,fired_n:0,gated_n:0, // v13
+    lv_clv:{sum:0,n:0,pos:0},lv_fired:0, // v13.2 line-value strategy forward CLV
     under_bt:{all:{w:0,t:0,p:0},by_grade:{},by_prop:{}},
     bench:{n:0,rec:0,blind_under:0,always_over:0,rec_over:0,rec_under:0,tcut:70},
     over_n:0,under_n:0,clv_sum:0,clv_n:0,clv_pos:0,clv_since:null,last_updated:new Date().toISOString()};
@@ -1724,8 +1778,10 @@ function buildModelStats(){
     bump(s.by_overall,'all',p);
     bump(s.by_grade_prop,p.grade+'|'+p.prop_type,p); // v12 P1: per grade-x-prop calibration
     // v13: per-module ROI/record (side-aware for strikeouts) + fire/gate counts
-    bump(s.by_module,p.module||p.prop_type,p);
+    bump(s.by_module,moduleOf(p),p);
     if(p.fired)s.fired_n++;else s.gated_n++;
+    // v13.2: forward CLV of the line-value strategy = CLV on FIRED picks (that's the whole test)
+    if(p.fired){s.lv_fired++;if(p.clv!=null){s.lv_clv.sum+=p.clv;s.lv_clv.n++;if(p.clv>0)s.lv_clv.pos++;}}
     if(p.edge!=null){s.edge_sum+=p.edge;s.edge_n++;}
     // v13 ¬ß3.2 calibration curve: predicted p_model vs actual hit, bucketed by 10%.
     if(p.p_model!=null){
@@ -1738,7 +1794,7 @@ function buildModelStats(){
       if(!s.clv_since||p.date<s.clv_since)s.clv_since=p.date;
       var cp=s.clv_by_prop[p.prop_type]=s.clv_by_prop[p.prop_type]||{sum:0,n:0,pos:0}; // v12 P5
       cp.sum+=p.clv;cp.n++;if(p.clv>0)cp.pos++;
-      var cm=s.clv_by_module[p.module||p.prop_type]=s.clv_by_module[p.module||p.prop_type]||{sum:0,n:0,pos:0}; // v13 ¬ß4
+      var cm=s.clv_by_module[moduleOf(p)]=s.clv_by_module[moduleOf(p)]||{sum:0,n:0,pos:0}; // v13 ¬ß4
       cm.sum+=p.clv;cm.n++;if(p.clv>0)cm.pos++;
     }
     // UNDER backtest: would fading THIS Over (taking the Under) have hit? (hit-rate only ‚Äî no historical Under odds)
@@ -2198,6 +2254,22 @@ async function loadAll(){
         var edgeImplausible = (edge!=null && edge>EDGE_IMPLAUSIBLE);
         var edgeFire = (edge!=null) ? Math.min(edge, EDGE_CLAMP_MAX) : null;
 
+        // ‚îÄ‚îÄ v13.2 LINE VALUE ‚Äî the PRIMARY fire signal (model edge is display-only now). ‚îÄ‚îÄ
+        // Bet the side + book where the price beats the peer consensus. This dictates the
+        // side we take (that's where the mispricing is) and the price (line-shopped best).
+        var lv = LV_ON ? lineValueOf(mkt) : null;
+        if(lv){
+          sideOver = lv.side;
+          recOdds  = lv.side==='Over' ? mkt.over : mkt.under;
+          bestSel  = lv.side==='Over' ? mkt.bestOver : mkt.bestUnder;
+          pModel   = (sideOver==='Over') ? pModelOver : (1-pModelOver);
+          pMarket  = (pMarketOver!=null) ? (sideOver==='Over'?pMarketOver:(1-pMarketOver)) : null;
+          // the weak-arm K-over floor stays a hard rule even if line value points there
+          if(k==='pitcher_strikeouts' && sideOver==='Over' && mkt.line<K_OVER_MIN_LINE) return;
+        }
+        var lvImplausible = (lv!=null && lv.edge>LV_IMPLAUSIBLE);
+        var lvFire = (lv!=null && lv.edge>=LV_THRESHOLD && lv.nPeers>=LV_MIN_PEERS && !lvImplausible);
+
         rawPicks.push({
           name:pName,game:gameStr,time:fmtTime(og2.commence_time),
           park,mktKey:k,propLabel,line:mkt.line,
@@ -2232,6 +2304,9 @@ async function loadAll(){
           module:modKeyLive, moduleClass:moduleClass(k,sideOver),
           // v13.1 model layer
           calibrated:calibrated, edgeFire:edgeFire, edgeImplausible:edgeImplausible,
+          // v13.2 line-value layer (the real edge)
+          lvEdge:(lv?lv.edge:null), lvConsensus:(lv?lv.consensus:null), lvPeers:(lv?lv.nPeers:0),
+          lvFire:lvFire, lvImplausible:lvImplausible,
           oppEra:(oppPit?oppPit.era:null), oppK9v:(oppPit?oppPit.k9:null), oppWhipv:(oppPit?oppPit.whip:null),
           ratePg:(isPitcher?krate:null),
           oppTypeKey:oppVuln?oppVuln.key:null, oppTypeLabel:oppVuln?oppVuln.label:null, oppTypeBest:oppVuln?oppVuln.best:null
@@ -2407,10 +2482,14 @@ function signalGroup(title,obj,sideKey,oppKey,others){
 function valuePerfBlock(){
   var s=MSTATS||sg('model_stats',null); if(!s)return'';
   var h='<div class="card" style="border-color:var(--pur);background:var(--sur)">';
-  h+='<div style="font-size:13px;font-weight:700;color:var(--pur);margin-bottom:2px">&#127919; Value Scoreboard (CLV-first) &middot; v13.1</div>';
-  // v13.1 ¬ß2 gate verdict per module (this is what turns real money on)
+  h+='<div style="font-size:13px;font-weight:700;color:var(--pur);margin-bottom:2px">&#127919; Value Scoreboard (CLV-first) &middot; v13.2</div>';
+  // v13.2 LINE-VALUE STRATEGY ‚Äî the primary edge now (best price vs peer consensus)
+  var lc=s.lv_clv||{sum:0,n:0,pos:0};
+  var lvProven=lineValueClvProven();
+  h+='<div style="font-size:11px;font-weight:700;color:'+(lvProven?'var(--grn)':'var(--amb)')+';margin-bottom:2px">&#128176; LINE VALUE (primary edge): '+(lvProven?'REAL money ‚Äî CLV PROVEN':'PAPER ‚Äî proving CLV')+'</div>';
+  h+='<div style="font-size:10px;color:var(--mut);margin-bottom:6px">Fired picks settled: '+(lc.n||0)+'/'+LV_CLV_MIN_N+' &middot; beat the close: '+(lc.n?Math.round(lc.pos/lc.n*100):0)+'% (need '+LV_CLV_MIN_PCT+'%) &middot; avg CLV '+(lc.n?(Math.round(lc.sum/lc.n*1000)/10):0)+'pts. Real money turns on automatically once this proves +CLV.'+(lossStopTripped()?' <span style="color:var(--red)">&#9209; LOSS-STOP TRIPPED</span>':'')+'</div>';
+  // (model calibration kept below for reference only ‚Äî prediction is proven flat, no longer the signal)
   var live=REAL_MONEY_MODULES||[];
-  h+='<div style="font-size:10px;color:'+(live.length?'var(--grn)':'var(--amb)')+';font-weight:700;margin-bottom:2px">Real-money modules (passed ¬ß2 calibration gate): '+(live.length?live.join(', '):'NONE yet ‚Äî all paper')+(lossStopTripped()?' &middot; <span style="color:var(--red)">&#9209; DAILY LOSS-STOP TRIPPED</span>':'')+'</div>';
   h+='<div style="font-size:10px;font-weight:700;color:var(--txt);margin:6px 0 2px">Training gate (per module: sample / calibration / backtested CLV)</div>';
   var mk2=Object.keys(MODELS||{}).sort();
   if(!mk2.length)h+='<div style="font-size:11px;color:var(--mut)">No modules trained yet (need '+TRAIN_MIN_N+'+ settled bets each; loads from your logged history).</div>';
@@ -2617,19 +2696,19 @@ function renderPicks(){
 
   if(D.upcoming===0&&D.live===0)h+='<div class="card" style="text-align:center;color:var(--mut);padding:20px">All games finished. Check back tomorrow.</div>';
 
-  // v13.1 Phase-1 status banner ‚Äî states exactly which modules (if any) are live real money.
-  var liveMods=REAL_MONEY_MODULES||[];
-  if(PAPER_ONLY){
-    h+='<div class="card" style="border-color:var(--amb);background:var(--sur)"><div style="font-size:12px;font-weight:700;color:var(--amb)">&#9209; MASTER PAPER KILL ON ‚Äî all picks paper</div><div style="font-size:10px;color:var(--mut);margin-top:3px">PAPER_ONLY=true is forcing everything to paper. Set it false to let the per-module calibration gate decide.</div></div>';
-  }else if(!liveMods.length){
-    h+='<div class="card" style="border-color:var(--amb);background:var(--sur)"><div style="font-size:12px;font-weight:700;color:var(--amb)">v13.1 PHASE 1 ‚Äî no module passed calibration yet (all paper)</div><div style="font-size:10px;color:var(--mut);line-height:1.5;margin-top:3px">Real money turns on <b>per module</b>, automatically, the moment a module passes ¬ß2: &ge;'+TRAIN_MIN_N+' settled bets, calibrated within tolerance, AND backtested CLV &ge; 0. On the current history that likely means <b>strikeout unders first</b> ‚Äî or none, which is a valid answer (no demonstrated edge yet). Everything keeps running on paper meanwhile.</div></div>';
+  // v13.2 status banner ‚Äî line value is the primary edge now.
+  var lvProven=lineValueClvProven(), lc=(MSTATS&&MSTATS.lv_clv)||{n:0,pos:0,sum:0};
+  if(PAPER_ONLY||PAPER_MODE){
+    h+='<div class="card" style="border-color:var(--amb);background:var(--sur)"><div style="font-size:12px;font-weight:700;color:var(--amb)">&#9209; MASTER PAPER KILL ON ‚Äî all picks paper</div><div style="font-size:10px;color:var(--mut);margin-top:3px">Set PAPER_ONLY / PAPER_MODE false to let the line-value CLV gate decide.</div></div>';
+  }else if(!lvProven){
+    h+='<div class="card" style="border-color:var(--amb);background:var(--sur)"><div style="font-size:12px;font-weight:700;color:var(--amb)">v13.2 ‚Äî LINE-VALUE edge, proving on PAPER</div><div style="font-size:10px;color:var(--mut);line-height:1.5;margin-top:3px">The app now bets <b>mispricing between books</b>, not predictions (features + umpires both proven flat). A pick fires when the best price beats the <b>de-vig consensus of the other books</b> by &ge;'+(LV_THRESHOLD*100)+'pp ‚Äî that&rsquo;s +CLV by construction. Real money turns on <b>automatically</b> once '+LV_CLV_MIN_N+'+ fired picks settle with '+LV_CLV_MIN_PCT+'%+ beating the close. So far: '+(lc.n||0)+' settled, '+(lc.n?Math.round(lc.pos/lc.n*100):0)+'% beat close.</div></div>';
   }else{
-    h+='<div class="card" style="border-color:var(--grn)"><div style="font-size:12px;font-weight:700;color:var(--grn)">&#128176; v13.1 PHASE 1 ‚Äî REAL MONEY LIVE: '+liveMods.join(', ')+'</div><div style="font-size:10px;color:var(--mut);line-height:1.5;margin-top:3px">These modules passed the ¬ß2 calibration gate. Real bets fire only in the &minus;140..&minus;100 band, at a clamped edge ('+(EDGE_THRESHOLD*100)+'&ndash;'+(EDGE_CLAMP_MAX*100)+'pp), sized at 0.25&times; Kelly. Daily loss-stop '+DAILY_LOSS_STOP+'u, per-module kill-switch, and weekly recalibration are all active. Every other module stays paper.</div></div>';
+    h+='<div class="card" style="border-color:var(--grn)"><div style="font-size:12px;font-weight:700;color:var(--grn)">&#128176; v13.2 ‚Äî LINE VALUE LIVE (CLV proven)</div><div style="font-size:10px;color:var(--mut);line-height:1.5;margin-top:3px">Line-value bets have proven +CLV ('+(lc.n||0)+' settled, '+(lc.n?Math.round(lc.pos/lc.n*100):0)+'% beat close). Real bets = best price beating the peer consensus by &ge;'+(LV_THRESHOLD*100)+'pp, sized 0.25&times; Kelly. Daily loss-stop '+DAILY_LOSS_STOP+'u active.</div></div>';
   }
   // Scoreboards
   h+=valuePerfBlock();
   h+=modelPerfBlock();
-  h+='<div class="filter-note" style="background:var(--bbg);border-color:rgba(59,130,246,.3)"><div style="font-size:11px;font-weight:700;color:var(--blu);margin-bottom:3px">&#8505; v13.1 ‚Äî How to read this board</div><div style="font-size:10px;color:var(--mut);line-height:1.5"><b>We bet mispricing, judged by CLV.</b> Each pick shows <b>p_model</b> (a per-module logistic model, trained on your settled history with 5-fold CV + isotonic calibration), <b>p_market</b> (de-vig consensus across ~8 books), and <b>EDGE</b> = the gap, <b>clamped at '+(EDGE_CLAMP_MAX*100)+'pp</b> (bigger "edges" are model error and are flagged, never bet). <b>REAL money</b> fires only for a module that passed the ¬ß2 calibration gate (&ge;'+TRAIN_MIN_N+' bets, calibrated, backtested CLV &ge; 0), in the &minus;140..&minus;100 band, at 0.25&times; Kelly. Everything else runs on <b>paper</b> and keeps proving itself. Daily loss-stop + per-module kill-switch active. K-overs only at 5.5+. One bet per player. <b>Singles only &mdash; no parlays.</b></div></div>';
+  h+='<div class="filter-note" style="background:var(--bbg);border-color:rgba(59,130,246,.3)"><div style="font-size:11px;font-weight:700;color:var(--blu);margin-bottom:3px">&#8505; v13.2 ‚Äî How to read this board</div><div style="font-size:10px;color:var(--mut);line-height:1.5"><b>The edge is line value, not prediction.</b> We proved our model can&rsquo;t out-forecast the market (and umpires add nothing), so we stopped trying. A pick fires when the <b>best price across ~8 books beats the de-vig consensus of the OTHER books</b> by &ge;'+(LV_THRESHOLD*100)+'pp ‚Äî you&rsquo;re not calling the game, you&rsquo;re catching one book out of line with its peers, which is +CLV by construction. Needs &ge;'+LV_MIN_PEERS+' peer books (mostly near game time). Edges &gt;'+(LV_IMPLAUSIBLE*100)+'pp are flagged as stale-line artifacts, not bet. Real money only after the strategy proves +CLV on paper. The model estimate is shown as context only. K-overs still 5.5+. <b>Singles only &mdash; no parlays.</b></div></div>';
 
   // Premium card header
   h+='<div class="card" style="background:var(--gbg);border-color:rgba(34,197,94,.3)">';
@@ -2735,20 +2814,18 @@ function pickCard(p){
   h+='</div>';
   h+='<span class="pbadge '+(isA?'ba':isW?'bw':'bb')+'">'+(isA?'&#9733; A':isW?'&#9873; WATCH':'&#9889; B')+'</span></div>';
 
-  // v13 VALUE LINE ‚Äî the headline: our probability vs the market's, and the edge.
-  if(p.pModel!=null){
-    var pm=(p.pModel*100).toFixed(0), mm=(p.pMarket!=null?(p.pMarket*100).toFixed(0):null);
-    if(p.edge!=null){
-      var edgePct=(p.edge*100).toFixed(1), fired=p.fire;
-      var ecol=fired?'var(--grn)':'var(--mut)';
-      h+='<div style="font-size:11px;font-weight:700;color:'+ecol+';margin-bottom:4px">'+(fired?'&#128293; FIRES':'&#8226; no-fire')+' &middot; EDGE '+(p.pModel>=p.pMarket?'+':'')+edgePct+'pp <span style="font-weight:600;color:var(--mut)">(p_model '+pm+'% vs market '+mm+'%, '+p.nBooks+' books)</span></div>';
-    }else{
-      h+='<div style="font-size:11px;color:var(--mut);margin-bottom:4px">p_model '+pm+'% &middot; <span style="color:var(--amb)">one-way market ‚Äî no de-vig / no edge (paper)</span></div>';
-    }
+  // v13.2 LINE-VALUE LINE ‚Äî the headline. Best price vs the peer-book consensus.
+  if(p.lvEdge!=null){
+    var lvp=(p.lvEdge*100).toFixed(1), fired=p.lvFire;
+    var lcol=fired?(p.paper===false?'var(--grn)':'var(--pur)'):'var(--mut)';
+    var tag=fired?(p.paper===false?'&#128176; REAL':'&#128293; FIRES (paper)'):(p.lvImplausible?'&#9888; implausible':'&#8226; no value');
+    h+='<div style="font-size:11px;font-weight:700;color:'+lcol+';margin-bottom:4px">'+tag+' &middot; LINE VALUE '+(p.lvEdge>=0?'+':'')+lvp+'pp <span style="font-weight:600;color:var(--mut)">(best '+(p.bestPrice>0?'+':'')+p.bestPrice+' @'+(p.bestBook||'?')+' vs '+p.lvPeers+'-book consensus '+((p.lvConsensus||0)*100).toFixed(0)+'%)</span></div>';
+  }else if(p.pModel!=null){
+    h+='<div style="font-size:11px;color:var(--mut);margin-bottom:4px">no peer consensus yet (need '+LV_MIN_PEERS+'+ two-way books; usually near game time)</div>';
   }
-  // Line-shopping: best price + book, flag if the taken price isn't the best.
-  if(p.bestPrice!=null){
-    h+='<div style="font-size:10px;color:var(--mut);margin-bottom:4px">Best price: '+(p.bestPrice>0?'+':'')+p.bestPrice+' @ '+(p.bestBook||'?')+(p.priceTaken!=null&&p.priceTaken<p.bestPrice?' <span style="color:var(--red)">&#9888; taken '+p.priceTaken+' &lt; best</span>':'')+'</div>';
+  // Model estimate kept as secondary context only (proven non-predictive ‚Äî never the signal).
+  if(p.pModel!=null){
+    h+='<div style="font-size:9px;color:var(--mut);margin-bottom:4px">model est '+(p.pModel*100).toFixed(0)+'%'+(p.pMarket!=null?' vs market '+(p.pMarket*100).toFixed(0)+'%':'')+' (context only ‚Äî not the bet signal)</div>';
   }
   // Score bar (display only in v13 ‚Äî does NOT decide bets)
   h+='<div class="sbar"><div class="sbar-fill" style="width:'+p.score+'%;background:'+col+'"></div></div>';
@@ -3142,25 +3219,22 @@ function pickDump(p){
 // log, no performance dump, no 30-line-per-pick blocks. Use copyFullReport() for the rest.
 function pickLine(p){
   var tag=p.fire?(p.paper===false?'[REAL] ':'[FIRE/paper] '):'[paper] ';
-  var val='';
-  if(p.pModel!=null){
-    if(p.edge!=null)val=' | edge '+(p.pModel>=p.pMarket?'+':'')+(p.edge*100).toFixed(1)+'pp (model '+(p.pModel*100).toFixed(0)+'% vs mkt '+(p.pMarket*100).toFixed(0)+'%)';
-    else val=' | model '+(p.pModel*100).toFixed(0)+'% (one-way, no edge)';
-  }
+  var val = (p.lvEdge!=null)
+    ? ' | line value '+(p.lvEdge>=0?'+':'')+(p.lvEdge*100).toFixed(1)+'pp (best vs '+p.lvPeers+'-book consensus '+((p.lvConsensus||0)*100).toFixed(0)+'%)'
+    : ' | no peer consensus';
   var price=fmtOdds(p.recOdds)+(p.bestBook?' @'+p.bestBook:'');
   var lu=(p.lineupConfirmed?'CONF':'PROJ')+(p.lineupSpot?' #'+p.lineupSpot:'');
-  var form=(p.l5n?' | L5 '+p.l5c+'/'+p.l5n:'');
-  return tag+p.name+' ‚Äî '+p.propLabel+' '+price+val+' | '+(p.module||'')+' | '+lu+form;
+  return tag+p.name+' ‚Äî '+p.propLabel+' '+price+val+' | '+(p.module||'')+' | '+lu;
 }
 function copyPicks(){
   if(!D){toast('No data');return;}
   var fires=D.picks.filter(function(p){return p.fire;});
-  var near=D.picks.filter(function(p){return !p.fire && p.edge!=null;})
-                  .sort(function(a,b){return b.edge-a.edge;}).slice(0,10); // top-10 near-misses only
-  var live=(REAL_MONEY_MODULES||[]);
-  var txt='HITTERS EDGE v13.1 ‚Äî '+D.date+(D.generatedAt?' ('+D.generatedAt+')':'')+'\n';
-  txt+='Real-money modules: '+(live.length?live.join(', '):'none ‚Äî all paper')+'\n';
-  txt+='\n===== FIRES ('+fires.length+') ‚Äî cleared the edge gate =====\n';
+  var near=D.picks.filter(function(p){return !p.fire && p.lvEdge!=null;})
+                  .sort(function(a,b){return b.lvEdge-a.lvEdge;}).slice(0,10); // top-10 by line value
+  var lvc=(MSTATS&&MSTATS.lv_clv)||{n:0};
+  var txt='HITTERS EDGE v13.2 ‚Äî '+D.date+(D.generatedAt?' ('+D.generatedAt+')':'')+'\n';
+  txt+='Line-value strategy: '+(lineValueClvProven()?'REAL money (CLV proven)':'PAPER')+' ‚Äî settled fired '+(lvc.n||0)+', beat close '+(lvc.n?Math.round(lvc.pos/lvc.n*100):0)+'%\n';
+  txt+='\n===== FIRES ('+fires.length+') ‚Äî best price beats peer-book consensus =====\n';
   txt+= fires.length ? fires.map(function(p){return '  '+pickLine(p);}).join('\n')+'\n'
                      : '  none today ‚Äî no pick cleared edge >= '+(EDGE_THRESHOLD*100)+'pp on 3+ books\n';
   txt+='\n===== NEAR MISSES (top '+near.length+' by edge, NOT bet) =====\n';
@@ -3179,7 +3253,7 @@ function copyFullReport(){
   var watch=D.picks.filter(function(p){return p.grade==='B'||p.grade==='W';});
   var wins=BETS.filter(function(b){return b.result==='WIN';}).length;
   var tot=BETS.filter(function(b){return b.result!=='PENDING';}).length;
-  var txt='HITTERS EDGE v13.1 ‚Äî '+D.date+' (generated '+(D.generatedAt||'?')+', odds as of '+(D.oddsAsOf||'?')+')\n';
+  var txt='HITTERS EDGE v13.2 ‚Äî '+D.date+' (generated '+(D.generatedAt||'?')+', odds as of '+(D.oddsAsOf||'?')+')\n';
   txt+='Record: '+wins+'W/'+(tot-wins)+'L'+(tot?' ('+Math.round(wins/tot*100)+'%)':'')+'\n';
   txt+='Score = normalized 0-100 WITHIN each prop (a ranking, not a win probability). Value model% = real settled-bet hit rate for that score bucket.\n';
   if(D.aceNotes&&D.aceNotes.length){txt+='\nACE FILTERS (batters skipped):\n';D.aceNotes.forEach(function(n){txt+='  '+n.team+' vs '+n.pitcher+' ('+n.era+' ERA)\n';});}
