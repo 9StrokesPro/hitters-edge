@@ -60,8 +60,9 @@ small,.mut{color:var(--mut)}
 // ‚îÄ‚îÄ CONFIG ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
 var API_KEY   = 'c662d3af7ba8e40cddf08b0fca0684a9';
 var BASE      = 'https://api.the-odds-api.com/v4';
-var REGION    = 'us';
-var MARKETS   = 'h2h,spreads,totals';       // 3 markets x 1 region = 3 credits per sport per sweep
+var REGION    = 'us,us2';                   // us2 adds Hard Rock Bet (Joe's only legal book in FL)
+var MARKETS   = 'h2h,spreads,totals';       // 3 markets x 2 regions = 6 credits per sport per sweep
+var HOME_BOOK = 'hardrockbet';              // Joe's book: every pick shows Hard Rock's price vs fair
 // Joe's sports, in priority order. Others are ignored entirely.
 var SPORT_PRIORITY=['baseball_mlb','americanfootball_nfl','basketball_nba','icehockey_nhl','soccer_epl','americanfootball_ncaaf','basketball_ncaab','basketball_wnba','soccer_usa_mls','mma_mixed_martial_arts'];
 var MAX_SPORTS       = 8;      // pull odds for at most N sports per sweep (budget)
@@ -76,14 +77,14 @@ var MIN_PEERS        = 3;      // need >= N OTHER two-way books for a trustworth
 // consensus probability across all books ‚Äî the strongest predictor available anywhere.
 // Taken at the best-priced book. Tracked separately from setups so the data shows how
 // "pick the likely winner" actually performs (the price charges for likelihood ‚Äî measure it).
-var SELECT_MIN_PROB  = 0.45;   // consider sides the consensus gives >= 45% (lets plus-money
-                               // runline/spread favorites in; ranking below sorts out quality)
+// SELECTS (Joe's spec): winners first, at decent odds, bettable AT HARD ROCK.
+// A select must be: the consensus-favored side (>=50% to win), QUOTED ON HARD ROCK,
+// with Hard Rock's price inside [-140 .. +200). Ranked by WIN PROBABILITY.
+var SELECT_MIN_PROB  = 0.50;   // every select is more likely to win than lose
 var SELECT_MIN_PEERS = 4;      // need a real consensus (>= N two-way books)
 var SELECT_MAX       = 10;     // top N per sweep
-var SELECT_MAX_JUICE = -150;   // never select a price worse than this ‚Äî heavy juice pays too
-                               // little even when it wins (Joe: "-156 is too low of odds")
-// Selects cover ML + SPREADS + TOTALS and are ranked by EV at the best price:
-// EV = prob x profit(price) - (1 - prob). Balances "likely to win" against "worth winning."
+var SELECT_MIN_ODDS  = -140;   // no heavier juice than -140 (kills -156/-400 favorites)
+var SELECT_MAX_ODDS  = 200;    // nothing at +200 or longer (too much risk)
 var PAPER_MODE       = true;   // master switch. Real-money label turns on ONLY via clvProven() below.
 var CLV_PROVE_N      = 50;     // strategy needs >= N settled flagged picks...
 var CLV_PROVE_PCT    = 52;     // ...with >= this % beating the close AND avg CLV >= 0
@@ -315,27 +316,31 @@ async function scanAll(){
         else if(lv.edge>=EDGE_MIN&&lv.peers>=MIN_PEERS){flags.push(rec);logFlag(it,lv);}
         else if(lv.edge>0)near.push(rec);
       }
-      // SELECTS: across ML + SPREADS + TOTALS ‚Äî the side the full-book consensus favors,
-      // at the best-priced book, juice-capped, ranked by EV (prob x payout balance).
+      // SELECTS (Joe's spec): the consensus-favored side across ML/spreads/totals,
+      // BETTABLE AT HARD ROCK, with HR's price inside [-140..+200). HR's price IS the
+      // pick's price ‚Äî that's the book he bets. Ranked by win probability.
       var c=consensusExcl(it.rows,null); // all books
       if(c&&c.n>=SELECT_MIN_PEERS){
         var f=c.p>=0.5?'a':'b', prob=f==='a'?c.p:(1-c.p);
         if(prob>=SELECT_MIN_PROB){
-          var top=null;Object.keys(it.rows).forEach(function(b){var px=it.rows[b][f];if(px==null)return;if(top==null||px>top.price)top={price:px,book:b};});
-          if(top&&top.price>SELECT_MAX_JUICE){ // e.g. -156 excluded; -130, -110, +120 allowed
-            var ev=prob*profit1u(top.price)-(1-prob);
-            selects.push({it:it,side:(f==='a'?it.sideA:it.sideB),f:f,prob:prob,price:top.price,book:top.book,peers:c.n,
-              ev:ev,value:prob-impliedProb(top.price)});
+          var hrRow=it.rows[HOME_BOOK], hrPrice=hrRow?hrRow[f]:null;
+          if(hrPrice!=null&&hrPrice>=SELECT_MIN_ODDS&&hrPrice<SELECT_MAX_ODDS){
+            var top=null;Object.keys(it.rows).forEach(function(b){var px=it.rows[b][f];if(px==null)return;if(top==null||px>top.price)top={price:px,book:b};});
+            selects.push({it:it,side:(f==='a'?it.sideA:it.sideB),f:f,prob:prob,
+              price:hrPrice,book:HOME_BOOK,peers:c.n,
+              ev:prob*profit1u(hrPrice)-(1-prob),
+              value:prob-impliedProb(hrPrice),                 // HR price vs fair
+              bestPrice:(top?top.price:null),bestBook:(top?top.book:null)});
           }
         }
       }
     });
   }
-  // one select per game (best EV) ‚Äî don't stack ML + spread + total of the same game
+  // one select per game (highest win prob) ‚Äî don't stack ML + spread + total of one game
   var byGame={};
-  selects.forEach(function(sl){var k2=sl.it.sport+'|'+sl.it.gameId;if(!byGame[k2]||sl.ev>byGame[k2].ev)byGame[k2]=sl;});
+  selects.forEach(function(sl){var k2=sl.it.sport+'|'+sl.it.gameId;if(!byGame[k2]||sl.prob>byGame[k2].prob)byGame[k2]=sl;});
   selects=Object.keys(byGame).map(function(k2){return byGame[k2];});
-  selects.sort(function(a,b){return b.ev-a.ev;});
+  selects.sort(function(a,b){return b.prob-a.prob||b.ev-a.ev;}); // winners first, EV breaks ties
   selects=selects.slice(0,SELECT_MAX);
   selects.forEach(function(sl){logPick(sl.it,{type:'select',side:sl.side,f:sl.f,price:sl.price,book:sl.book,fair:sl.prob,prob:sl.prob,peers:sl.peers,edge:sl.value});});
   updateCloses(instances);
@@ -358,7 +363,7 @@ function pickCard(rec){
     +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">'
     +'<span class="tag" style="background:'+(real?'var(--gbg)':'rgba(167,139,250,.12)')+';color:'+(real?'var(--grn)':'var(--pur)')+'">'+(real?'&#128176; REAL':'&#128293; SETUP (paper)')+'</span>'
     +'<small>'+esc(it.sportTitle)+'</small></div>'
-    +'<div style="font-weight:800;font-size:14px">'+esc(lv.side)+' <span style="color:var(--grn)">'+fmtOdds(lv.price)+'</span> <small>@'+esc(lv.book)+'</small></div>'
+    +'<div style="font-weight:800;font-size:14px">'+esc(lv.side)+' <span style="color:var(--grn)">'+fmtOdds(lv.price)+'</span> <small>@'+esc(lv.book)+'</small>'+(lv.book===HOME_BOOK?' <span class="tag" style="background:rgba(34,197,94,.15);color:var(--grn)">&#127921; ON HARD ROCK ‚Äî you can bet this</span>':'')+'</div>'
     +'<div style="font-size:11px" class="mut">'+esc(it.game)+' &middot; '+esc(it.label)+' &middot; '+whenTag(it.start)+'</div>'
     +'<div style="font-size:11px;margin-top:3px"><b style="color:var(--pur)">+'+(lv.edge*100).toFixed(1)+'pp</b> vs '+lv.peers+'-book consensus (fair '+(lv.fair*100).toFixed(0)+'% = '+fmtOdds(fairToAm(lv.fair))+')</div>'
     +'</div>';
@@ -376,21 +381,21 @@ function render(){
       +'<div style="font-size:10px;margin-top:3px" class="mut">'+tSet.clvN+' settled, '+Math.round(tSet.clvPos/tSet.clvN*100)+'% beat close, avg CLV '+(tSet.clvSum/tSet.clvN*100).toFixed(1)+'pp. Stake small and flat; books limit winners.</div></div>';
   }
   // SELECTS ‚Äî the market's most likely winners tonight, best-priced
-  h+='<div class="card" style="border-color:rgba(59,130,246,.4)"><b style="font-size:13px;color:var(--blu)">&#9989; SELECTS'+(D&&D.selects?' ('+D.selects.length+')':'')+' ‚Äî best picks tonight (ML &middot; spreads &middot; totals)</b>';
-  h+='<div style="font-size:10px;margin-top:2px" class="mut">Consensus-favored sides ranked by <b>EV</b> (win% balanced against payout), best-priced book, juice capped at '+SELECT_MAX_JUICE+', one per game. Win% = de-vig consensus of ALL books ‚Äî the sharpest predictor available.</div>';
+  h+='<div class="card" style="border-color:rgba(59,130,246,.4)"><b style="font-size:13px;color:var(--blu)">&#9989; SELECTS'+(D&&D.selects?' ('+D.selects.length+')':'')+' ‚Äî most likely to WIN, on Hard Rock, '+SELECT_MIN_ODDS+' to +'+SELECT_MAX_ODDS+'</b>';
+  h+='<div style="font-size:10px;margin-top:2px" class="mut">Consensus-favored sides (&ge;'+(SELECT_MIN_PROB*100)+'% to win per the de-vig consensus of ALL books), priced AT HARD ROCK inside your range, ranked by win probability. One per game.</div>';
   if(D&&D.selects&&D.selects.length){
     D.selects.forEach(function(sl){
-      var vcol=sl.value>=0?'var(--grn)':'var(--amb)';
+      var vcol=sl.value>=-0.005?'var(--grn)':'var(--amb)';
       h+='<div class="pick">'
         +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">'
         +'<span class="tag" style="background:rgba(59,130,246,.12);color:var(--blu)">&#9989; '+(sl.prob*100).toFixed(0)+'% to win &middot; '+esc(sl.it.label)+'</span>'
         +'<small>'+esc(sl.it.sportTitle)+'</small></div>'
-        +'<div style="font-weight:800;font-size:14px">'+esc(sl.side)+' <span style="color:var(--grn)">'+fmtOdds(sl.price)+'</span> <small>@'+esc(sl.book)+'</small></div>'
+        +'<div style="font-weight:800;font-size:14px">'+esc(sl.side)+' <span style="color:var(--grn)">'+fmtOdds(sl.price)+'</span> <small>&#127921; on Hard Rock</small></div>'
         +'<div style="font-size:11px" class="mut">'+esc(sl.it.game)+' &middot; '+whenTag(sl.it.start)+'</div>'
-        +'<div style="font-size:11px;margin-top:3px">EV <b style="color:'+(sl.ev>=0?'var(--grn)':'var(--amb)')+'">'+(sl.ev>=0?'+':'')+(sl.ev*100).toFixed(1)+'%</b> &middot; value vs fair <b style="color:'+vcol+'">'+(sl.value>=0?'+':'')+(sl.value*100).toFixed(1)+'pp</b> <span class="mut">('+sl.peers+' books)</span></div>'
+        +'<div style="font-size:11px;margin-top:3px">HR price vs fair: <b style="color:'+vcol+'">'+(sl.value>=0?'+':'')+(sl.value*100).toFixed(1)+'pp'+(sl.value>=-0.005?' &#10003;':'')+'</b> &middot; EV '+(sl.ev>=0?'+':'')+(sl.ev*100).toFixed(1)+'%'+(sl.bestPrice!=null&&sl.bestPrice>sl.price?' <span class="mut">(best elsewhere '+fmtOdds(sl.bestPrice)+')</span>':'')+' <span class="mut">('+sl.peers+' books)</span></div>'
         +'</div>';
     });
-  } else h+='<div style="font-size:11px;margin-top:6px" class="mut">No qualifying side right now (need &ge;'+(SELECT_MIN_PROB*100)+'% consensus, price better than '+SELECT_MAX_JUICE+', '+SELECT_MIN_PEERS+'+ books). Fills in as game-day books post.</div>';
+  } else h+='<div style="font-size:11px;margin-top:6px" class="mut">Nothing qualifies right now: needs a &ge;'+(SELECT_MIN_PROB*100)+'% consensus side POSTED ON HARD ROCK between '+SELECT_MIN_ODDS+' and +'+SELECT_MAX_ODDS+'. Hard Rock posts most lines closer to game time ‚Äî check back.</div>';
   h+='</div>';
   // setup bets
   h+='<div class="card"><b style="font-size:13px">&#127919; SETUP BETS'+(D?' ('+D.flags.length+')':'')+'</b>';
@@ -447,8 +452,8 @@ function copyPicks(){
   var t='EDGE SCANNER v14 ‚Äî '+new Date().toLocaleString()+'\n';
   var tSet=s.byType.setup,tSel=s.byType.select;
   t+='Status: '+(!PAPER_MODE&&clvProven()?'setups REAL (CLV proven)':'PAPER')+' | selects record: '+(tSel.n?tSel.n+' settled, '+Math.round(tSel.w/tSel.n*100)+'% win, ROI '+(tSel.u/tSel.n>=0?'+':'')+Math.round(tSel.u/tSel.n*100)+'%':'none settled yet')+'\n';
-  t+='\n=== SELECTS ('+(D.selects?D.selects.length:0)+') ‚Äî ML/spreads/totals, ranked by EV, juice cap '+SELECT_MAX_JUICE+' ===\n';
-  t+=(D.selects&&D.selects.length)?D.selects.map(function(sl){return '  '+(sl.prob*100).toFixed(0)+'% '+sl.side+' '+fmtOdds(sl.price)+' @'+sl.book+' | '+sl.it.label+' | EV '+(sl.ev>=0?'+':'')+(sl.ev*100).toFixed(1)+'% | '+sl.it.game+' | '+sl.it.sportTitle;}).join('\n')+'\n':'  none this sweep\n';
+  t+='\n=== SELECTS ('+(D.selects?D.selects.length:0)+') ‚Äî on HARD ROCK, '+SELECT_MIN_ODDS+' to +'+SELECT_MAX_ODDS+', ranked by win%  ===\n';
+  t+=(D.selects&&D.selects.length)?D.selects.map(function(sl){return '  '+(sl.prob*100).toFixed(0)+'% '+sl.side+' '+fmtOdds(sl.price)+' on Hard Rock | vs fair '+(sl.value>=0?'+':'')+(sl.value*100).toFixed(1)+'pp'+(sl.value>=-0.005?' (fair, bet it)':'')+' | '+sl.it.label+' | '+sl.it.game+' | '+sl.it.sportTitle;}).join('\n')+'\n':'  none this sweep (Hard Rock had no in-range side at >=50% consensus)\n';
   t+='\n=== SETUP BETS ('+D.flags.length+') ===\n';
   t+=D.flags.length?D.flags.map(function(r){return '  '+r.lv.side+' '+fmtOdds(r.lv.price)+' @'+r.lv.book+' | +'+(r.lv.edge*100).toFixed(1)+'pp vs '+r.lv.peers+'-book fair '+(r.lv.fair*100).toFixed(0)+'% | '+r.it.game+' | '+r.it.sportTitle+' '+r.it.label;}).join('\n')+'\n':'  none this sweep\n';
   if(D.near.length){t+='\n=== WATCHING ===\n'+D.near.map(function(r){return '  +'+(r.lv.edge*100).toFixed(1)+'pp '+r.lv.side+' '+fmtOdds(r.lv.price)+' @'+r.lv.book+' | '+r.it.game;}).join('\n')+'\n';}
