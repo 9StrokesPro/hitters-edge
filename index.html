@@ -95,6 +95,13 @@ function sg(k,d){try{var v=localStorage.getItem(K+k);return v?JSON.parse(v):d;}c
 function ss(k,v){try{localStorage.setItem(K+k,JSON.stringify(v));}catch(e){}}
 function toast(m){var t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(function(){t.classList.remove('show');},2600);}
 function fmtOdds(o){return o==null?'?':(o>0?'+'+o:''+o);}
+// TODAY/TOMORROW tag + relative hours, so a rolling 48h board is never confusing
+function whenTag(start){
+  var d=new Date(start),now=new Date();
+  var day=(d.toDateString()===now.toDateString())?'TODAY':(d.toDateString()===new Date(now.getTime()+864e5).toDateString())?'TOMORROW':(d.getMonth()+1)+'/'+d.getDate();
+  var hrs=Math.round((d.getTime()-now.getTime())/36e5);
+  return '<b>'+day+'</b> '+d.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})+(hrs>=1?' (in '+hrs+'h)':' (soon)');
+}
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
 function impliedProb(a){if(a==null||isNaN(a))return null;return a<0?(-a)/(-a+100):100/(a+100);}
 function profit1u(a){return a>0?a/100:100/Math.abs(a);}
@@ -352,7 +359,7 @@ function pickCard(rec){
     +'<span class="tag" style="background:'+(real?'var(--gbg)':'rgba(167,139,250,.12)')+';color:'+(real?'var(--grn)':'var(--pur)')+'">'+(real?'&#128176; REAL':'&#128293; SETUP (paper)')+'</span>'
     +'<small>'+esc(it.sportTitle)+'</small></div>'
     +'<div style="font-weight:800;font-size:14px">'+esc(lv.side)+' <span style="color:var(--grn)">'+fmtOdds(lv.price)+'</span> <small>@'+esc(lv.book)+'</small></div>'
-    +'<div style="font-size:11px" class="mut">'+esc(it.game)+' &middot; '+esc(it.label)+' &middot; '+new Date(it.start).toLocaleString([],{month:'numeric',day:'numeric',hour:'numeric',minute:'2-digit'})+'</div>'
+    +'<div style="font-size:11px" class="mut">'+esc(it.game)+' &middot; '+esc(it.label)+' &middot; '+whenTag(it.start)+'</div>'
     +'<div style="font-size:11px;margin-top:3px"><b style="color:var(--pur)">+'+(lv.edge*100).toFixed(1)+'pp</b> vs '+lv.peers+'-book consensus (fair '+(lv.fair*100).toFixed(0)+'% = '+fmtOdds(fairToAm(lv.fair))+')</div>'
     +'</div>';
 }
@@ -379,7 +386,7 @@ function render(){
         +'<span class="tag" style="background:rgba(59,130,246,.12);color:var(--blu)">&#9989; '+(sl.prob*100).toFixed(0)+'% to win &middot; '+esc(sl.it.label)+'</span>'
         +'<small>'+esc(sl.it.sportTitle)+'</small></div>'
         +'<div style="font-weight:800;font-size:14px">'+esc(sl.side)+' <span style="color:var(--grn)">'+fmtOdds(sl.price)+'</span> <small>@'+esc(sl.book)+'</small></div>'
-        +'<div style="font-size:11px" class="mut">'+esc(sl.it.game)+' &middot; '+new Date(sl.it.start).toLocaleString([],{month:'numeric',day:'numeric',hour:'numeric',minute:'2-digit'})+'</div>'
+        +'<div style="font-size:11px" class="mut">'+esc(sl.it.game)+' &middot; '+whenTag(sl.it.start)+'</div>'
         +'<div style="font-size:11px;margin-top:3px">EV <b style="color:'+(sl.ev>=0?'var(--grn)':'var(--amb)')+'">'+(sl.ev>=0?'+':'')+(sl.ev*100).toFixed(1)+'%</b> &middot; value vs fair <b style="color:'+vcol+'">'+(sl.value>=0?'+':'')+(sl.value*100).toFixed(1)+'pp</b> <span class="mut">('+sl.peers+' books)</span></div>'
         +'</div>';
     });
