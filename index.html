@@ -76,10 +76,14 @@ var MIN_PEERS        = 3;      // need >= N OTHER two-way books for a trustworth
 // consensus probability across all books ‚Äî the strongest predictor available anywhere.
 // Taken at the best-priced book. Tracked separately from setups so the data shows how
 // "pick the likely winner" actually performs (the price charges for likelihood ‚Äî measure it).
-var SELECT_MIN_PROB  = 0.55;   // only sides the market gives >= 55% to win (MLB favorites
-                               // rarely exceed ~60%; NBA/NFL favorites will rank higher naturally)
+var SELECT_MIN_PROB  = 0.45;   // consider sides the consensus gives >= 45% (lets plus-money
+                               // runline/spread favorites in; ranking below sorts out quality)
 var SELECT_MIN_PEERS = 4;      // need a real consensus (>= N two-way books)
-var SELECT_MAX       = 10;     // top N per sweep, ranked by win probability
+var SELECT_MAX       = 10;     // top N per sweep
+var SELECT_MAX_JUICE = -150;   // never select a price worse than this ‚Äî heavy juice pays too
+                               // little even when it wins (Joe: "-156 is too low of odds")
+// Selects cover ML + SPREADS + TOTALS and are ranked by EV at the best price:
+// EV = prob x profit(price) - (1 - prob). Balances "likely to win" against "worth winning."
 var PAPER_MODE       = true;   // master switch. Real-money label turns on ONLY via clvProven() below.
 var CLV_PROVE_N      = 50;     // strategy needs >= N settled flagged picks...
 var CLV_PROVE_PCT    = 52;     // ...with >= this % beating the close AND avg CLV >= 0
@@ -304,22 +308,27 @@ async function scanAll(){
         else if(lv.edge>=EDGE_MIN&&lv.peers>=MIN_PEERS){flags.push(rec);logFlag(it,lv);}
         else if(lv.edge>0)near.push(rec);
       }
-      // SELECTS: moneyline sides the full-book consensus rates >= SELECT_MIN_PROB to WIN,
-      // taken at the best-priced book. The market IS the prediction model here.
-      if(it.market==='h2h'){
-        var c=consensusExcl(it.rows,null); // all books
-        if(c&&c.n>=SELECT_MIN_PEERS){
-          var f=c.p>=0.5?'a':'b', prob=f==='a'?c.p:(1-c.p);
-          if(prob>=SELECT_MIN_PROB){
-            var top=null;Object.keys(it.rows).forEach(function(b){var px=it.rows[b][f];if(px==null)return;if(top==null||px>top.price)top={price:px,book:b};});
-            if(top)selects.push({it:it,side:(f==='a'?it.sideA:it.sideB),f:f,prob:prob,price:top.price,book:top.book,peers:c.n,
-              value:prob-impliedProb(top.price)}); // >=0 means you're not overpaying vs fair
+      // SELECTS: across ML + SPREADS + TOTALS ‚Äî the side the full-book consensus favors,
+      // at the best-priced book, juice-capped, ranked by EV (prob x payout balance).
+      var c=consensusExcl(it.rows,null); // all books
+      if(c&&c.n>=SELECT_MIN_PEERS){
+        var f=c.p>=0.5?'a':'b', prob=f==='a'?c.p:(1-c.p);
+        if(prob>=SELECT_MIN_PROB){
+          var top=null;Object.keys(it.rows).forEach(function(b){var px=it.rows[b][f];if(px==null)return;if(top==null||px>top.price)top={price:px,book:b};});
+          if(top&&top.price>SELECT_MAX_JUICE){ // e.g. -156 excluded; -130, -110, +120 allowed
+            var ev=prob*profit1u(top.price)-(1-prob);
+            selects.push({it:it,side:(f==='a'?it.sideA:it.sideB),f:f,prob:prob,price:top.price,book:top.book,peers:c.n,
+              ev:ev,value:prob-impliedProb(top.price)});
           }
         }
       }
     });
   }
-  selects.sort(function(a,b){return b.prob-a.prob;});
+  // one select per game (best EV) ‚Äî don't stack ML + spread + total of the same game
+  var byGame={};
+  selects.forEach(function(sl){var k2=sl.it.sport+'|'+sl.it.gameId;if(!byGame[k2]||sl.ev>byGame[k2].ev)byGame[k2]=sl;});
+  selects=Object.keys(byGame).map(function(k2){return byGame[k2];});
+  selects.sort(function(a,b){return b.ev-a.ev;});
   selects=selects.slice(0,SELECT_MAX);
   selects.forEach(function(sl){logPick(sl.it,{type:'select',side:sl.side,f:sl.f,price:sl.price,book:sl.book,fair:sl.prob,prob:sl.prob,peers:sl.peers,edge:sl.value});});
   updateCloses(instances);
@@ -360,21 +369,21 @@ function render(){
       +'<div style="font-size:10px;margin-top:3px" class="mut">'+tSet.clvN+' settled, '+Math.round(tSet.clvPos/tSet.clvN*100)+'% beat close, avg CLV '+(tSet.clvSum/tSet.clvN*100).toFixed(1)+'pp. Stake small and flat; books limit winners.</div></div>';
   }
   // SELECTS ‚Äî the market's most likely winners tonight, best-priced
-  h+='<div class="card" style="border-color:rgba(59,130,246,.4)"><b style="font-size:13px;color:var(--blu)">&#9989; SELECTS'+(D&&D.selects?' ('+D.selects.length+')':'')+' ‚Äî most likely to WIN tonight</b>';
-  h+='<div style="font-size:10px;margin-top:2px" class="mut">Win probability = de-vig consensus of ALL books (the sharpest predictor available), taken at the best-priced book. Value &ge;0 means you&rsquo;re paying fair or better for that probability.</div>';
+  h+='<div class="card" style="border-color:rgba(59,130,246,.4)"><b style="font-size:13px;color:var(--blu)">&#9989; SELECTS'+(D&&D.selects?' ('+D.selects.length+')':'')+' ‚Äî best picks tonight (ML &middot; spreads &middot; totals)</b>';
+  h+='<div style="font-size:10px;margin-top:2px" class="mut">Consensus-favored sides ranked by <b>EV</b> (win% balanced against payout), best-priced book, juice capped at '+SELECT_MAX_JUICE+', one per game. Win% = de-vig consensus of ALL books ‚Äî the sharpest predictor available.</div>';
   if(D&&D.selects&&D.selects.length){
     D.selects.forEach(function(sl){
       var vcol=sl.value>=0?'var(--grn)':'var(--amb)';
       h+='<div class="pick">'
         +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">'
-        +'<span class="tag" style="background:rgba(59,130,246,.12);color:var(--blu)">&#9989; SELECT &middot; '+(sl.prob*100).toFixed(0)+'% to win</span>'
+        +'<span class="tag" style="background:rgba(59,130,246,.12);color:var(--blu)">&#9989; '+(sl.prob*100).toFixed(0)+'% to win &middot; '+esc(sl.it.label)+'</span>'
         +'<small>'+esc(sl.it.sportTitle)+'</small></div>'
         +'<div style="font-weight:800;font-size:14px">'+esc(sl.side)+' <span style="color:var(--grn)">'+fmtOdds(sl.price)+'</span> <small>@'+esc(sl.book)+'</small></div>'
         +'<div style="font-size:11px" class="mut">'+esc(sl.it.game)+' &middot; '+new Date(sl.it.start).toLocaleString([],{month:'numeric',day:'numeric',hour:'numeric',minute:'2-digit'})+'</div>'
-        +'<div style="font-size:11px;margin-top:3px">value vs fair: <b style="color:'+vcol+'">'+(sl.value>=0?'+':'')+(sl.value*100).toFixed(1)+'pp</b> <span class="mut">('+sl.peers+' books in consensus)</span></div>'
+        +'<div style="font-size:11px;margin-top:3px">EV <b style="color:'+(sl.ev>=0?'var(--grn)':'var(--amb)')+'">'+(sl.ev>=0?'+':'')+(sl.ev*100).toFixed(1)+'%</b> &middot; value vs fair <b style="color:'+vcol+'">'+(sl.value>=0?'+':'')+(sl.value*100).toFixed(1)+'pp</b> <span class="mut">('+sl.peers+' books)</span></div>'
         +'</div>';
     });
-  } else h+='<div style="font-size:11px;margin-top:6px" class="mut">No side at &ge;'+(SELECT_MIN_PROB*100)+'% consensus right now (or too few books). Fills in as game-day books post.</div>';
+  } else h+='<div style="font-size:11px;margin-top:6px" class="mut">No qualifying side right now (need &ge;'+(SELECT_MIN_PROB*100)+'% consensus, price better than '+SELECT_MAX_JUICE+', '+SELECT_MIN_PEERS+'+ books). Fills in as game-day books post.</div>';
   h+='</div>';
   // setup bets
   h+='<div class="card"><b style="font-size:13px">&#127919; SETUP BETS'+(D?' ('+D.flags.length+')':'')+'</b>';
@@ -431,8 +440,8 @@ function copyPicks(){
   var t='EDGE SCANNER v14 ‚Äî '+new Date().toLocaleString()+'\n';
   var tSet=s.byType.setup,tSel=s.byType.select;
   t+='Status: '+(!PAPER_MODE&&clvProven()?'setups REAL (CLV proven)':'PAPER')+' | selects record: '+(tSel.n?tSel.n+' settled, '+Math.round(tSel.w/tSel.n*100)+'% win, ROI '+(tSel.u/tSel.n>=0?'+':'')+Math.round(tSel.u/tSel.n*100)+'%':'none settled yet')+'\n';
-  t+='\n=== SELECTS ('+(D.selects?D.selects.length:0)+') ‚Äî most likely to WIN (consensus of all books, best price) ===\n';
-  t+=(D.selects&&D.selects.length)?D.selects.map(function(sl){return '  '+(sl.prob*100).toFixed(0)+'% '+sl.side+' '+fmtOdds(sl.price)+' @'+sl.book+' | value '+(sl.value>=0?'+':'')+(sl.value*100).toFixed(1)+'pp | '+sl.it.game+' | '+sl.it.sportTitle;}).join('\n')+'\n':'  none this sweep\n';
+  t+='\n=== SELECTS ('+(D.selects?D.selects.length:0)+') ‚Äî ML/spreads/totals, ranked by EV, juice cap '+SELECT_MAX_JUICE+' ===\n';
+  t+=(D.selects&&D.selects.length)?D.selects.map(function(sl){return '  '+(sl.prob*100).toFixed(0)+'% '+sl.side+' '+fmtOdds(sl.price)+' @'+sl.book+' | '+sl.it.label+' | EV '+(sl.ev>=0?'+':'')+(sl.ev*100).toFixed(1)+'% | '+sl.it.game+' | '+sl.it.sportTitle;}).join('\n')+'\n':'  none this sweep\n';
   t+='\n=== SETUP BETS ('+D.flags.length+') ===\n';
   t+=D.flags.length?D.flags.map(function(r){return '  '+r.lv.side+' '+fmtOdds(r.lv.price)+' @'+r.lv.book+' | +'+(r.lv.edge*100).toFixed(1)+'pp vs '+r.lv.peers+'-book fair '+(r.lv.fair*100).toFixed(0)+'% | '+r.it.game+' | '+r.it.sportTitle+' '+r.it.label;}).join('\n')+'\n':'  none this sweep\n';
   if(D.near.length){t+='\n=== WATCHING ===\n'+D.near.map(function(r){return '  +'+(r.lv.edge*100).toFixed(1)+'pp '+r.lv.side+' '+fmtOdds(r.lv.price)+' @'+r.lv.book+' | '+r.it.game;}).join('\n')+'\n';}
