@@ -62,8 +62,13 @@ var API_KEY   = 'c662d3af7ba8e40cddf08b0fca0684a9';
 var BASE      = 'https://api.the-odds-api.com/v4';
 var REGION    = 'us';
 var MARKETS   = 'h2h,spreads,totals';       // 3 markets x 1 region = 3 credits per sport per sweep
-var SPORT_PRIORITY=['baseball_mlb','basketball_wnba','americanfootball_nfl','americanfootball_ncaaf','basketball_nba','icehockey_nhl','mma_mixed_martial_arts','soccer_epl','soccer_usa_mls','americanfootball_cfl','baseball_npb','rugbyleague_nrl'];
-var MAX_SPORTS       = 8;      // scan at most N active sports per sweep (budget)
+// Joe's sports, in priority order. Others are ignored entirely.
+var SPORT_PRIORITY=['baseball_mlb','americanfootball_nfl','basketball_nba','icehockey_nhl','soccer_epl','americanfootball_ncaaf','basketball_ncaab','basketball_wnba','soccer_usa_mls','mma_mixed_martial_arts'];
+var MAX_SPORTS       = 8;      // pull odds for at most N sports per sweep (budget)
+var WINDOW_HOURS     = 48;     // ONLY games starting within this window ‚Äî kills off-season /
+                               // far-future lines (e.g. an NFL game posted months early with
+                               // 2 books and junk prices). A sport with no games in-window is
+                               // skipped for FREE via the /events endpoint (0 credits).
 var EDGE_MIN         = 0.02;   // flag when best price beats peer consensus by >= 2pp
 var EDGE_IMPLAUSIBLE = 0.08;   // above this = stale/suspended line, flag as artifact, never a pick
 var MIN_PEERS        = 3;      // need >= N OTHER two-way books for a trustworthy consensus
@@ -252,19 +257,29 @@ async function scanAll(){
   var before=BUDGET.remaining;
   var sports=await oddsFetch(BASE+'/sports?apiKey='+API_KEY); // free
   if(!Array.isArray(sports)){document.getElementById('main').innerHTML='<div class="card" style="border-color:var(--red)">Cannot reach The Odds API. <button class="btn" onclick="scanAll()">Retry</button></div>';setS('Error');return;}
-  var active=sports.filter(function(s){return s.active&&!s.has_outrights;}).map(function(s){return{key:s.key,title:s.title};});
-  active.sort(function(a,b){var ia=SPORT_PRIORITY.indexOf(a.key),ib=SPORT_PRIORITY.indexOf(b.key);return (ia<0?99:ia)-(ib<0?99:ib);});
-  var scan=active.slice(0,MAX_SPORTS);
-  var instances=[],flags=[],near=[],artifacts=[],sportsScanned=[];
-  for(var i=0;i<scan.length;i++){
-    setS('Scanning '+scan[i].title+' ('+(i+1)+'/'+scan.length+')...');
-    var games=await oddsFetch(BASE+'/sports/'+scan[i].key+'/odds?regions='+REGION+'&markets='+MARKETS+'&oddsFormat=american&apiKey='+API_KEY); // ~3 credits
+  // Joe's sports only, priority order, and only if the API says they're active.
+  var activeMap={};sports.forEach(function(s){if(s.active&&!s.has_outrights)activeMap[s.key]=s.title;});
+  var now=Date.now(), winEnd=now+WINDOW_HOURS*3600e3;
+  var instances=[],flags=[],near=[],artifacts=[],sportsScanned=[],sportsSkipped=[],pulled=0;
+  for(var i=0;i<SPORT_PRIORITY.length&&pulled<MAX_SPORTS;i++){
+    var skey=SPORT_PRIORITY[i], title=activeMap[skey];
+    if(!title){sportsSkipped.push(skey.split('_').pop().toUpperCase()+' (off-season)');continue;}
+    // FREE schedule pre-check: any games inside the window? (0 credits)
+    setS('Checking '+title+' schedule...');
+    var evs=await oddsFetch(BASE+'/sports/'+skey+'/events?apiKey='+API_KEY);
+    var inWin=(Array.isArray(evs)?evs:[]).filter(function(g){var t=new Date(g.commence_time).getTime();return t>now&&t<winEnd;});
+    if(!inWin.length){sportsSkipped.push(title+' (no games in '+WINDOW_HOURS+'h)');continue;}
+    setS('Scanning '+title+' ('+inWin.length+' games)...');
+    var games=await oddsFetch(BASE+'/sports/'+skey+'/odds?regions='+REGION+'&markets='+MARKETS+'&oddsFormat=american&apiKey='+API_KEY); // ~3 credits
+    pulled++;
     if(!games||!games.length)continue;
-    sportsScanned.push(scan[i].title+' ('+games.length+'g)');
-    var inst=parseSport(scan[i].key,scan[i].title,games);
+    // hard window filter ‚Äî never look at a game outside [now, now+window]
+    games=games.filter(function(g){var t=new Date(g.commence_time).getTime();return t>now&&t<winEnd;});
+    if(!games.length){sportsSkipped.push(title+' (no games in '+WINDOW_HOURS+'h)');continue;}
+    sportsScanned.push(title+' ('+games.length+'g)');
+    var inst=parseSport(skey,title,games);
     instances=instances.concat(inst);
     inst.forEach(function(it){
-      if(new Date(it.start).getTime()<Date.now())return; // pre-game only
       var lv=lineValue(it);if(!lv)return;
       var rec={it:it,lv:lv};
       if(lv.edge>EDGE_IMPLAUSIBLE)artifacts.push(rec);
@@ -277,7 +292,7 @@ async function scanAll(){
   budgetGuard(cost);
   flags.sort(function(a,b){return b.lv.edge-a.lv.edge;});
   near.sort(function(a,b){return b.lv.edge-a.lv.edge;});
-  D={flags:flags,near:near.slice(0,10),artifacts:artifacts.length,sports:sportsScanned,instances:instances.length,at:new Date().toLocaleTimeString(),cost:cost};
+  D={flags:flags,near:near.slice(0,10),artifacts:artifacts.length,sports:sportsScanned,skipped:sportsSkipped,instances:instances.length,at:new Date().toLocaleTimeString(),cost:cost};
   render();budgetLine();updCount();
   setS('Scanned '+sportsScanned.length+' sports ‚Ä¢ '+instances.length+' markets ‚Ä¢ '+flags.length+' setup bets ‚Ä¢ '+D.at);
   settle().then(function(){render();});
@@ -327,11 +342,14 @@ function render(){
     +(s.clvN?' &middot; <b>CLV: '+Math.round(s.clvPos/s.clvN*100)+'% beat close (n='+s.clvN+'), avg '+(s.clvSum/s.clvN*100).toFixed(1)+'pp</b>':' &middot; CLV: none settled yet')+'</div>';
   Object.keys(s.bySport).sort().forEach(function(sp){var o=s.bySport[sp];
     h+='<div style="font-size:11px" class="mut">'+esc(sp)+': n='+o.n+' &middot; '+Math.round(o.w/o.n*100)+'% &middot; ROI '+(o.u/o.n>=0?'+':'')+Math.round(o.u/o.n*100)+'%'+(o.clvN?' &middot; CLV+ '+Math.round(o.clvPos/o.clvN*100)+'%':'')+'</div>';});
-  if(D)h+='<div style="font-size:10px;margin-top:5px" class="mut">Last sweep: '+D.sports.join(', ')+' &middot; '+D.instances+' two-way markets'+(D.cost!=null?' &middot; '+D.cost+' credits':'')+'</div>';
+  if(D){
+    h+='<div style="font-size:10px;margin-top:5px" class="mut">Scanned (next '+WINDOW_HOURS+'h only): '+(D.sports.length?D.sports.join(', '):'none')+' &middot; '+D.instances+' two-way markets'+(D.cost!=null?' &middot; '+D.cost+' credits':'')+'</div>';
+    if(D.skipped&&D.skipped.length)h+='<div style="font-size:10px;margin-top:2px" class="mut">Skipped: '+D.skipped.join(' &middot; ')+'</div>';
+  }
   h+='</div>';
   // how to read
   h+='<div class="card" style="border-color:rgba(59,130,246,.3)"><b style="color:var(--blu);font-size:11px">&#8505; How this works</b>'
-    +'<div style="font-size:10px;line-height:1.5;margin-top:3px" class="mut">Every book‚Äôs two-way prices are de-vigged to a fair probability. A <b>setup bet</b> is flagged when one book‚Äôs price beats the median fair price of the OTHER books by &ge;'+(EDGE_MIN*100)+'pp (with &ge;'+MIN_PEERS+' peers). You‚Äôre not predicting the game ‚Äî you‚Äôre taking a number the rest of the market says is wrong. Success = the flagged price beats the closing consensus (CLV), tracked automatically. Edges &gt;'+(EDGE_IMPLAUSIBLE*100)+'pp are stale-line artifacts, ignored. Singles only. Flat stakes.</div></div>';
+    +'<div style="font-size:10px;line-height:1.5;margin-top:3px" class="mut">Every book‚Äôs two-way prices are de-vigged to a fair probability. A <b>setup bet</b> is flagged when one book‚Äôs price beats the median fair price of the OTHER books by &ge;'+(EDGE_MIN*100)+'pp (with &ge;'+MIN_PEERS+' peers). You‚Äôre not predicting the game ‚Äî you‚Äôre taking a number the rest of the market says is wrong. <b>Only games starting within '+WINDOW_HOURS+'h are scanned</b> ‚Äî off-season sports (NFL in July) and far-future lines are skipped automatically and shown under ‚ÄúSkipped.‚Äù Success = the flagged price beats the closing consensus (CLV), tracked automatically. Edges &gt;'+(EDGE_IMPLAUSIBLE*100)+'pp are stale-line artifacts, ignored. Singles only. Flat stakes.</div></div>';
   document.getElementById('main').innerHTML=h;
 }
 
