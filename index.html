@@ -72,6 +72,14 @@ var WINDOW_HOURS     = 48;     // ONLY games starting within this window ‚Äî
 var EDGE_MIN         = 0.02;   // flag when best price beats peer consensus by >= 2pp
 var EDGE_IMPLAUSIBLE = 0.08;   // above this = stale/suspended line, flag as artifact, never a pick
 var MIN_PEERS        = 3;      // need >= N OTHER two-way books for a trustworthy consensus
+// SELECTS = the market's most likely WINNERS tonight (moneyline), ranked by the de-vig
+// consensus probability across all books ‚Äî the strongest predictor available anywhere.
+// Taken at the best-priced book. Tracked separately from setups so the data shows how
+// "pick the likely winner" actually performs (the price charges for likelihood ‚Äî measure it).
+var SELECT_MIN_PROB  = 0.55;   // only sides the market gives >= 55% to win (MLB favorites
+                               // rarely exceed ~60%; NBA/NFL favorites will rank higher naturally)
+var SELECT_MIN_PEERS = 4;      // need a real consensus (>= N two-way books)
+var SELECT_MAX       = 10;     // top N per sweep, ranked by win probability
 var PAPER_MODE       = true;   // master switch. Real-money label turns on ONLY via clvProven() below.
 var CLV_PROVE_N      = 50;     // strategy needs >= N settled flagged picks...
 var CLV_PROVE_PCT    = 52;     // ...with >= this % beating the close AND avg CLV >= 0
@@ -177,18 +185,22 @@ function lineValue(it){ // best side to take, or null
 }
 
 // ‚îÄ‚îÄ PICK LOG + CLOSE CAPTURE + SETTLEMENT ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
-function pickId(it,side){return it.sport+'|'+it.gameId+'|'+it.market+'|'+it.key+'|'+side;}
+function pickId(it,side,type){return (type||'setup')+'|'+it.sport+'|'+it.gameId+'|'+it.market+'|'+it.key+'|'+side;}
 function allPicks(){var a=[];for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(k&&k.indexOf(K+'pick_')===0){try{a.push(JSON.parse(localStorage.getItem(k)));}catch(e){}}}return a;}
-function logFlag(it,lv){
-  var id=pickId(it,lv.side),key=K+'pick_'+id;
-  if(localStorage.getItem(key))return; // first flag only ‚Äî that's our "bet"
-  var rec={id:id,flagged_at:new Date().toISOString(),date:new Date().toISOString().slice(0,10),
+// Log a pick once (first sighting = our "bet"). type: 'setup' (price out of line with
+// peers) or 'select' (market's most likely winner at the best price). Both settle + CLV.
+function logPick(it,o){
+  var id=pickId(it,o.side,o.type),key=K+'pick_'+id;
+  if(localStorage.getItem(key))return;
+  var rec={id:id,type:o.type,flagged_at:new Date().toISOString(),date:new Date().toISOString().slice(0,10),
     sport:it.sport,sportTitle:it.sportTitle,game:it.game,home:it.home,away:it.away,start:it.start,
-    market:it.market,mkey:it.key,label:it.label,side:lv.side,f:lv.f,point:it.point,
-    price:lv.price,book:lv.book,edge:Math.round(lv.edge*1000)/1000,fair_at_flag:Math.round(lv.fair*1000)/1000,peers:lv.peers,
+    market:it.market,mkey:it.key,label:it.label,side:o.side,f:o.f,point:it.point,
+    price:o.price,book:o.book,edge:(o.edge!=null?Math.round(o.edge*1000)/1000:null),
+    fair_at_flag:(o.fair!=null?Math.round(o.fair*1000)/1000:null),prob:(o.prob!=null?Math.round(o.prob*1000)/1000:null),peers:o.peers||0,
     close_fair:null,result:'PENDING',clv:null,paper:true};
   try{localStorage.setItem(key,JSON.stringify(rec));}catch(e){}
 }
+function logFlag(it,lv){logPick(it,{type:'setup',side:lv.side,f:lv.f,price:lv.price,book:lv.book,edge:lv.edge,fair:lv.fair,peers:lv.peers});}
 function updateCloses(instances){ // pre-game: keep refreshing consensus; freezes at last sweep before start
   var now=Date.now(),map={};
   instances.forEach(function(it){map[it.sport+'|'+it.gameId+'|'+it.market+'|'+it.key]=it;});
@@ -235,19 +247,24 @@ function grade(p,hs,as){
 
 // ‚îÄ‚îÄ STRATEGY SCOREBOARD (CLV is the judge) ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
 function stats(){
-  var s={flagged:0,pending:0,settled:0,w:0,units:0,clvN:0,clvSum:0,clvPos:0,bySport:{}};
+  var mk=function(){return{n:0,w:0,u:0,pending:0,clvN:0,clvPos:0,clvSum:0};};
+  var s={flagged:0,pending:0,settled:0,w:0,units:0,clvN:0,clvSum:0,clvPos:0,bySport:{},byType:{setup:mk(),select:mk()}};
   allPicks().forEach(function(p){
     s.flagged++;
-    if(p.result==='PENDING'){s.pending++;return;}
+    var ty=s.byType[p.type==='select'?'select':'setup'];
+    if(p.result==='PENDING'){s.pending++;ty.pending++;return;}
     if(p.result==='PUSH'||p.result==='VOID')return;
     s.settled++;if(p.result==='WIN'){s.w++;s.units+=profit1u(p.price);}else s.units-=1;
+    ty.n++;if(p.result==='WIN'){ty.w++;ty.u+=profit1u(p.price);}else ty.u-=1;
     var sp=s.bySport[p.sportTitle]||(s.bySport[p.sportTitle]={n:0,w:0,u:0,clvN:0,clvPos:0,clvSum:0});
     sp.n++;if(p.result==='WIN'){sp.w++;sp.u+=profit1u(p.price);}else sp.u-=1;
-    if(p.clv!=null){s.clvN++;s.clvSum+=p.clv;if(p.clv>0)s.clvPos++;sp.clvN++;sp.clvSum+=p.clv;if(p.clv>0)sp.clvPos++;}
+    if(p.clv!=null){s.clvN++;s.clvSum+=p.clv;if(p.clv>0)s.clvPos++;sp.clvN++;sp.clvSum+=p.clv;if(p.clv>0)sp.clvPos++;ty.clvN++;ty.clvSum+=p.clv;if(p.clv>0)ty.clvPos++;}
   });
   return s;
 }
-function clvProven(){var s=stats();return s.clvN>=CLV_PROVE_N&&(s.clvPos/s.clvN*100)>=CLV_PROVE_PCT&&(s.clvSum/s.clvN)>=0;}
+// The real-money gate judges the SETUP strategy only (selects are a tracked experiment ‚Äî
+// the market's favorites at best price; expected ~breakeven-minus-vig until data says otherwise).
+function clvProven(){var t=stats().byType.setup;return t.clvN>=CLV_PROVE_N&&(t.clvPos/t.clvN*100)>=CLV_PROVE_PCT&&(t.clvSum/t.clvN)>=0;}
 
 // ‚îÄ‚îÄ SCAN ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
 var D=null,REFRESH_T=null,NEXT_R=0;
@@ -260,7 +277,7 @@ async function scanAll(){
   // Joe's sports only, priority order, and only if the API says they're active.
   var activeMap={};sports.forEach(function(s){if(s.active&&!s.has_outrights)activeMap[s.key]=s.title;});
   var now=Date.now(), winEnd=now+WINDOW_HOURS*3600e3;
-  var instances=[],flags=[],near=[],artifacts=[],sportsScanned=[],sportsSkipped=[],pulled=0;
+  var instances=[],flags=[],near=[],artifacts=[],selects=[],sportsScanned=[],sportsSkipped=[],pulled=0;
   for(var i=0;i<SPORT_PRIORITY.length&&pulled<MAX_SPORTS;i++){
     var skey=SPORT_PRIORITY[i], title=activeMap[skey];
     if(!title){sportsSkipped.push(skey.split('_').pop().toUpperCase()+' (off-season)');continue;}
@@ -280,19 +297,37 @@ async function scanAll(){
     var inst=parseSport(skey,title,games);
     instances=instances.concat(inst);
     inst.forEach(function(it){
-      var lv=lineValue(it);if(!lv)return;
-      var rec={it:it,lv:lv};
-      if(lv.edge>EDGE_IMPLAUSIBLE)artifacts.push(rec);
-      else if(lv.edge>=EDGE_MIN&&lv.peers>=MIN_PEERS){flags.push(rec);logFlag(it,lv);}
-      else if(lv.edge>0)near.push(rec);
+      var lv=lineValue(it);
+      if(lv){
+        var rec={it:it,lv:lv};
+        if(lv.edge>EDGE_IMPLAUSIBLE)artifacts.push(rec);
+        else if(lv.edge>=EDGE_MIN&&lv.peers>=MIN_PEERS){flags.push(rec);logFlag(it,lv);}
+        else if(lv.edge>0)near.push(rec);
+      }
+      // SELECTS: moneyline sides the full-book consensus rates >= SELECT_MIN_PROB to WIN,
+      // taken at the best-priced book. The market IS the prediction model here.
+      if(it.market==='h2h'){
+        var c=consensusExcl(it.rows,null); // all books
+        if(c&&c.n>=SELECT_MIN_PEERS){
+          var f=c.p>=0.5?'a':'b', prob=f==='a'?c.p:(1-c.p);
+          if(prob>=SELECT_MIN_PROB){
+            var top=null;Object.keys(it.rows).forEach(function(b){var px=it.rows[b][f];if(px==null)return;if(top==null||px>top.price)top={price:px,book:b};});
+            if(top)selects.push({it:it,side:(f==='a'?it.sideA:it.sideB),f:f,prob:prob,price:top.price,book:top.book,peers:c.n,
+              value:prob-impliedProb(top.price)}); // >=0 means you're not overpaying vs fair
+          }
+        }
+      }
     });
   }
+  selects.sort(function(a,b){return b.prob-a.prob;});
+  selects=selects.slice(0,SELECT_MAX);
+  selects.forEach(function(sl){logPick(sl.it,{type:'select',side:sl.side,f:sl.f,price:sl.price,book:sl.book,fair:sl.prob,prob:sl.prob,peers:sl.peers,edge:sl.value});});
   updateCloses(instances);
   var cost=(before!=null&&BUDGET.remaining!=null)?Math.max(before-BUDGET.remaining,0):null;
   budgetGuard(cost);
   flags.sort(function(a,b){return b.lv.edge-a.lv.edge;});
   near.sort(function(a,b){return b.lv.edge-a.lv.edge;});
-  D={flags:flags,near:near.slice(0,10),artifacts:artifacts.length,sports:sportsScanned,skipped:sportsSkipped,instances:instances.length,at:new Date().toLocaleTimeString(),cost:cost};
+  D={flags:flags,near:near.slice(0,10),selects:selects,artifacts:artifacts.length,sports:sportsScanned,skipped:sportsSkipped,instances:instances.length,at:new Date().toLocaleTimeString(),cost:cost};
   render();budgetLine();updCount();
   setS('Scanned '+sportsScanned.length+' sports ‚Ä¢ '+instances.length+' markets ‚Ä¢ '+flags.length+' setup bets ‚Ä¢ '+D.at);
   settle().then(function(){render();});
@@ -314,16 +349,33 @@ function pickCard(rec){
 }
 function fairToAm(p){if(p<=0||p>=1)return null;return p>=0.5?Math.round(-100*p/(1-p)):Math.round(100*(1-p)/p);}
 function render(){
-  var s=stats(),proven=clvProven();
+  var s=stats(),proven=clvProven(),tSet=s.byType.setup,tSel=s.byType.select;
   var h='';
   // status banner
   if(PAPER_MODE||!proven){
-    h+='<div class="card" style="border-color:var(--amb)"><b style="color:var(--amb);font-size:12px">PAPER ‚Äî proving the strategy</b>'
-      +'<div style="font-size:10px;margin-top:3px" class="mut">A setup bet = one book out of line with its peers. That should beat the closing number. Proof bar: '+s.clvN+'/'+CLV_PROVE_N+' settled flags, '+(s.clvN?Math.round(s.clvPos/s.clvN*100):0)+'% beat close (need '+CLV_PROVE_PCT+'%+). Real-money label turns on automatically when proven. No stat predictions anywhere in this app ‚Äî that approach was tested on 3,727 bets and had zero edge.</div></div>';
+    h+='<div class="card" style="border-color:var(--amb)"><b style="color:var(--amb);font-size:12px">PAPER ‚Äî proving the strategies</b>'
+      +'<div style="font-size:10px;margin-top:3px" class="mut">Two boards, both tracked to settlement. <b>SELECTS</b> = the market&rsquo;s most likely winners tonight (consensus of all books) at the best price. <b>SETUPS</b> = one book out of line with its peers. Setup proof bar: '+tSet.clvN+'/'+CLV_PROVE_N+' settled, '+(tSet.clvN?Math.round(tSet.clvPos/tSet.clvN*100):0)+'% beat close (need '+CLV_PROVE_PCT+'%+).</div></div>';
   }else{
-    h+='<div class="card" style="border-color:var(--grn)"><b style="color:var(--grn);font-size:12px">&#128176; STRATEGY CLV-PROVEN ‚Äî flags are bettable</b>'
-      +'<div style="font-size:10px;margin-top:3px" class="mut">'+s.clvN+' settled, '+Math.round(s.clvPos/s.clvN*100)+'% beat close, avg CLV '+(s.clvSum/s.clvN*100).toFixed(1)+'pp. Stake small and flat; books limit winners.</div></div>';
+    h+='<div class="card" style="border-color:var(--grn)"><b style="color:var(--grn);font-size:12px">&#128176; SETUP STRATEGY CLV-PROVEN ‚Äî flags are bettable</b>'
+      +'<div style="font-size:10px;margin-top:3px" class="mut">'+tSet.clvN+' settled, '+Math.round(tSet.clvPos/tSet.clvN*100)+'% beat close, avg CLV '+(tSet.clvSum/tSet.clvN*100).toFixed(1)+'pp. Stake small and flat; books limit winners.</div></div>';
   }
+  // SELECTS ‚Äî the market's most likely winners tonight, best-priced
+  h+='<div class="card" style="border-color:rgba(59,130,246,.4)"><b style="font-size:13px;color:var(--blu)">&#9989; SELECTS'+(D&&D.selects?' ('+D.selects.length+')':'')+' ‚Äî most likely to WIN tonight</b>';
+  h+='<div style="font-size:10px;margin-top:2px" class="mut">Win probability = de-vig consensus of ALL books (the sharpest predictor available), taken at the best-priced book. Value &ge;0 means you&rsquo;re paying fair or better for that probability.</div>';
+  if(D&&D.selects&&D.selects.length){
+    D.selects.forEach(function(sl){
+      var vcol=sl.value>=0?'var(--grn)':'var(--amb)';
+      h+='<div class="pick">'
+        +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">'
+        +'<span class="tag" style="background:rgba(59,130,246,.12);color:var(--blu)">&#9989; SELECT &middot; '+(sl.prob*100).toFixed(0)+'% to win</span>'
+        +'<small>'+esc(sl.it.sportTitle)+'</small></div>'
+        +'<div style="font-weight:800;font-size:14px">'+esc(sl.side)+' <span style="color:var(--grn)">'+fmtOdds(sl.price)+'</span> <small>@'+esc(sl.book)+'</small></div>'
+        +'<div style="font-size:11px" class="mut">'+esc(sl.it.game)+' &middot; '+new Date(sl.it.start).toLocaleString([],{month:'numeric',day:'numeric',hour:'numeric',minute:'2-digit'})+'</div>'
+        +'<div style="font-size:11px;margin-top:3px">value vs fair: <b style="color:'+vcol+'">'+(sl.value>=0?'+':'')+(sl.value*100).toFixed(1)+'pp</b> <span class="mut">('+sl.peers+' books in consensus)</span></div>'
+        +'</div>';
+    });
+  } else h+='<div style="font-size:11px;margin-top:6px" class="mut">No side at &ge;'+(SELECT_MIN_PROB*100)+'% consensus right now (or too few books). Fills in as game-day books post.</div>';
+  h+='</div>';
   // setup bets
   h+='<div class="card"><b style="font-size:13px">&#127919; SETUP BETS'+(D?' ('+D.flags.length+')':'')+'</b>';
   if(D&&D.flags.length)D.flags.forEach(function(r){h+=pickCard(r);});
@@ -337,9 +389,13 @@ function render(){
   }
   // scoreboard
   h+='<div class="card"><b style="font-size:13px">&#128202; Scoreboard (CLV is the judge)</b>';
-  h+='<div style="font-size:11px;margin-top:5px">Flagged '+s.flagged+' &middot; pending '+s.pending+' &middot; settled '+s.settled
-    +(s.settled?' &middot; '+Math.round(s.w/s.settled*100)+'% &middot; ROI '+(s.units/s.settled>=0?'+':'')+Math.round(s.units/s.settled*100)+'%':'')
-    +(s.clvN?' &middot; <b>CLV: '+Math.round(s.clvPos/s.clvN*100)+'% beat close (n='+s.clvN+'), avg '+(s.clvSum/s.clvN*100).toFixed(1)+'pp</b>':' &middot; CLV: none settled yet')+'</div>';
+  h+='<div style="font-size:11px;margin-top:5px">All: '+s.flagged+' tracked &middot; pending '+s.pending+' &middot; settled '+s.settled
+    +(s.settled?' &middot; '+Math.round(s.w/s.settled*100)+'% &middot; ROI '+(s.units/s.settled>=0?'+':'')+Math.round(s.units/s.settled*100)+'%':'')+'</div>';
+  [['&#9989; SELECTS',tSel],['&#127919; SETUPS',tSet]].forEach(function(row){
+    var t=row[1];
+    h+='<div style="font-size:11px;margin-top:2px"><b>'+row[0]+'</b>: '+(t.n?t.n+' settled &middot; '+Math.round(t.w/t.n*100)+'% win &middot; ROI '+(t.u/t.n>=0?'+':'')+Math.round(t.u/t.n*100)+'%':'none settled')+(t.pending?' &middot; '+t.pending+' pending':'')
+      +(t.clvN?' &middot; CLV+ '+Math.round(t.clvPos/t.clvN*100)+'% (n='+t.clvN+')':'')+'</div>';
+  });
   Object.keys(s.bySport).sort().forEach(function(sp){var o=s.bySport[sp];
     h+='<div style="font-size:11px" class="mut">'+esc(sp)+': n='+o.n+' &middot; '+Math.round(o.w/o.n*100)+'% &middot; ROI '+(o.u/o.n>=0?'+':'')+Math.round(o.u/o.n*100)+'%'+(o.clvN?' &middot; CLV+ '+Math.round(o.clvPos/o.clvN*100)+'%':'')+'</div>';});
   if(D){
@@ -373,7 +429,10 @@ function copyPicks(){
   if(!D){toast('Scan first');return;}
   var s=stats();
   var t='EDGE SCANNER v14 ‚Äî '+new Date().toLocaleString()+'\n';
-  t+='Strategy: '+(!PAPER_MODE&&clvProven()?'REAL (CLV proven)':'PAPER')+' ‚Äî '+s.clvN+' settled flags, '+(s.clvN?Math.round(s.clvPos/s.clvN*100):0)+'% beat close\n';
+  var tSet=s.byType.setup,tSel=s.byType.select;
+  t+='Status: '+(!PAPER_MODE&&clvProven()?'setups REAL (CLV proven)':'PAPER')+' | selects record: '+(tSel.n?tSel.n+' settled, '+Math.round(tSel.w/tSel.n*100)+'% win, ROI '+(tSel.u/tSel.n>=0?'+':'')+Math.round(tSel.u/tSel.n*100)+'%':'none settled yet')+'\n';
+  t+='\n=== SELECTS ('+(D.selects?D.selects.length:0)+') ‚Äî most likely to WIN (consensus of all books, best price) ===\n';
+  t+=(D.selects&&D.selects.length)?D.selects.map(function(sl){return '  '+(sl.prob*100).toFixed(0)+'% '+sl.side+' '+fmtOdds(sl.price)+' @'+sl.book+' | value '+(sl.value>=0?'+':'')+(sl.value*100).toFixed(1)+'pp | '+sl.it.game+' | '+sl.it.sportTitle;}).join('\n')+'\n':'  none this sweep\n';
   t+='\n=== SETUP BETS ('+D.flags.length+') ===\n';
   t+=D.flags.length?D.flags.map(function(r){return '  '+r.lv.side+' '+fmtOdds(r.lv.price)+' @'+r.lv.book+' | +'+(r.lv.edge*100).toFixed(1)+'pp vs '+r.lv.peers+'-book fair '+(r.lv.fair*100).toFixed(0)+'% | '+r.it.game+' | '+r.it.sportTitle+' '+r.it.label;}).join('\n')+'\n':'  none this sweep\n';
   if(D.near.length){t+='\n=== WATCHING ===\n'+D.near.map(function(r){return '  +'+(r.lv.edge*100).toFixed(1)+'pp '+r.lv.side+' '+fmtOdds(r.lv.price)+' @'+r.lv.book+' | '+r.it.game;}).join('\n')+'\n';}
