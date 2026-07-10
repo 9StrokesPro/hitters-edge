@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Matchup Engine v15</title>
+<style>
+:root{--bg:#0b0e13;--sur:#131722;--bord:#232a38;--txt:#e8ecf3;--mut:#8b94a7;--grn:#22c55e;--red:#ef4444;--amb:#f59e0b;--pur:#a78bfa;--blu:#3b82f6;--gld:#eab308}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--txt);font:14px/1.45 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;padding-bottom:50px}
+.hdr{display:flex;justify-content:space-between;align-items:center;padding:12px 14px;border-bottom:1px solid var(--bord)}
+.logo{font-size:16px;font-weight:800}
+.btn{background:var(--sur);border:1px solid var(--bord);color:var(--txt);border-radius:8px;padding:6px 10px;font-size:11px;font-weight:700;cursor:pointer}
+.card{background:var(--sur);border:1px solid var(--bord);border-radius:12px;padding:12px;margin:10px 14px}
+.mcard{background:var(--sur);border:1px solid var(--bord);border-radius:12px;margin:10px 14px;overflow:hidden}
+.mhead{padding:10px 12px;border-bottom:1px solid var(--bord);display:flex;justify-content:space-between;align-items:center;cursor:pointer}
+.mbody{padding:10px 12px;display:none}
+.mcard.open .mbody{display:block}
+.sect{border-top:1px solid var(--bord);padding:8px 0;font-size:11px}
+.sect:first-child{border-top:none}
+.sh{font-size:10px;font-weight:800;color:var(--mut);letter-spacing:.5px;margin-bottom:3px}
+.g{font-size:20px;font-weight:900;border-radius:8px;padding:2px 10px}
+.gA{background:rgba(34,197,94,.15);color:var(--grn)}.gB{background:rgba(59,130,246,.15);color:var(--blu)}
+.gC{background:rgba(245,158,11,.12);color:var(--amb)}.gD{background:rgba(239,68,68,.12);color:var(--red)}
+.tag{font-size:10px;font-weight:800;border-radius:6px;padding:1px 6px;display:inline-block}
+.load{text-align:center;color:var(--mut);padding:30px 0}
+.spnr{width:22px;height:22px;border:3px solid var(--bord);border-top-color:var(--blu);border-radius:50%;margin:0 auto 10px;animation:sp 1s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+small,.mut{color:var(--mut)}
+#toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:#1c2333;border:1px solid var(--bord);border-radius:10px;padding:8px 14px;font-size:12px;opacity:0;pointer-events:none;transition:opacity .25s;z-index:50}
+#toast.show{opacity:1}
+.fx{display:flex;justify-content:space-between;font-size:11px;padding:2px 0}
+</style>
+</head>
+<body>
+<div class="hdr">
+  <div>
+    <div class="logo">&#9918; Matchup Engine v15</div>
+    <div style="font-size:9px" class="mut" id="status">Loading...</div>
+    <div style="font-size:9px" class="mut" id="fresh"></div>
+  </div>
+  <div style="display:flex;gap:6px">
+    <button class="btn" onclick="copyTop()">&#128203; Copy top</button>
+    <button class="btn" onclick="loadAll()">&#8635; Refresh</button>
+  </div>
+</div>
+<div id="main"><div class="load"><div class="spnr"></div>Reading the matchups...</div></div>
+<div id="toast"></div>
+
+<script>
+'use strict';
+/* ‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê
+   MATCHUP ENGINE v15 ‚Äî reads the hitter against the pitcher (per v15 spec).
+   Keeps the proven v13 data layer (statsapi + Baseball Savant + weather + park),
+   DELETES the fake-edge/betting model, adds pitch-mix fit + freshness gating,
+   outputs a transparent matchup card + grade per hitter. Guardrails:
+   - BvP is NOISE (footnote only, never moves the grade)      [spec 4.1]
+   - Form weighted by EXPECTED stats + luck gap, not box AVG  [spec 4.2]
+   - Price is not the product (check Edge Scanner separately) [spec 6]
+   ‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê */
+var SEASON=2026;
+var MLB='https://statsapi.mlb.com/api/v1';
+var OWM_KEY='6a060c8de21d6f1a5cd9d6fed2b7a53b';
+var ODDS_KEY='c662d3af7ba8e40cddf08b0fca0684a9'; // ONLY for game totals context (~2 credits/load)
+var K='me15_';
+var STALE_MIN=45;          // freshness gate: auto re-pull if data older than this
+var PITCH_MIN_SEEN=50;     // hitter needs >=N pitches seen vs a type to trust his xSLG vs it
+var CONC=10;               // statsapi concurrency
+
+// ‚îÄ‚îÄ utils ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+function sg(k,d){try{var v=localStorage.getItem(K+k);return v?JSON.parse(v):d;}catch(e){return d;}}
+function ss(k,v){try{localStorage.setItem(K+k,JSON.stringify(v));}catch(e){}}
+function todayStr(){return new Date().toISOString().slice(0,10);}
+function slp(ms){return new Promise(function(r){setTimeout(r,ms);});}
+function toast(m){var t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(function(){t.classList.remove('show');},2600);}
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
+function f3(v){if(v==null)return'--';if(v<0)return'-'+f3(-v);return v>=1?v.toFixed(3):('.'+String(Math.round(v*1000)).padStart(3,'0'));}
+async function apiFetch(url){try{var r=await fetch(url);if(!r.ok)throw 0;return await r.json();}catch(e){return null;}}
+async function pool(items,fn,n){var i=0,out=new Array(items.length);async function w(){while(i<items.length){var ix=i++;out[ix]=await fn(items[ix],ix);}}var ws=[];for(var j=0;j<Math.min(n,items.length);j++)ws.push(w());await Promise.all(ws);return out;}
+function windCardinal(deg){if(deg==null)return'';return['N','NE','E','SE','S','SW','W','NW'][Math.round(deg/45)%8];}
+
+// ‚îÄ‚îÄ static maps (ported from v13) ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+var PARKS={'Coors Field':115,'Great American Ball Park':112,'Fenway Park':108,'Globe Life Field':107,'Citizens Bank Park':106,'American Family Field':105,'Wrigley Field':104,'Rogers Centre':104,'Yankee Stadium':103,'Truist Park':102,'Camden Yards':103,'Guaranteed Rate Field':103,'Dodger Stadium':101,'T-Mobile Park':100,'Progressive Field':100,'Nationals Park':100,'Daikin Park':98,'Minute Maid Park':98,'Angel Stadium':99,'Chase Field':99,'loanDepot park':98,'Oracle Park':97,'Citi Field':97,'Comerica Park':97,'Petco Park':96,'Target Field':96,'PNC Park':96,'Busch Stadium':95,'Kauffman Stadium':95,'Tropicana Field':97,'Sutter Health Park':98};
+var TEAM_ABBR={'Arizona Diamondbacks':'AZ','Atlanta Braves':'ATL','Baltimore Orioles':'BAL','Boston Red Sox':'BOS','Chicago Cubs':'CHC','Chicago White Sox':'CWS','Cincinnati Reds':'CIN','Cleveland Guardians':'CLE','Colorado Rockies':'COL','Detroit Tigers':'DET','Houston Astros':'HOU','Kansas City Royals':'KC','Los Angeles Angels':'LAA','Los Angeles Dodgers':'LAD','Miami Marlins':'MIA','Milwaukee Brewers':'MIL','Minnesota Twins':'MIN','New York Mets':'NYM','New York Yankees':'NYY','Philadelphia Phillies':'PHI','Pittsburgh Pirates':'PIT','San Diego Padres':'SD','San Francisco Giants':'SF','Seattle Mariners':'SEA','St. Louis Cardinals':'STL','Tampa Bay Rays':'TB','Texas Rangers':'TEX','Toronto Blue Jays':'TOR','Washington Nationals':'WSH','Athletics':'ATH','Oakland Athletics':'ATH'};
+var STADIUM_TYPE={'AZ':'retractable','HOU':'retractable','SEA':'retractable','MIA':'retractable','MIL':'retractable','TEX':'retractable','TOR':'retractable'};
+var CITY_BY_ABBR={'AZ':'Phoenix,US','ATL':'Atlanta,US','BAL':'Baltimore,US','BOS':'Boston,US','CHC':'Chicago,US','CWS':'Chicago,US','CIN':'Cincinnati,US','CLE':'Cleveland,US','COL':'Denver,US','DET':'Detroit,US','HOU':'Houston,US','KC':'Kansas City,US','LAA':'Anaheim,US','LAD':'Los Angeles,US','MIA':'Miami,US','MIL':'Milwaukee,US','MIN':'Minneapolis,US','NYM':'New York,US','NYY':'New York,US','PHI':'Philadelphia,US','PIT':'Pittsburgh,US','SD':'San Diego,US','SF':'San Francisco,US','SEA':'Seattle,US','STL':'St. Louis,US','TB':'St. Petersburg,US','TEX':'Arlington,US','TOR':'Toronto,CA','WSH':'Washington,US','ATH':'Sacramento,US'};
+// pitch-type code -> readable
+var PITCH_NAME={FF:'4-seam FB',SI:'Sinker',FC:'Cutter',SL:'Slider',ST:'Sweeper',CU:'Curveball',KC:'Knuckle-curve',CH:'Changeup',FS:'Splitter',SV:'Slurve',FO:'Forkball',SC:'Screwball',KN:'Knuckleball'};
+
+// ‚îÄ‚îÄ classification (ported from v13, verbatim logic) ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+function batType(iso){
+  if(iso==null)return null;
+  if(iso>0.200)return{key:'POWER',label:'POWER BAT'};
+  if(iso>=0.150)return{key:'HYBRID',label:'HYBRID BAT'};
+  return{key:'CONTACT',label:'CONTACT BAT'};
+}
+function classifyPitcher(pm,ps){
+  if(!pm)return null;
+  var era=pm.era,whip=pm.whip,k9=pm.k9,bb9=pm.bb9;
+  var hh=ps?ps.hard_hit_percent:null,br=ps?ps.barrel_batted_rate:null,wh=ps?ps.whiff_percent:null,bb=ps?ps.bb_percent:null;
+  var walkHi=(bb!=null)?bb>8:(bb9!=null&&bb9>3.0);
+  if(era>5.00&&whip>1.50&&hh!=null&&hh>40)return{key:'TYPE3',label:'UNIVERSAL TARGET'};
+  if(hh!=null&&br!=null&&wh!=null&&hh>40&&br>8&&wh<22)return{key:'TYPE1',label:'POWER TARGET'};
+  if(whip>1.40&&walkHi&&k9<7.0)return{key:'TYPE2',label:'CONTACT TARGET'};
+  if(era<3.00&&k9>9.0&&hh!=null&&hh<30)return{key:'TYPE4',label:'AVOID'};
+  return null;
+}
+function luckGap(b,bs){
+  if(!bs||!b)return null;
+  var sum=0,parts=[];
+  if(bs.xba!=null&&b.avg!=null){sum+=bs.xba-b.avg;parts.push({k:'xBA',x:bs.xba,a:b.avg});}
+  if(bs.xslg!=null&&b.slg!=null){sum+=bs.xslg-b.slg;parts.push({k:'xSLG',x:bs.xslg,a:b.slg});}
+  if(bs.xwoba!=null&&bs.woba!=null){sum+=bs.xwoba-bs.woba;parts.push({k:'xwOBA',x:bs.xwoba,a:bs.woba});}
+  if(!parts.length)return null;
+  return{sum:Math.round(sum*1000)/1000,parts:parts};
+}
+function platoonMod(tonight,other){
+  if(!tonight||!other||tonight.ab<40||other.ab<40)return null;
+  var diff=Math.round((tonight.ops-other.ops)*1000)/1000,mag=Math.abs(diff),adj=0;
+  if(diff>0)adj=mag>0.100?4:(mag>=0.050?2:0);
+  else if(diff<0)adj=mag>0.100?-4:(mag>=0.050?-2:0);
+  return{adj:adj,side:diff>0?'FAVORABLE':(diff<0?'UNFAVORABLE':'NEUTRAL'),diff:diff};
+}
+function paEstimate(spot){if(!spot)return'';var m={1:'4-5',2:'4-5',3:'4',4:'4',5:'3-4',6:'3-4',7:'3-4',8:'3',9:'3'};return m[spot]||'3-4';}
+
+// ‚îÄ‚îÄ data pulls (ported from v13; statsapi + savant, all free) ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+async function loadSchedule(){
+  var d=await apiFetch(MLB+'/schedule?sportId=1&date='+todayStr()+'&hydrate=probablePitcher,lineups,team,venue&language=en');
+  var games=d&&d.dates&&d.dates[0]&&d.dates[0].games||[];
+  return games.map(function(g){
+    var awayLu=(g.lineups&&g.lineups.awayPlayers||[]).map(function(p,i){return{id:p.id,name:p.fullName,spot:i+1};});
+    var homeLu=(g.lineups&&g.lineups.homePlayers||[]).map(function(p,i){return{id:p.id,name:p.fullName,spot:i+1};});
+    return{gamePk:g.gamePk,state:g.status.abstractGameState,
+      awayTeam:g.teams.away.team.name,homeTeam:g.teams.home.team.name,
+      awayId:g.teams.away.team.id,homeId:g.teams.home.team.id,
+      start:g.gameDate,venue:(g.venue&&g.venue.name)||'',
+      awayPit:g.teams.away.probablePitcher||null,homePit:g.teams.home.probablePitcher||null,
+      awayLu:awayLu,homeLu:homeLu,posted:awayLu.length>0&&homeLu.length>0};
+  }).filter(function(g){return g.state==='Preview'||g.state==='Live';});
+}
+// PROJECTED lineup = the team's batting order from its last completed game (freshness-safe:
+// real players from a real recent game, never phantoms).
+async function projectedLineup(teamId){
+  var end=new Date(),st=new Date();st.setDate(st.getDate()-6);
+  var d=await apiFetch(MLB+'/schedule?sportId=1&teamId='+teamId+'&startDate='+st.toISOString().slice(0,10)+'&endDate='+end.toISOString().slice(0,10));
+  var games=[];(d&&d.dates||[]).forEach(function(dd){(dd.games||[]).forEach(function(g){if(g.status.abstractGameState==='Final')games.push(g);});});
+  if(!games.length)return[];
+  var g=games[games.length-1];
+  var box=await apiFetch(MLB+'/game/'+g.gamePk+'/boxscore');
+  if(!box||!box.teams)return[];
+  var side=(box.teams.home.team.id===teamId)?'home':'away';
+  var players=box.teams[side].players||{},lu=[];
+  for(var k2 in players){var p=players[k2];var bo=parseInt(p.battingOrder);if(bo&&bo%100===0)lu.push({id:p.person.id,name:p.person.fullName,spot:bo/100});}
+  lu.sort(function(a,b){return a.spot-b.spot;});
+  return lu.slice(0,9);
+}
+async function getBatter(id){
+  var d=await apiFetch(MLB+'/people/'+id+'?hydrate=stats(group=hitting,type=season,season='+SEASON+'),currentTeam&sportId=1');
+  var pe=d&&d.people&&d.people[0];if(!pe)return null;
+  var splits=pe.stats&&pe.stats[0]&&pe.stats[0].splits||[];if(!splits.length)return null;
+  var st=splits[0].stat,batSide=pe.batSide&&pe.batSide.code||'';
+  var g=Math.max(parseInt(st.gamesPlayed)||1,1);
+  var hits=parseInt(st.hits)||0,hrs=parseInt(st.homeRuns)||0,tb=parseInt(st.totalBases)||0;
+  var runs=parseInt(st.runs)||0,rbi=parseInt(st.rbi)||0,dbl=parseInt(st.doubles)||0,tri=parseInt(st.triples)||0;
+  var avg=parseFloat(st.avg)||0,obp=parseFloat(st.obp)||0,slg=parseFloat(st.slg)||0;
+  // platoon splits
+  var splitVsL=null,splitVsR=null;
+  var psp=await apiFetch(MLB+'/people/'+id+'/stats?stats=statSplits&group=hitting&season='+SEASON+'&sitCodes=vl,vr');
+  (psp&&psp.stats&&psp.stats[0]&&psp.stats[0].splits||[]).forEach(function(x){
+    var code=x.split&&x.split.code,o={avg:parseFloat(x.stat.avg)||0,ops:parseFloat(x.stat.ops)||0,ab:parseInt(x.stat.atBats)||0};
+    if(code==='vl')splitVsL=o;else if(code==='vr')splitVsR=o;
+  });
+  // L10 + 7-day form
+  var gl=await apiFetch(MLB+'/people/'+id+'/stats?stats=gameLog&group=hitting&season='+SEASON+'&sportId=1');
+  var gls=gl&&gl.stats&&gl.stats[0]&&gl.stats[0].splits||[];
+  var recent10=gls.slice(-10),r10H=0,r10AB=0,r10BB=0,r10TB=0;
+  recent10.forEach(function(r){r10H+=parseInt(r.stat.hits)||0;r10AB+=parseInt(r.stat.atBats)||0;r10BB+=parseInt(r.stat.baseOnBalls)||0;r10TB+=parseInt(r.stat.totalBases)||0;});
+  var roll10avg=r10AB>0?Math.round(r10H/r10AB*1000)/1000:avg;
+  var roll10slg=r10AB>0?Math.round(r10TB/r10AB*1000)/1000:slg;
+  var cut=new Date();cut.setDate(cut.getDate()-7);var tH=0,tAB=0;
+  for(var i=gls.length-1;i>=0;i--){if(new Date(gls[i].date)<cut)break;tH+=parseInt(gls[i].stat.hits)||0;tAB+=parseInt(gls[i].stat.atBats)||0;}
+  var l7=tAB>0?Math.round(tH/tAB*1000)/1000:0,diff=tAB>=10?l7-avg:0;
+  var hotCold=diff>=0.050?'HOT':diff>=0.020?'Warming':diff<=-0.050?'COLD':diff<=-0.020?'Cooling':'Neutral';
+  var lastGame=gls.length?gls[gls.length-1].date:null;
+  return{playerId:id,batSide:batSide,games:g,avg:avg,obp:obp,slg:slg,
+    iso:Math.round(Math.max(slg-avg,0)*1000)/1000,
+    bbRate:Math.round(Math.max(obp-avg,0)*1000)/1000,
+    hpg:Math.round(hits/g*100)/100,tbpg:Math.round(tb/g*100)/100,runspg:Math.round(runs/g*100)/100,rbipg:Math.round(rbi/g*100)/100,
+    splitVsL:splitVsL,splitVsR:splitVsR,roll10avg:roll10avg,roll10slg:roll10slg,hotCold:hotCold,lastGame:lastGame};
+}
+async function getPitcher(id){
+  if(!id)return null;
+  var d=await apiFetch(MLB+'/people/'+id+'?hydrate=stats(group=pitching,type=season,season='+SEASON+')&sportId=1');
+  var pe=d&&d.people&&d.people[0];if(!pe)return null;
+  var throws=pe.pitchHand&&pe.pitchHand.code||'';
+  var splits=pe.stats&&pe.stats[0]&&pe.stats[0].splits||[];if(!splits.length)return{throws:throws};
+  var s=splits[0].stat,ip=Math.max(parseFloat(s.inningsPitched)||1,1),gs=parseInt(s.gamesStarted)||0;
+  var l3=null;
+  var gl=await apiFetch(MLB+'/people/'+id+'/stats?stats=gameLog&group=pitching&season='+SEASON+'&sportId=1');
+  var gls=gl&&gl.stats&&gl.stats[0]&&gl.stats[0].splits||[];
+  if(gls.length){var rec=gls.slice(-3),tIP=0,tER=0;rec.forEach(function(r){tIP+=parseFloat(r.stat.inningsPitched)||0;tER+=parseInt(r.stat.earnedRuns)||0;});l3={era:tIP>0?Math.round(tER/tIP*9*100)/100:null,starts:rec.length};}
+  // pitch arsenal (usage %) ‚Äî free statsapi
+  var ars=[];
+  var ad=await apiFetch(MLB+'/people/'+id+'/stats?stats=pitchArsenal&group=pitching&season='+SEASON);
+  (ad&&ad.stats&&ad.stats[0]&&ad.stats[0].splits||[]).forEach(function(sp){
+    var t=sp.stat&&sp.stat.type;if(!t)return;
+    ars.push({code:t.code||'',name:t.description||PITCH_NAME[t.code]||t.code,pct:Math.round((sp.stat.percentage||0)*1000)/10});
+  });
+  ars.sort(function(a,b){return b.pct-a.pct;});
+  return{id:id,throws:throws,era:parseFloat(s.era)||0,whip:parseFloat(s.whip)||0,gs:gs,
+    k9:Math.round((parseInt(s.strikeOuts)||0)/ip*9*10)/10,bb9:Math.round((parseInt(s.baseOnBalls)||0)/ip*9*10)/10,
+    l3:l3,arsenal:ars};
+}
+async function getBvP(batterId,pitcherId){
+  if(!batterId||!pitcherId)return null;
+  var d=await apiFetch(MLB+'/people/'+batterId+'/stats?stats=vsPlayerTotal&opposingPlayerId='+pitcherId+'&group=hitting');
+  var sp=d&&d.stats&&d.stats[0]&&d.stats[0].splits||[];if(!sp.length)return null;
+  var s=sp[0].stat,ab=parseInt(s.atBats)||0;if(ab<1)return null;
+  return{ab:ab,h:parseInt(s.hits)||0,hr:parseInt(s.homeRuns)||0,avg:parseFloat(s.avg)||0,ops:parseFloat(s.ops)||0};
+}
+// Savant CSVs (CORS *, verified) ‚Äî cached per day
+function parseCSVLine(line){var out=[],cur='',q=false;for(var i=0;i<line.length;i++){var c=line[i];if(c==='"'){q=!q;}else if(c===','&&!q){out.push(cur);cur='';}else cur+=c;}out.push(cur);return out;}
+function parseSavant(txt,keyFn){
+  var map={};if(!txt)return map;
+  var lines=txt.split('\n').filter(function(l){return l.trim();});if(lines.length<2)return map;
+  var hdr=parseCSVLine(lines[0].replace(/^Ôªø/,''));var idx={};hdr.forEach(function(h,i){idx[h.trim()]=i;});
+  if(idx['player_id']==null)return map;
+  for(var r=1;r<lines.length;r++){
+    var f=parseCSVLine(lines[r]);var pid=parseInt(f[idx['player_id']]);if(!pid)continue;
+    var o={};for(var key in idx){var v=f[idx[key]];o[key]=(v==null||v==='')?null:(isNaN(parseFloat(v))?String(v).replace(/"/g,''):parseFloat(v));}
+    var k2=keyFn?keyFn(pid,o):pid;map[k2]=o;
+  }
+  return map;
+}
+async function loadStatcast(){
+  var ck='sc_'+todayStr(),cached=sg(ck,null);
+  if(cached&&cached.bat&&Object.keys(cached.bat).length)return cached;
+  var base='https://baseballsavant.mlb.com/leaderboard/custom?year='+SEASON+'&filter=&min=1&sort=4&sortDir=desc&csv=true&type=';
+  var bat={},pit={};
+  try{var br=await fetch(base+'batter&selections=xba,xslg,xwoba,woba');if(br.ok)bat=parseSavant(await br.text());}catch(e){}
+  try{var pr=await fetch(base+'pitcher&selections=whiff_percent,barrel_batted_rate,hard_hit_percent,k_percent,bb_percent,xslg');if(pr.ok)pit=parseSavant(await pr.text());}catch(e){}
+  var out={bat:bat,pit:pit};
+  if(Object.keys(bat).length)ss(ck,out);
+  return out;
+}
+// Hitter performance BY PITCH TYPE (savant pitch-arsenal-stats, CORS verified).
+// key = pid|pitch_type -> {est_slg, run_value_per_100, pitches, whiff_percent}
+async function loadBatterPitchStats(){
+  var ck='bps_'+todayStr(),cached=sg(ck,null);
+  if(cached&&Object.keys(cached).length)return cached;
+  var map={};
+  try{
+    var r=await fetch('https://baseballsavant.mlb.com/leaderboard/pitch-arsenal-stats?type=batter&year='+SEASON+'&team=&min=10&csv=true');
+    if(r.ok)map=parseSavant(await r.text(),function(pid,o){return pid+'|'+(o.pitch_type||'');});
+  }catch(e){}
+  if(!Object.keys(map).length){ // fallback: per-type pulls
+    var types=['FF','SI','FC','SL','ST','CU','CH','FS'];
+    for(var i=0;i<types.length;i++){
+      try{var r2=await fetch('https://baseballsavant.mlb.com/leaderboard/pitch-arsenal-stats?type=batter&pitchType='+types[i]+'&year='+SEASON+'&team=&min=10&csv=true');
+        if(r2.ok){var m2=parseSavant(await r2.text(),function(pid,o){return pid+'|'+(o.pitch_type||types[i]);});for(var k2 in m2)map[k2]=m2[k2];}}catch(e){}
+    }
+  }
+  if(Object.keys(map).length)ss(ck,map);
+  return map;
+}
+async function loadWeatherFor(games){
+  var ck='wx_'+todayStr(),cached=sg(ck,null);if(cached)return cached;
+  var out={};
+  for(var i=0;i<games.length;i++){
+    var g=games[i],key=g.awayTeam+' @ '+g.homeTeam;
+    var abbr=TEAM_ABBR[g.homeTeam]||'',type=STADIUM_TYPE[abbr]||'outdoor';
+    if(type!=='outdoor'){out[key]={neutral:true};continue;}
+    var city=CITY_BY_ABBR[abbr];if(!city){out[key]=null;continue;}
+    var w=await apiFetch('https://api.openweathermap.org/data/2.5/weather?q='+encodeURIComponent(city)+'&appid='+OWM_KEY+'&units=imperial');
+    out[key]=(w&&w.main)?{temp:Math.round(w.main.temp),humidity:w.main.humidity,windSpeed:Math.round((w.wind&&w.wind.speed)||0),windDeg:(w.wind&&w.wind.deg!=null?w.wind.deg:null)}:null;
+    await slp(120);
+  }
+  var any=Object.keys(out).some(function(k2){return out[k2]&&out[k2].temp!=null;});
+  if(any)ss(ck,out);
+  return out;
+}
+async function loadTotals(){ // context only (~2 credits). Fail-safe null.
+  try{
+    var r=await fetch('https://api.the-odds-api.com/v4/sports/baseball_mlb/odds?regions=us&markets=totals&oddsFormat=american&apiKey='+ODDS_KEY);
+    if(!r.ok)return{};
+    var d=await r.json(),map={};
+    (d||[]).forEach(function(g){
+      var bk=(g.bookmakers||[])[0];if(!bk)return;
+      var m=(bk.markets||[]).find(function(x){return x.key==='totals';});if(!m)return;
+      var ov=(m.outcomes||[]).find(function(o){return o.name==='Over';});
+      if(ov&&ov.point!=null)map[g.away_team+' @ '+g.home_team]=ov.point;
+    });
+    return map;
+  }catch(e){return{};}
+}
+
+// ‚îÄ‚îÄ PITCH-MIX FIT (spec 3.6 ‚Äî wired) ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+// Weighted hitter xSLG across the pitcher's arsenal (usage-weighted, only pitch
+// types where the hitter has seen >= PITCH_MIN_SEEN pitches). Returns null if
+// insufficient data ‚Äî the card says so honestly instead of guessing.
+function pitchMixFit(batterId,arsenal,bps){
+  if(!arsenal||!arsenal.length||!bps)return null;
+  var wSum=0,wTot=0,lines=[],covered=0;
+  arsenal.forEach(function(a){
+    if(a.pct<10)return; // ignore rarely-thrown pitches
+    var row=bps[batterId+'|'+a.code];
+    if(!row||row.pitches==null||row.pitches<PITCH_MIN_SEEN||row.est_slg==null){lines.push({pitch:a.name,pct:a.pct,xslg:null});return;}
+    wSum+=a.pct*row.est_slg;wTot+=a.pct;covered+=a.pct;
+    lines.push({pitch:a.name,pct:a.pct,xslg:row.est_slg,rv:row.run_value_per_100});
+  });
+  if(wTot<30)return{fit:null,lines:lines,note:'insufficient pitch-level data for this hitter'};
+  return{fit:Math.round(wSum/wTot*1000)/1000,coveredPct:Math.round(covered),lines:lines};
+}
+
+// ‚îÄ‚îÄ THE MATCHUP GRADE (spec 4) ‚Äî transparent, every factor on the card ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+function gradeMatchup(h){
+  var F=[]; // {name, pts, detail}
+  function add(name,pts,detail){F.push({name:name,pts:Math.round(pts*10)/10,detail:detail});}
+  // 1. Talent ‚Äî EXPECTED stats anchor (spec 4.2)
+  var xw=h.bSav&&h.bSav.xwoba!=null?h.bSav.xwoba:null;
+  var t=0,td='';
+  if(xw!=null){t=xw>=0.400?20:xw>=0.370?16:xw>=0.340?12:xw>=0.320?8:xw>=0.300?4:0;td='xwOBA '+f3(xw)+(xw>=0.400?' (elite)':xw>=0.340?' (strong)':xw>=0.300?' (average)':' (below avg)');}
+  else{var ops=h.b.obp+h.b.slg;t=ops>=0.900?16:ops>=0.820?12:ops>=0.750?8:ops>=0.700?4:0;td='OPS '+f3(ops)+' (no Statcast ‚Äî season proxy)';}
+  add('Hitter talent',t,td);
+  // 2. Form QUALITY ‚Äî hot/cold + luck gap (spec 4.2: expected > results)
+  var form=0,fd=h.b.hotCold;
+  form+=h.b.hotCold==='HOT'?6:h.b.hotCold==='Warming'?3:h.b.hotCold==='COLD'?-6:h.b.hotCold==='Cooling'?-3:0;
+  if(h.lg){
+    if(h.lg.sum>=0.060){form+=6;fd+=' + under-rewarded (luck gap +'+f3(h.lg.sum)+') ‚Äî earned, room to run';}
+    else if(h.lg.sum>=0.025){form+=3;fd+=' + slightly under-rewarded (+'+f3(h.lg.sum)+')';}
+    else if(h.lg.sum<=-0.060){form-=6;fd+=' but OVER-performing expected ('+f3(h.lg.sum)+') ‚Äî regression-down risk';}
+    else if(h.lg.sum<=-0.025){form-=3;fd+=' but running a bit hot vs expected ('+f3(h.lg.sum)+')';}
+    else fd+=' (results match expected ‚Äî real)';
+  }
+  add('Form (vs expected)',form,fd+' ¬∑ L10 '+f3(h.b.roll10avg)+'/'+f3(h.b.roll10slg));
+  // 3. Platoon
+  if(h.pm)add('Platoon',h.pm.adj,h.pm.side+' vs '+(h.oppThrows||'?')+'HP (OPS diff '+(h.pm.diff>0?'+':'')+f3(Math.abs(h.pm.diff))+')');
+  else add('Platoon',0,'insufficient split sample');
+  // 4. Pitcher vulnerability
+  var P=h.pit,pv=0,pvd='';
+  if(P&&P.era!=null){
+    var blend=(P.l3&&P.l3.era!=null)?Math.round((P.era*0.5+P.l3.era*0.5)*100)/100:P.era;
+    pv+=blend>=5.5?8:blend>=4.75?6:blend>=4.2?3:blend>=3.6?0:blend>=3.0?-4:-7;
+    pvd='blended ERA '+blend.toFixed(2)+(P.l3&&P.l3.era!=null?' (last-3: '+P.l3.era.toFixed(2)+')':'');
+    if(h.pSav){
+      if(h.pSav.hard_hit_percent!=null&&h.pSav.hard_hit_percent>42){pv+=4;pvd+=' ¬∑ gets hit HARD ('+h.pSav.hard_hit_percent+'% hard-hit)';}
+      else if(h.pSav.hard_hit_percent!=null&&h.pSav.hard_hit_percent<32){pv-=2;pvd+=' ¬∑ limits hard contact';}
+      if(h.pSav.bb_percent!=null&&h.pSav.bb_percent>10){pv+=2;pvd+=' ¬∑ walks people (BB% '+h.pSav.bb_percent+')';}
+      if(h.pSav.whiff_percent!=null&&h.pSav.whiff_percent>30){pv-=3;pvd+=' ¬∑ big whiff arm ('+h.pSav.whiff_percent+'%)';}
+    }
+    if(h.vuln){pvd+=' ¬∑ '+h.vuln.label;
+      if(h.vuln.key==='TYPE4'){pv-=6;}
+      else if((h.vuln.key==='TYPE1'&&h.bt&&h.bt.key==='POWER')||(h.vuln.key==='TYPE2'&&h.bt&&h.bt.key==='CONTACT')){pv+=4;pvd+=' ‚Äî PERFECT bat-type match';}
+      else if(h.vuln.key==='TYPE3'){pv+=3;pvd+=' ‚Äî everyone eats';}
+    }
+    pv=Math.max(-12,Math.min(15,pv));
+  }else pvd='no pitcher data';
+  add('Pitcher vulnerability',pv,pvd);
+  // 5. Pitch-mix fit (spec 3.6 ‚Äî weighted heavily once wired)
+  var pmix=0,pmd='';
+  if(h.mix&&h.mix.fit!=null){
+    var fit=h.mix.fit;
+    pmix=fit>=0.500?12:fit>=0.460?8:fit>=0.420?4:fit>=0.380?0:fit>=0.340?-4:-8;
+    pmd='usage-weighted xSLG '+f3(fit)+' vs this arsenal ('+h.mix.coveredPct+'% of pitches covered)';
+    var best=h.mix.lines.filter(function(l){return l.xslg!=null;}).sort(function(a,b){return b.xslg-a.xslg;})[0];
+    if(best)pmd+=' ¬∑ best: '+f3(best.xslg)+' xSLG vs '+best.pitch+' ('+best.pct+'% thrown)';
+  }else pmd=(h.mix&&h.mix.note)||'DATA NOT YET AVAILABLE for this hitter';
+  add('Pitch-mix fit',pmix,pmd);
+  // 6. Park & environment
+  var env=0,ed=[];
+  if(h.park>=112){env+=5;ed.push('extreme hitter park ('+h.park+')');}
+  else if(h.park>=104){env+=3;ed.push('hitter park ('+h.park+')');}
+  else if(h.park<=96){env-=3;ed.push('pitcher park ('+h.park+')');}
+  else ed.push('neutral park ('+h.park+')');
+  if(h.total!=null){if(h.total>=10){env+=3;ed.push('game total '+h.total+' (books expect runs)');}else if(h.total>=9){env+=1;ed.push('total '+h.total);}else if(h.total<=7.5){env-=2;ed.push('low total '+h.total);}else ed.push('total '+h.total);}
+  if(h.wx&&!h.wx.neutral&&h.wx.temp!=null){if(h.wx.temp>=88){env+=1;ed.push(h.wx.temp+'¬∞F (ball carries)');}else if(h.wx.temp<=48){env-=1;ed.push(h.wx.temp+'¬∞F (cold)');}}
+  add('Park & environment',env,ed.join(' ¬∑ '));
+  // 7. Lineup slot
+  var slot=h.spot,sl=0;
+  if(slot){sl=slot<=2?4:slot<=4?3:slot<=6?1:0;add('Lineup slot',sl,'#'+slot+' ('+paEstimate(slot)+' PAs'+(slot<=2?' ‚Äî extra PA edge':slot<=4?' ‚Äî run-producer slot':'')+')'+(h.confirmed?'':' [PROJECTED]'));}
+  else add('Lineup slot',0,'not in a posted lineup');
+  var score=Math.round(F.reduce(function(a,x){return a+x.pts;},0));
+  var grade=score>=32?'A':score>=22?'B':score>=12?'C':'D';
+  // confidence (spec 3.5): data completeness + lineup state
+  var conf=(h.confirmed?1:0)+(h.bSav?1:0)+(h.mix&&h.mix.fit!=null?1:0)+(h.pSav?1:0);
+  var confidence=conf>=4?'HIGH':conf>=2?'MEDIUM':'LOW';
+  return{score:score,grade:grade,confidence:confidence,factors:F};
+}
+// Best-fit stat (spec 4): profile -> which stat to back
+function bestFitStat(h){
+  var bt=h.bt?h.bt.key:null,total=h.total||0,slot=h.spot||9,k9=h.pit?h.pit.k9:null;
+  if(bt==='POWER'&&total>=9)return'Total Bases over / H+R+RBI over (power + run environment)';
+  if(bt==='POWER')return'Total Bases over (power profile)';
+  if(bt==='CONTACT'&&k9!=null&&k9<7.5)return'Hits / Singles (contact bat vs low-K arm)';
+  if(slot<=2&&total>=9)return'Runs (top of order in a high-total game)';
+  if(slot>=3&&slot<=6&&total>=9)return'RBI / H+R+RBI (run producer + environment)';
+  if(bt==='CONTACT')return'Hits over';
+  return'H+R+RBI over (balanced profile)';
+}
+
+// ‚îÄ‚îÄ MAIN LOAD ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+var D=null;
+function setS(m){var el=document.getElementById('status');if(el)el.textContent=m;}
+async function loadAll(){
+  var t0=Date.now();
+  document.getElementById('main').innerHTML='<div class="load"><div class="spnr"></div>Reading the matchups...</div>';
+  setS('Loading schedule + lineups...');
+  var games=await loadSchedule();
+  if(!games.length){document.getElementById('main').innerHTML='<div class="card">No upcoming MLB games today.</div>';setS('No slate');return;}
+  setS('Loading Statcast layers...');
+  var sc=await loadStatcast();
+  var bps=await loadBatterPitchStats();
+  var wx=await loadWeatherFor(games);
+  var totals=await loadTotals();
+  // projected lineups for unposted games (real last-game orders ‚Äî no phantoms, spec 3.5)
+  setS('Resolving lineups ('+games.filter(function(g){return g.posted;}).length+'/'+games.length+' posted)...');
+  for(var i=0;i<games.length;i++){
+    var g=games[i];
+    if(!g.awayLu.length)g.awayLu=(await projectedLineup(g.awayId)).map(function(p){return{id:p.id,name:p.name,spot:p.spot,projected:true};});
+    if(!g.homeLu.length)g.homeLu=(await projectedLineup(g.homeId)).map(function(p){return{id:p.id,name:p.name,spot:p.spot,projected:true};});
+  }
+  // pitchers (both probables per game, incl. arsenal)
+  setS('Reading pitchers + arsenals...');
+  var pitIds=[];games.forEach(function(g){if(g.awayPit)pitIds.push(g.awayPit.id);if(g.homePit)pitIds.push(g.homePit.id);});
+  var pitArr=await pool(pitIds,function(id){return getPitcher(id);},CONC);
+  var pitMap={};pitIds.forEach(function(id,ix){pitMap[id]=pitArr[ix];});
+  // hitters
+  var jobs=[];
+  games.forEach(function(g){
+    var total=totals[g.awayTeam+' @ '+g.homeTeam]||null,wxg=wx[g.awayTeam+' @ '+g.homeTeam]||null;
+    var park=PARKS[g.venue]||100;
+    [['away',g.awayLu,g.homePit],['home',g.homeLu,g.awayPit]].forEach(function(side){
+      side[1].forEach(function(pl){
+        jobs.push({g:g,side:side[0],pl:pl,oppPitId:side[2]?side[2].id:null,oppPitName:side[2]?side[2].fullName:null,total:total,wx:wxg,park:park});
+      });
+    });
+  });
+  setS('Reading '+jobs.length+' hitters vs their pitchers...');
+  var done=0;
+  var hitters=await pool(jobs,async function(j){
+    var b=await getBatter(j.pl.id);
+    done++;if(done%15===0)setS('Reading hitters... '+done+'/'+jobs.length);
+    if(!b)return null;
+    var pit=j.oppPitId?pitMap[j.oppPitId]:null;
+    var bSav=sc.bat[j.pl.id]||null,pSav=(pit&&sc.pit[pit.id])||null;
+    var oppThrows=pit?pit.throws:null;
+    var tonight=oppThrows==='L'?b.splitVsL:oppThrows==='R'?b.splitVsR:null;
+    var other=oppThrows==='L'?b.splitVsR:oppThrows==='R'?b.splitVsL:null;
+    var h={
+      name:j.pl.name,id:j.pl.id,team:j.side==='away'?j.g.awayTeam:j.g.homeTeam,
+      game:j.g.awayTeam+' @ '+j.g.homeTeam,start:j.g.start,total:j.total,wx:j.wx,park:j.park,venue:j.g.venue,
+      spot:j.pl.spot,confirmed:!j.pl.projected&&j.g.posted,
+      b:b,bSav:bSav,bt:batType(b.iso),lg:luckGap(b,bSav),
+      pit:pit,pSav:pSav,oppPitName:j.oppPitName,oppThrows:oppThrows,
+      pm:platoonMod(tonight,other),tonightSplit:tonight,otherSplit:other,
+      vuln:classifyPitcher(pit,pSav),
+      mix:pit?pitchMixFit(j.pl.id,pit.arsenal,bps):null,
+      bvp:null
+    };
+    var gr=gradeMatchup(h);h.score=gr.score;h.grade=gr.grade;h.confidence=gr.confidence;h.factors=gr.factors;
+    h.bestFit=bestFitStat(h);
+    return h;
+  },CONC);
+  hitters=hitters.filter(Boolean);
+  // BvP footnotes for A/B cards only (it's NOISE ‚Äî never affects the grade; spec 4.1)
+  var ab=hitters.filter(function(h){return h.grade==='A'||h.grade==='B';});
+  setS('BvP footnotes for '+ab.length+' A/B cards (noise ‚Äî display only)...');
+  await pool(ab,async function(h){var pid=h.pit?h.pit.id:null;h.bvp=await getBvP(h.id,pid);},CONC);
+  hitters.sort(function(a,b){return b.score-a.score;});
+  D={hitters:hitters,games:games,generatedAt:new Date(),loadSec:Math.round((Date.now()-t0)/1000)};
+  render();
+  setS(hitters.length+' matchup cards ‚Ä¢ '+games.length+' games ‚Ä¢ built in '+D.loadSec+'s');
+  freshLine();
+}
+function freshLine(){
+  var el=document.getElementById('fresh');if(!el||!D)return;
+  function upd(){
+    var age=Math.round((Date.now()-D.generatedAt.getTime())/60000);
+    el.innerHTML='data pulled '+D.generatedAt.toLocaleTimeString()+' ('+age+'m ago)'+(age>STALE_MIN?' ‚Äî <b style="color:var(--amb)">STALE, refresh</b>':'');
+    if(age>STALE_MIN&&!D.stalePinged){D.stalePinged=true;toast('Data is '+age+'m old ‚Äî refreshing');loadAll();}
+  }
+  upd();if(!window.FRESH_T)window.FRESH_T=setInterval(upd,60000);
+}
+
+// ‚îÄ‚îÄ RENDER (Part A card) ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+function fRow(f){
+  var c=f.pts>0?'var(--grn)':f.pts<0?'var(--red)':'var(--mut)';
+  return '<div class="fx"><span class="mut">'+esc(f.name)+'</span><span><b style="color:'+c+'">'+(f.pts>0?'+':'')+f.pts+'</b></span></div><div style="font-size:10px;color:var(--mut);margin:-1px 0 4px">'+esc(f.detail)+'</div>';
+}
+function mcard(h,ix){
+  var gcls='g'+h.grade;
+  var when=new Date(h.start).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});
+  var head='<div class="mhead" onclick="tg('+ix+')">'
+    +'<div><div style="font-weight:800;font-size:14px">'+esc(h.name)+' <small>('+esc(TEAM_ABBR[h.team]||h.team)+')</small>'
+    +(h.bt?' <span class="tag" style="background:rgba(167,139,250,.12);color:var(--pur)">'+h.bt.label+'</span>':'')+'</div>'
+    +'<div style="font-size:10px" class="mut">'+esc(h.game)+' ¬∑ '+when+(h.total!=null?' ¬∑ total '+h.total:'')+' ¬∑ '
+    +(h.spot?'#'+h.spot+' '+(h.confirmed?'<b style="color:var(--grn)">CONFIRMED</b>':'<span style="color:var(--amb)">PROJECTED</span>'):'no lineup')
+    +' ¬∑ vs '+esc(h.oppPitName||'TBD')+(h.oppThrows?' ('+h.oppThrows+'HP)':'')+'</div></div>'
+    +'<div style="text-align:right"><span class="g '+gcls+'">'+h.grade+'</span><div style="font-size:9px" class="mut">'+h.score+' pts ¬∑ '+h.confidence+'</div></div></div>';
+  var b='<div class="mbody">';
+  // factor breakdown ‚Äî the transparent grade (spec 4: no black box)
+  b+='<div class="sect"><div class="sh">WHY '+h.grade+' ‚Äî FACTOR BREAKDOWN ('+h.score+' pts)</div>'+h.factors.map(fRow).join('')+'</div>';
+  // hitter profile
+  b+='<div class="sect"><div class="sh">HITTER PROFILE</div>'
+    +(h.bSav?('True talent: xwOBA '+f3(h.bSav.xwoba)+' ¬∑ xBA '+f3(h.bSav.xba)+' ¬∑ xSLG '+f3(h.bSav.xslg)+'<br>'):'<span class="mut">No Statcast row (low PA)</span><br>')
+    +'Season: '+f3(h.b.avg)+' / '+f3(h.b.obp)+' / '+f3(h.b.slg)+' ¬∑ ISO '+f3(h.b.iso)+' ¬∑ BB-rate '+f3(h.b.bbRate)
+    +'<br>Per game: '+h.b.tbpg+' TB ¬∑ '+h.b.runspg+' R ¬∑ '+h.b.rbipg+' RBI ¬∑ '+h.b.hpg+' H</div>';
+  // form
+  b+='<div class="sect"><div class="sh">FORM (results vs expected ‚Äî spec 4.2)</div>'
+    +'L10: '+f3(h.b.roll10avg)+' AVG / '+f3(h.b.roll10slg)+' SLG ‚Üí <b>'+h.b.hotCold+'</b>'
+    +(h.lg?'<br>Luck gap: '+(h.lg.sum>0?'+':'')+f3(h.lg.sum)+' ‚Äî '+(h.lg.sum>=0.025?'<b style="color:var(--grn)">under-rewarded (earned production, room to run)</b>':h.lg.sum<=-0.025?'<b style="color:var(--amb)">outrunning expected (regression-down risk)</b>':'results match expected (real)'):'')+'</div>';
+  // platoon
+  if(h.tonightSplit&&h.otherSplit){
+    b+='<div class="sect"><div class="sh">PLATOON</div>vs '+(h.oppThrows==='L'?'LHP':'RHP')+' (tonight): '+f3(h.tonightSplit.avg)+' AVG / '+f3(h.tonightSplit.ops)+' OPS ¬∑ other side: '+f3(h.otherSplit.avg)+' / '+f3(h.otherSplit.ops)
+      +(h.pm?' ‚Üí <b style="color:'+(h.pm.adj>0?'var(--grn)':h.pm.adj<0?'var(--red)':'var(--mut)')+'">'+h.pm.side+' ('+(h.pm.adj>0?'+':'')+h.pm.adj+')</b>':'')+'</div>';
+  }
+  // pitcher
+  if(h.pit&&h.pit.era!=null){
+    b+='<div class="sect"><div class="sh">OPPOSING PITCHER ‚Äî '+esc(h.oppPitName||'')+' ('+(h.oppThrows||'?')+'HP)</div>'
+      +'Season: '+h.pit.era.toFixed(2)+' ERA ¬∑ '+h.pit.whip.toFixed(2)+' WHIP ¬∑ '+h.pit.k9+' K/9 ¬∑ '+h.pit.bb9+' BB/9'
+      +(h.pit.l3&&h.pit.l3.era!=null?'<br>Last 3: '+h.pit.l3.era.toFixed(2)+' ERA'+(h.pit.l3.era>=6?' ‚Üí <b style="color:var(--grn)">scuffling badly</b>':h.pit.l3.era<=2.5?' ‚Üí <b style="color:var(--red)">dealing</b>':''):'')
+      +(h.pSav?'<br>Gives up: HardHit '+h.pSav.hard_hit_percent+'% ¬∑ Barrel '+h.pSav.barrel_batted_rate+'% ¬∑ xSLG-against '+f3(h.pSav.xslg)+'<br>Misses bats: Whiff '+h.pSav.whiff_percent+'% ¬∑ K% '+h.pSav.k_percent+' ¬∑ BB% '+h.pSav.bb_percent:'')
+      +(h.vuln?'<br>Vulnerability: <b>'+h.vuln.label+'</b>':'')+'</div>';
+  }
+  // pitch mix ‚Äî the 3.6 upgrade
+  b+='<div class="sect"><div class="sh">PITCH-MIX FIT</div>';
+  if(h.mix&&h.mix.lines&&h.mix.lines.length){
+    b+=h.mix.lines.map(function(l){
+      return esc(l.pitch)+' ('+l.pct+'% thrown): '+(l.xslg!=null?('<b style="color:'+(l.xslg>=0.460?'var(--grn)':l.xslg<=0.340?'var(--red)':'var(--txt)')+'">'+f3(l.xslg)+' xSLG</b>'):'<span class="mut">small sample</span>');
+    }).join('<br>');
+    if(h.mix.fit!=null)b+='<br><b>Weighted fit: '+f3(h.mix.fit)+' xSLG vs this arsenal</b>';
+    else b+='<br><span class="mut">'+esc(h.mix.note||'insufficient data to score')+'</span>';
+  }else b+='<span class="mut">No arsenal data for this pitcher.</span>';
+  b+='</div>';
+  // park & weather
+  b+='<div class="sect"><div class="sh">PARK & WEATHER</div>'+esc(h.venue)+' ‚Äî factor '+h.park
+    +(h.wx?(h.wx.neutral?' ¬∑ roof/dome (weather-neutral)':' ¬∑ '+h.wx.temp+'¬∞F ¬∑ wind '+h.wx.windSpeed+'mph '+windCardinal(h.wx.windDeg)+' ¬∑ humidity '+h.wx.humidity+'%'):'')+'</div>';
+  // BvP ‚Äî NOISE footnote (spec 4.1)
+  b+='<div class="sect"><div class="sh">HEAD-TO-HEAD (BvP) ‚Äî <span style="color:var(--amb)">NOISE, does not move the grade</span></div>'
+    +(h.bvp?(h.bvp.h+'-for-'+h.bvp.ab+' ('+f3(h.bvp.avg)+', '+h.bvp.hr+' HR) ‚Äî '+(h.bvp.ab<30?'<b>sample far too small to mean anything</b>':'still treat with caution')):'<span class="mut">none on file (or C/D card ‚Äî not fetched)</span>')+'</div>';
+  // best fit
+  b+='<div class="sect" style="border-top:2px solid var(--bord)"><div class="sh" style="color:var(--gld)">BEST-FIT STAT TO BACK</div><b>'+esc(h.bestFit)+'</b>'
+    +'<div style="font-size:10px;margin-top:3px" class="mut">Price check is the LAST step, not the product: a great matchup at a terrible price is still a bad bet. Check the number in Edge Scanner before betting (no worse than -140).</div></div>';
+  b+='</div>';
+  return '<div class="mcard" id="mc'+ix+'">'+head+b+'</div>';
+}
+function tg(ix){var el=document.getElementById('mc'+ix);if(el)el.classList.toggle('open');}
+function render(){
+  if(!D)return;
+  var h='';
+  var A=D.hitters.filter(function(x){return x.grade==='A';});
+  var conf=D.games.filter(function(g){return g.posted;}).length;
+  h+='<div class="card" style="border-color:var(--gld)"><b style="color:var(--gld);font-size:13px">&#11088; TOP MATCHUPS TONIGHT ('+A.length+' A-grades)</b>';
+  h+='<div style="font-size:10px;margin-top:2px" class="mut">Lineups posted: '+conf+'/'+D.games.length+' games ¬∑ cards ranked by matchup grade ¬∑ grade = how well the hitter is SET UP to produce, not a bet signal</div>';
+  if(A.length)A.slice(0,12).forEach(function(x){
+    h+='<div style="font-size:12px;margin-top:6px"><b>'+esc(x.name)+'</b> <span class="mut">('+esc(TEAM_ABBR[x.team]||x.team)+' vs '+esc(x.oppPitName||'TBD')+')</span> ‚Äî '+x.score+' pts ¬∑ '+(x.confirmed?'#'+x.spot+' conf':'proj')+' ¬∑ <span style="color:var(--gld)">'+esc(x.bestFit.split(' (')[0])+'</span></div>';
+  });
+  else h+='<div style="font-size:11px;margin-top:5px" class="mut">No A-grades right now ‚Äî check back when lineups post.</div>';
+  h+='</div>';
+  D.hitters.slice(0,120).forEach(function(x,ix){h+=mcard(x,ix);});
+  if(D.hitters.length>120)h+='<div class="card mut" style="font-size:11px">'+(D.hitters.length-120)+' lower-graded cards not shown.</div>';
+  document.getElementById('main').innerHTML=h;
+}
+function copyTop(){
+  if(!D){toast('Still loading');return;}
+  var A=D.hitters.filter(function(x){return x.grade==='A'||x.grade==='B';}).slice(0,15);
+  var t='MATCHUP ENGINE v15 ‚Äî '+new Date().toLocaleString()+' (data '+D.generatedAt.toLocaleTimeString()+')\n';
+  t+='Grade = how well the hitter is set up tonight (talent/form-vs-expected/platoon/pitcher/pitch-mix/park/slot). NOT a bet signal ‚Äî price-check before betting.\n\n';
+  A.forEach(function(x){
+    t+=x.grade+' ('+x.score+') '+x.name+' ('+(TEAM_ABBR[x.team]||x.team)+') vs '+(x.oppPitName||'TBD')+(x.oppThrows?' ('+x.oppThrows+'HP)':'')+' | '+(x.confirmed?'#'+x.spot+' CONF':'PROJ')+' | '+x.confidence+'\n';
+    t+='   best fit: '+x.bestFit+'\n';
+    var top=x.factors.slice().sort(function(a,b){return b.pts-a.pts;}).slice(0,2);
+    t+='   why: '+top.map(function(f){return f.name+' +'+f.pts+' ('+f.detail.split(' ¬∑ ')[0]+')';}).join('; ')+'\n';
+  });
+  navigator.clipboard.writeText(t).then(function(){toast('Copied top matchups');}).catch(function(){toast('Copy failed');});
+}
+loadAll();
+</script>
+</body>
+</html>
