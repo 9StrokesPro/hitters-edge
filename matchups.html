@@ -352,30 +352,24 @@ function parsePropRows(d){
 // erases a price that was live earlier ‚Äî it just marks it stale. Returns {props, status}
 // where status[gameKey] ‚àà 'ok' | 'stale' (using cache after a failed refresh) | 'failed'
 // (never fetched this game) | 'no_event' (no odds market mapped).
-// Simple, direct pull (the version that worked at 1 PM). No cache, no retry-storm ‚Äî those
-// were the regression. Builds props straight from each game's response. Per-game STATE is
-// tracked so the card can tell "couldn't fetch" apart from "genuinely not posted" (Joe's ask):
-//   ok = fetched, HR prices parsed ¬∑ empty = 200 but no books (feed shed it ‚Äî data likely
-//   exists) ¬∑ failed = request error ¬∑ no_event = game not on the odds board.
+// Props now come from the ALWAYS-ON SERVER, not the browser. Firing 15 Odds API calls per
+// page load was getting shed by the shared-key rate limit (proven: 13/15 came back empty-200,
+// only ~1 game resolved) ‚Äî that's why props kept vanishing. The server pulls props ONCE per
+// hour (paced, no burst) and caches them; the page reads them in a SINGLE free call. States:
+//   ok = server has this game's props ¬∑ not_covered = server hasn't fetched this game yet
+//   (outside its ~10h window, or its last pull failed) ¬∑ failed = tracker server unreachable.
+var SERVER_URL='https://edge-scanner.joe-f3f.workers.dev';
 async function loadProps(games){
-  var evr=await fetchJSON('https://api.the-odds-api.com/v4/sports/baseball_mlb/events?apiKey='+ODDS_KEY);
-  var idByGame={};
-  if(evr.ok&&Array.isArray(evr.data))evr.data.forEach(function(e){idByGame[e.away_team+' @ '+e.home_team]=e.id;});
-  var props={},status={};
-  for(var i=0;i<games.length;i++){
-    var g=games[i],gk=g.awayTeam+' @ '+g.homeTeam,eid=idByGame[gk];
-    if(!eid){status[gk]='no_event';continue;}
-    var res=await fetchJSON('https://api.the-odds-api.com/v4/sports/baseball_mlb/events/'+eid+'/odds?regions=us,us2&markets='+PROP_MKTS+'&oddsFormat=american&apiKey='+ODDS_KEY,{tries:2});
-    if(!res.ok){status[gk]='failed';}
-    else if(!res.data||!res.data.bookmakers||!res.data.bookmakers.length){status[gk]='empty';} // shed / no data
-    else{
-      var pr=parsePropRows(res.data);
-      Object.keys(pr).forEach(function(name){props[name]=pr[name];});
-      status[gk]='ok';
-    }
-    await slp(350); // light spacing; enough to avoid the shed at 1-game/0.35s
+  var d=null;
+  try{var r=await fetch(SERVER_URL.replace(/\/$/,'')+'/props');if(r.ok)d=await r.json();}catch(e){}
+  if(!d||!d.players){
+    var st0={};games.forEach(function(g){st0[g.awayTeam+' @ '+g.homeTeam]='failed';});
+    return{props:{},status:st0,at:null,serverDown:true};
   }
-  return{props:props,status:status};
+  var covered={};(d.games||[]).forEach(function(gk){covered[gk]=true;});
+  var status={};
+  games.forEach(function(g){var gk=g.awayTeam+' @ '+g.homeTeam;status[gk]=covered[gk]?'ok':'not_covered';});
+  return{props:d.players||{},status:status,at:d.at};
 }
 // best-fit stat text -> ordered market preference
 function bestFitMkts(fitText){
@@ -412,8 +406,8 @@ function propLine(bp){ // "TB O1.5 ‚àí120 on Hard Rock ‚Äî fair price �
 //  no_event           = this game isn't mapped on the odds board yet
 //  ok/stale           = fetched fine, Hard Rock genuinely hasn't posted this prop
 function noPropMsg(h){
-  if(h.propFetch==='empty'||h.propFetch==='failed')return{amber:true,txt:'‚ö† COULDN‚ÄôT FETCH the price (the odds feed returned nothing for this game) ‚Äî it likely IS posted. Hit Refresh. This is NOT "not posted."'};
-  if(h.propFetch==='no_event')return{amber:true,txt:'This game isn‚Äôt on the odds board yet (no event mapped).'};
+  if(h.propFetch==='failed')return{amber:true,txt:'‚ö† Couldn‚Äôt reach the tracker server (it holds the prices) ‚Äî try Refresh in a moment.'};
+  if(h.propFetch==='not_covered')return{amber:true,txt:'The server hasn‚Äôt pulled this game‚Äôs props yet (it fetches within ~10h of game time) ‚Äî check back closer to start.'};
   return{amber:false,txt:'Hard Rock genuinely hasn‚Äôt posted this prop yet ‚Äî lines fill in closer to game time.'};
 }
 async function loadTotals(){ // context only (~2 credits). Fail-safe null.
@@ -725,7 +719,7 @@ function render(){
   h+='<div style="font-size:10px;margin-top:2px" class="mut">Lineups posted: '+conf+'/'+D.games.length+' games ¬∑ cards ranked by matchup grade ¬∑ grade = how well the hitter is SET UP to produce, not a bet signal</div>';
   if(A.length)A.slice(0,12).forEach(function(x){
     h+='<div style="font-size:12px;margin-top:6px"><b>'+esc(x.name)+'</b> <span class="mut">('+esc(TEAM_ABBR[x.team]||x.team)+' vs '+esc(x.oppPitName||'TBD')+')</span> ‚Äî '+x.score+' pts ¬∑ '+(x.confirmed?'#'+x.spot+' conf':'proj')
-      +(x.bestProp?'<br><span style="color:var(--gld);font-size:11px">&#127921; '+esc(x.bestProp.label)+' O'+x.bestProp.line+' '+(x.bestProp.hr>0?'+':'')+x.bestProp.hr+' on Hard Rock'+(x.bestProp.fair!=null?(x.bestProp.fair-impliedP(x.bestProp.hr)>=-0.005?' ‚úì fair':''):'')+(x.bestProp.stale?' (stale)':'')+'</span>':'<br><span style="font-size:10px;color:'+(x.propFetch==='failed'||x.propFetch==='empty'||x.propFetch==='no_event'?'var(--amb)':'var(--mut)')+'">'+(x.propFetch==='failed'||x.propFetch==='empty'?'‚ö† couldn‚Äôt fetch ‚Äî refresh':x.propFetch==='no_event'?'no odds market yet':'not posted yet')+'</span>')+'</div>';
+      +(x.bestProp?'<br><span style="color:var(--gld);font-size:11px">&#127921; '+esc(x.bestProp.label)+' O'+x.bestProp.line+' '+(x.bestProp.hr>0?'+':'')+x.bestProp.hr+' on Hard Rock'+(x.bestProp.fair!=null?(x.bestProp.fair-impliedP(x.bestProp.hr)>=-0.005?' ‚úì fair':''):'')+(x.bestProp.stale?' (stale)':'')+'</span>':'<br><span style="font-size:10px;color:'+(x.propFetch==='failed'||x.propFetch==='not_covered'?'var(--amb)':'var(--mut)')+'">'+(x.propFetch==='failed'?'‚ö† server unreachable':x.propFetch==='not_covered'?'not pulled yet':'not posted yet')+'</span>')+'</div>';
   });
   else h+='<div style="font-size:11px;margin-top:5px" class="mut">No A-grades right now ‚Äî check back when lineups post.</div>';
   h+='</div>';
@@ -740,7 +734,7 @@ function copyTop(){
   t+='Grade = how well the hitter is set up tonight (talent/form-vs-expected/platoon/pitcher/pitch-mix/park/slot). NOT a bet signal ‚Äî price-check before betting.\n\n';
   A.forEach(function(x){
     t+=x.grade+' ('+x.score+') '+x.name+' ('+(TEAM_ABBR[x.team]||x.team)+') vs '+(x.oppPitName||'TBD')+(x.oppThrows?' ('+x.oppThrows+'HP)':'')+' | '+(x.confirmed?'#'+x.spot+' CONF':'PROJ')+' | '+x.confidence+'\n';
-    t+='   THE BET: '+(x.bestProp?propLine(x.bestProp):((x.propFetch==='failed'||x.propFetch==='empty')?'[couldn‚Äôt fetch price ‚Äî refresh]':x.propFetch==='no_event'?'[no odds market yet]':'[HR not posted yet]')+' ('+x.bestFit.split(' (')[0]+')')+'\n';
+    t+='   THE BET: '+(x.bestProp?propLine(x.bestProp):(x.propFetch==='failed'?'[server unreachable]':x.propFetch==='not_covered'?'[not pulled yet]':'[HR not posted yet]')+' ('+x.bestFit.split(' (')[0]+')')+'\n';
     var top=x.factors.slice().sort(function(a,b){return b.pts-a.pts;}).slice(0,2);
     t+='   why: '+top.map(function(f){return f.name+' +'+f.pts+' ('+f.detail.split(' ¬∑ ')[0]+')';}).join('; ')+'\n';
   });
