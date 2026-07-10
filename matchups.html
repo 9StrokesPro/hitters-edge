@@ -78,6 +78,12 @@ function f3(v){if(v==null)return'--';if(v<0)return'-'+f3(-v);return v>=1?v.toFix
 async function apiFetch(url){try{var r=await fetch(url);if(!r.ok)throw 0;return await r.json();}catch(e){return null;}}
 async function pool(items,fn,n){var i=0,out=new Array(items.length);async function w(){while(i<items.length){var ix=i++;out[ix]=await fn(items[ix],ix);}}var ws=[];for(var j=0;j<Math.min(n,items.length);j++)ws.push(w());await Promise.all(ws);return out;}
 function windCardinal(deg){if(deg==null)return'';return['N','NE','E','SE','S','SW','W','NW'][Math.round(deg/45)%8];}
+// Baseball innings-pitched notation: "3.1" = 3‚Öì, "3.2" = 3‚Öî (the decimal is OUTS, not tenths).
+function ipToInn(ip){var s=String(ip==null?'0':ip).split('.');var whole=parseInt(s[0])||0;var outs=s[1]?parseInt(s[1].charAt(0))||0:0;return whole+Math.min(outs,2)/3;}
+// Sanity-cap an ERA to a physically-plausible scoring range (a 22 ERA is a data artifact).
+function capEra(e){if(e==null||isNaN(e))return null;return Math.round(Math.max(0,Math.min(e,9))*100)/100;}
+var MIN_PITCHER_IP=20;  // below this, season ERA is small-sample noise -> anchor on Statcast, not ERA
+var MIN_PITCHER_G=4;    // and this many appearances
 
 // ‚îÄ‚îÄ static maps (ported from v13) ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
 var PARKS={'Coors Field':115,'Great American Ball Park':112,'Fenway Park':108,'Globe Life Field':107,'Citizens Bank Park':106,'American Family Field':105,'Wrigley Field':104,'Rogers Centre':104,'Yankee Stadium':103,'Truist Park':102,'Camden Yards':103,'Guaranteed Rate Field':103,'Dodger Stadium':101,'T-Mobile Park':100,'Progressive Field':100,'Nationals Park':100,'Daikin Park':98,'Minute Maid Park':98,'Angel Stadium':99,'Chase Field':99,'loanDepot park':98,'Oracle Park':97,'Citi Field':97,'Comerica Park':97,'Petco Park':96,'Target Field':96,'PNC Park':96,'Busch Stadium':95,'Kauffman Stadium':95,'Tropicana Field':97,'Sutter Health Park':98};
@@ -193,12 +199,27 @@ async function getPitcher(id){
   var d=await apiFetch(MLB+'/people/'+id+'?hydrate=stats(group=pitching,type=season,season='+SEASON+')&sportId=1');
   var pe=d&&d.people&&d.people[0];if(!pe)return null;
   var throws=pe.pitchHand&&pe.pitchHand.code||'';
-  var splits=pe.stats&&pe.stats[0]&&pe.stats[0].splits||[];if(!splits.length)return{throws:throws};
-  var s=splits[0].stat,ip=Math.max(parseFloat(s.inningsPitched)||1,1),gs=parseInt(s.gamesStarted)||0;
+  // identity cross-check: the id must resolve to an actual pitcher, not a phantom/position player
+  var pos=pe.primaryPosition&&pe.primaryPosition.abbreviation||'';
+  var isPitcher=pos==='P'||pos==='SP'||pos==='RP'||(pe.primaryPosition&&pe.primaryPosition.type==='Pitcher');
+  var splits=pe.stats&&pe.stats[0]&&pe.stats[0].splits||[];
+  if(!splits.length)return{id:id,name:pe.fullName,throws:throws,pos:pos,isPitcher:isPitcher,era:null,reliable:false,ip:0,gs:0,arsenal:[],l3:null};
+  var s=splits[0].stat;
+  var ipTrue=ipToInn(s.inningsPitched), gs=parseInt(s.gamesStarted)||0, g=parseInt(s.gamesPlayed)||0;
+  var seasonER=parseInt(s.earnedRuns)||0;
+  // ERA: trust MLB's own field (correct innings math); cap for scoring sanity.
+  var eraField=parseFloat(s.era);
+  var era=(eraField!=null&&!isNaN(eraField))?eraField:(ipTrue>0?seasonER/ipTrue*9:null);
+  // RELIABLE only with enough sample. 1 start off the IL (Greene) is NOT a 22 ERA pitcher.
+  var reliable=isPitcher&&ipTrue>=MIN_PITCHER_IP&&g>=MIN_PITCHER_G;
   var l3=null;
   var gl=await apiFetch(MLB+'/people/'+id+'/stats?stats=gameLog&group=pitching&season='+SEASON+'&sportId=1');
   var gls=gl&&gl.stats&&gl.stats[0]&&gl.stats[0].splits||[];
-  if(gls.length){var rec=gls.slice(-3),tIP=0,tER=0;rec.forEach(function(r){tIP+=parseFloat(r.stat.inningsPitched)||0;tER+=parseInt(r.stat.earnedRuns)||0;});l3={era:tIP>0?Math.round(tER/tIP*9*100)/100:null,starts:rec.length};}
+  if(gls.length){
+    var rec=gls.slice(-3),tInn=0,tER=0;
+    rec.forEach(function(r){tInn+=ipToInn(r.stat.inningsPitched);tER+=parseInt(r.stat.earnedRuns)||0;}); // TRUE innings (3.1 = 3‚Öì)
+    l3={era:tInn>0?capEra(tER/tInn*9):null,inn:Math.round(tInn*10)/10,starts:rec.length,reliable:tInn>=8}; // need ~8+ IP for L3 to mean anything
+  }
   // pitch arsenal (usage %) ‚Äî free statsapi
   var ars=[];
   var ad=await apiFetch(MLB+'/people/'+id+'/stats?stats=pitchArsenal&group=pitching&season='+SEASON);
@@ -207,8 +228,10 @@ async function getPitcher(id){
     ars.push({code:t.code||'',name:t.description||PITCH_NAME[t.code]||t.code,pct:Math.round((sp.stat.percentage||0)*1000)/10});
   });
   ars.sort(function(a,b){return b.pct-a.pct;});
-  return{id:id,throws:throws,era:parseFloat(s.era)||0,whip:parseFloat(s.whip)||0,gs:gs,
-    k9:Math.round((parseInt(s.strikeOuts)||0)/ip*9*10)/10,bb9:Math.round((parseInt(s.baseOnBalls)||0)/ip*9*10)/10,
+  var ipDiv=Math.max(ipTrue,1);
+  return{id:id,name:pe.fullName,pos:pos,isPitcher:isPitcher,throws:throws,
+    era:era!=null?capEra(era):null,eraRaw:era,whip:parseFloat(s.whip)||0,gs:gs,ip:Math.round(ipTrue*10)/10,reliable:reliable,
+    k9:Math.round((parseInt(s.strikeOuts)||0)/ipDiv*9*10)/10,bb9:Math.round((parseInt(s.baseOnBalls)||0)/ipDiv*9*10)/10,
     l3:l3,arsenal:ars};
 }
 async function getBvP(batterId,pitcherId){
@@ -405,26 +428,40 @@ function gradeMatchup(h){
   // 3. Platoon
   if(h.pm)add('Platoon',h.pm.adj,h.pm.side+' vs '+(h.oppThrows||'?')+'HP (OPS diff '+(h.pm.diff>0?'+':'')+f3(Math.abs(h.pm.diff))+')');
   else add('Platoon',0,'insufficient split sample');
-  // 4. Pitcher vulnerability
-  var P=h.pit,pv=0,pvd='';
-  if(P&&P.era!=null){
-    var blend=(P.l3&&P.l3.era!=null)?Math.round((P.era*0.5+P.l3.era*0.5)*100)/100:P.era;
-    pv+=blend>=5.5?8:blend>=4.75?6:blend>=4.2?3:blend>=3.6?0:blend>=3.0?-4:-7;
-    pvd='blended ERA '+blend.toFixed(2)+(P.l3&&P.l3.era!=null?' (last-3: '+P.l3.era.toFixed(2)+')':'');
-    if(h.pSav){
-      if(h.pSav.hard_hit_percent!=null&&h.pSav.hard_hit_percent>42){pv+=4;pvd+=' ¬∑ gets hit HARD ('+h.pSav.hard_hit_percent+'% hard-hit)';}
-      else if(h.pSav.hard_hit_percent!=null&&h.pSav.hard_hit_percent<32){pv-=2;pvd+=' ¬∑ limits hard contact';}
-      if(h.pSav.bb_percent!=null&&h.pSav.bb_percent>10){pv+=2;pvd+=' ¬∑ walks people (BB% '+h.pSav.bb_percent+')';}
-      if(h.pSav.whiff_percent!=null&&h.pSav.whiff_percent>30){pv-=3;pvd+=' ¬∑ big whiff arm ('+h.pSav.whiff_percent+'%)';}
+  // 4. Pitcher vulnerability ‚Äî STATCAST-ANCHORED (quality of contact / bat-missing are the
+  //    primary signal; they stabilize far faster than ERA). Season ERA is a SECONDARY,
+  //    sanity-capped input, and last-3 ERA only a minor recent-form nudge. A pitcher with a
+  //    tiny sample (e.g. 1 start off the IL) contributes NOTHING from ERA ‚Äî it's noise.
+  var P=h.pit,pv=0,pvd=[];
+  if(!P||P.isPitcher===false){ add('Pitcher vulnerability',0,'no reliable pitcher data'); }
+  else if(!P.reliable){
+    // SMALL SAMPLE = UNKNOWN. Both ERA and Statcast are noise off a couple innings ‚Äî score
+    // NEUTRAL (don't inflate OR punish), and let the hitter's own profile drive the grade.
+    add('Pitcher vulnerability',0,'UNKNOWN ‚Äî only '+(P.ip||0)+' IP / '+(P.gs||0)+' GS this season; too small to read (both ERA and Statcast are noise). Grade is hitter-driven.');
+  }else{
+    var ps=h.pSav;
+    // -- PRIMARY: Statcast quality-of-contact allowed (reliable sample only) --
+    if(ps){
+      if(ps.xslg!=null){pv+=ps.xslg>=0.480?7:ps.xslg>=0.430?4:ps.xslg>=0.390?1:ps.xslg>=0.340?-2:-5;pvd.push('xSLG-against '+f3(ps.xslg)+(ps.xslg>=0.430?' (gets squared up)':ps.xslg<=0.340?' (limits damage)':''));}
+      if(ps.hard_hit_percent!=null){pv+=ps.hard_hit_percent>44?4:ps.hard_hit_percent>40?2:ps.hard_hit_percent<32?-3:0;pvd.push('HardHit '+ps.hard_hit_percent+'%');}
+      if(ps.barrel_batted_rate!=null){pv+=ps.barrel_batted_rate>9?3:ps.barrel_batted_rate>7?1:ps.barrel_batted_rate<5?-2:0;pvd.push('Barrel '+ps.barrel_batted_rate+'%');}
+      if(ps.whiff_percent!=null){pv+=ps.whiff_percent>30?-4:ps.whiff_percent>26?-2:ps.whiff_percent<22?2:0;pvd.push('Whiff '+ps.whiff_percent+'%');}
+      if(ps.bb_percent!=null&&ps.bb_percent>10){pv+=2;pvd.push('walks people (BB% '+ps.bb_percent+')');}
+    }else pvd.push('no Statcast row');
+    // -- SECONDARY: season ERA, sanity-capped --
+    if(P.era!=null){pv+=P.era>=5.0?4:P.era>=4.3?2:P.era>=3.7?0:P.era>=3.0?-2:-4;pvd.push('ERA '+P.era.toFixed(2)+' ('+P.ip+' IP)');}
+    // -- MINOR: last-3 recent form, capped, only if L3 has real innings --
+    if(P.l3&&P.l3.reliable&&P.l3.era!=null){
+      if(P.l3.era>=6){pv+=1.5;pvd.push('last-3 rough ('+P.l3.era.toFixed(2)+' over '+P.l3.inn+' IP)');}
+      else if(P.l3.era<=2.5){pv-=1.5;pvd.push('last-3 sharp ('+P.l3.era.toFixed(2)+')');}
     }
-    if(h.vuln){pvd+=' ¬∑ '+h.vuln.label;
-      if(h.vuln.key==='TYPE4'){pv-=6;}
-      else if((h.vuln.key==='TYPE1'&&h.bt&&h.bt.key==='POWER')||(h.vuln.key==='TYPE2'&&h.bt&&h.bt.key==='CONTACT')){pv+=4;pvd+=' ‚Äî PERFECT bat-type match';}
-      else if(h.vuln.key==='TYPE3'){pv+=3;pvd+=' ‚Äî everyone eats';}
+    if(h.vuln){pvd.push(h.vuln.label);
+      if(h.vuln.key==='TYPE4'){pv-=5;}
+      else if((h.vuln.key==='TYPE1'&&h.bt&&h.bt.key==='POWER')||(h.vuln.key==='TYPE2'&&h.bt&&h.bt.key==='CONTACT')){pv+=3;pvd.push('PERFECT bat-type match');}
     }
     pv=Math.max(-12,Math.min(15,pv));
-  }else pvd='no pitcher data';
-  add('Pitcher vulnerability',pv,pvd);
+    add('Pitcher vulnerability',pv,pvd.join(' ¬∑ '));
+  }
   // 5. Pitch-mix fit (spec 3.6 ‚Äî weighted heavily once wired)
   var pmix=0,pmd='';
   if(h.mix&&h.mix.fit!=null){
@@ -451,7 +488,7 @@ function gradeMatchup(h){
   var score=Math.round(F.reduce(function(a,x){return a+x.pts;},0));
   var grade=score>=32?'A':score>=22?'B':score>=12?'C':'D';
   // confidence (spec 3.5): data completeness + lineup state
-  var conf=(h.confirmed?1:0)+(h.bSav?1:0)+(h.mix&&h.mix.fit!=null?1:0)+(h.pSav?1:0);
+  var conf=(h.confirmed?1:0)+(h.bSav?1:0)+(h.mix&&h.mix.fit!=null?1:0)+(h.pit&&h.pit.reliable?1:0); // pitcher counts only if we've seen enough of him
   var confidence=conf>=4?'HIGH':conf>=2?'MEDIUM':'LOW';
   return{score:score,grade:grade,confidence:confidence,factors:F};
 }
@@ -522,7 +559,7 @@ async function loadAll(){
       b:b,bSav:bSav,bt:batType(b.iso),lg:luckGap(b,bSav),
       pit:pit,pSav:pSav,oppPitName:j.oppPitName,oppThrows:oppThrows,
       pm:platoonMod(tonight,other),tonightSplit:tonight,otherSplit:other,
-      vuln:classifyPitcher(pit,pSav),
+      vuln:(pit&&pit.reliable)?classifyPitcher(pit,pSav):null, // only type an arm we've seen enough of
       mix:pit?pitchMixFit(j.pl.id,pit.arsenal,bps):null,
       bvp:null
     };
@@ -586,13 +623,18 @@ function mcard(h,ix){
     b+='<div class="sect"><div class="sh">PLATOON</div>vs '+(h.oppThrows==='L'?'LHP':'RHP')+' (tonight): '+f3(h.tonightSplit.avg)+' AVG / '+f3(h.tonightSplit.ops)+' OPS ¬∑ other side: '+f3(h.otherSplit.avg)+' / '+f3(h.otherSplit.ops)
       +(h.pm?' ‚Üí <b style="color:'+(h.pm.adj>0?'var(--grn)':h.pm.adj<0?'var(--red)':'var(--mut)')+'">'+h.pm.side+' ('+(h.pm.adj>0?'+':'')+h.pm.adj+')</b>':'')+'</div>';
   }
-  // pitcher
-  if(h.pit&&h.pit.era!=null){
-    b+='<div class="sect"><div class="sh">OPPOSING PITCHER ‚Äî '+esc(h.oppPitName||'')+' ('+(h.oppThrows||'?')+'HP)</div>'
-      +'Season: '+h.pit.era.toFixed(2)+' ERA ¬∑ '+h.pit.whip.toFixed(2)+' WHIP ¬∑ '+h.pit.k9+' K/9 ¬∑ '+h.pit.bb9+' BB/9'
-      +(h.pit.l3&&h.pit.l3.era!=null?'<br>Last 3: '+h.pit.l3.era.toFixed(2)+' ERA'+(h.pit.l3.era>=6?' ‚Üí <b style="color:var(--grn)">scuffling badly</b>':h.pit.l3.era<=2.5?' ‚Üí <b style="color:var(--red)">dealing</b>':''):'')
-      +(h.pSav?'<br>Gives up: HardHit '+h.pSav.hard_hit_percent+'% ¬∑ Barrel '+h.pSav.barrel_batted_rate+'% ¬∑ xSLG-against '+f3(h.pSav.xslg)+'<br>Misses bats: Whiff '+h.pSav.whiff_percent+'% ¬∑ K% '+h.pSav.k_percent+' ¬∑ BB% '+h.pSav.bb_percent:'')
-      +(h.vuln?'<br>Vulnerability: <b>'+h.vuln.label+'</b>':'')+'</div>';
+  // pitcher ‚Äî Statcast leads; ERA shown honestly (capped, with sample + small-sample flag)
+  if(h.pit&&h.pit.isPitcher!==false){
+    var P=h.pit;
+    b+='<div class="sect"><div class="sh">OPPOSING PITCHER ‚Äî '+esc(P.name||h.oppPitName||'')+' ('+(h.oppThrows||'?')+'HP)</div>';
+    if(h.pSav)b+='<b>Gives up:</b> xSLG-against '+f3(h.pSav.xslg)+' ¬∑ HardHit '+h.pSav.hard_hit_percent+'% ¬∑ Barrel '+h.pSav.barrel_batted_rate+'%<br><b>Bat-missing:</b> Whiff '+h.pSav.whiff_percent+'% ¬∑ K% '+h.pSav.k_percent+' ¬∑ BB% '+h.pSav.bb_percent+'<br>';
+    if(P.reliable&&P.era!=null){
+      b+='Season: '+P.era.toFixed(2)+' ERA ¬∑ '+P.whip.toFixed(2)+' WHIP ¬∑ '+P.k9+' K/9 ¬∑ '+P.bb9+' BB/9 <span class="mut">('+P.ip+' IP)</span>';
+      if(P.l3&&P.l3.reliable&&P.l3.era!=null)b+='<br>Last 3: '+P.l3.era.toFixed(2)+' ERA over '+P.l3.inn+' IP'+(P.l3.era>=6?' ‚Üí <b style="color:var(--grn)">scuffling</b>':P.l3.era<=2.5?' ‚Üí <b style="color:var(--red)">dealing</b>':'');
+    }else{
+      b+='<span style="color:var(--amb)">Season line is SMALL SAMPLE ('+(P.ip||0)+' IP, '+(P.gs||0)+' GS) ‚Äî ERA '+(P.eraRaw!=null?P.eraRaw.toFixed(2):'n/a')+' is noise, not used. Read is Statcast-led'+(h.pSav?'.':' but he has no Statcast row yet either ‚Üí LOW confidence.')+'</span>';
+    }
+    b+=(h.vuln?'<br>Vulnerability: <b>'+h.vuln.label+'</b>':'')+'</div>';
   }
   // pitch mix ‚Äî the 3.6 upgrade
   b+='<div class="sect"><div class="sh">PITCH-MIX FIT</div>';
