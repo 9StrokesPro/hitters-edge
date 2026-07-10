@@ -86,6 +86,10 @@ var SELECT_MIN_PEERS = 4;      // need a real consensus (>= N two-way books)
 var SELECT_MAX       = 10;     // top N per sweep
 var SELECT_MIN_ODDS  = -140;   // no heavier juice than -140 (kills -156/-400 favorites)
 var SELECT_MAX_ODDS  = 200;    // nothing at +200 or longer (too much risk)
+var SELECT_VALUE_FLOOR = -0.02;// a Select must be priced within 2pp of fair. A 55% pick at
+                               // -140 is -EV (juice > edge) ‚Äî this rejects overpaying the vig.
+// True only for selects whose Hard Rock price is close enough to fair to be worth betting.
+function selectWorthIt(p){ if(p.type!=='select')return true; if(p.prob==null||p.price==null)return true; return (p.prob-impliedProb(p.price))>=SELECT_VALUE_FLOOR; }
 var PAPER_MODE       = true;   // master switch. Real-money label turns on ONLY via clvProven() below.
 var CLV_PROVE_N      = 50;     // strategy needs >= N settled flagged picks...
 var CLV_PROVE_PCT    = 52;     // ...with >= this % beating the close AND avg CLV >= 0
@@ -292,6 +296,7 @@ function stats(){
   var mk=function(){return{n:0,w:0,u:0,pending:0,clvN:0,clvPos:0,clvSum:0};};
   var s={flagged:0,pending:0,settled:0,w:0,units:0,clvN:0,clvSum:0,clvPos:0,bySport:{},byType:{setup:mk(),select:mk()}};
   allPicks().forEach(function(p){
+    if(!selectWorthIt(p))return; // over-juiced selects aren't real picks ‚Äî exclude from the record
     s.flagged++;
     var ty=s.byType[p.type==='select'?'select':'setup'];
     if(p.result==='PENDING'){s.pending++;ty.pending++;return;}
@@ -311,7 +316,32 @@ function clvProven(){var t=stats().byType.setup;return t.clvN>=CLV_PROVE_N&&(t.c
 // ‚îÄ‚îÄ SCAN ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
 var D=null,REFRESH_T=null,NEXT_R=0;
 function setS(m){var el=document.getElementById('status');if(el)el.textContent=m;}
+// When a server is connected, IT scans (games + MLB props) hourly. The app just displays
+// its picks ‚Äî no Odds API calls from the browser. buildBoard turns server picks into the
+// board shape render expects (works for games AND props uniformly).
+function buildBoard(){
+  var now=Date.now();
+  var pend=allPicks().filter(function(p){return p.result==='PENDING'&&new Date(p.start).getTime()>now;});
+  var sels=pend.filter(function(p){return p.type==='select'&&selectWorthIt(p);}).map(function(p){
+    return {prob:p.prob,side:p.side,price:p.price,book:p.book,peers:p.peers,prop:p.prop,
+      value:(p.prob!=null?p.prob-impliedProb(p.price):null),
+      ev:(p.prob!=null?p.prob*profit1u(p.price)-(1-p.prob):null), bestPrice:null,
+      it:{label:p.label,sportTitle:p.sportTitle,game:p.game,start:p.start,prop:p.prop}};
+  }).sort(function(a,b){return b.prob-a.prob;});
+  var setups=pend.filter(function(p){return p.type==='setup';}).map(function(p){
+    return {it:{game:p.game,label:p.label,start:p.start,sportTitle:p.sportTitle,prop:p.prop},
+      lv:{side:p.side,price:p.price,book:p.book,edge:p.edge,fair:p.fair_at_flag,peers:p.peers}};
+  }).sort(function(a,b){return (b.lv.edge||0)-(a.lv.edge||0);});
+  D={selects:sels,near:[],flags:setups,artifacts:0,sports:(SERVER_META&&SERVER_META.scanned)||[],skipped:[],instances:pend.length,at:new Date().toLocaleTimeString(),cost:null};
+}
 async function scanAll(){
+  if(SYNC_URL){ // server mode: pull its picks, build the board, done (no browser API calls)
+    setS('Loading from server...');
+    await loadServer();buildBoard();updCount();render();
+    setS('From server ‚Ä¢ '+(D.selects.length)+' selects ‚Ä¢ '+(SERVER_META&&SERVER_META.last_scan?'auto-scan '+new Date(SERVER_META.last_scan).toLocaleTimeString():''));
+    if(!REFRESH_T)startAR();
+    return;
+  }
   setS('Discovering sports...');
   var before=BUDGET.remaining;
   var sports=await oddsFetch(BASE+'/sports?apiKey='+API_KEY); // free
@@ -411,15 +441,15 @@ function render(){
       +'<div style="font-size:10px;margin-top:3px" class="mut">'+tSet.clvN+' settled, '+Math.round(tSet.clvPos/tSet.clvN*100)+'% beat close, avg CLV '+(tSet.clvSum/tSet.clvN*100).toFixed(1)+'pp. Stake small and flat; books limit winners.</div></div>';
   }
   // SELECTS ‚Äî the market's most likely winners tonight, best-priced
-  h+='<div class="card" style="border-color:rgba(59,130,246,.4)"><b style="font-size:13px;color:var(--blu)">&#9989; SELECTS'+(D&&D.selects?' ('+D.selects.length+')':'')+' ‚Äî most likely to WIN, on Hard Rock, '+SELECT_MIN_ODDS+' to +'+SELECT_MAX_ODDS+'</b>';
-  h+='<div style="font-size:10px;margin-top:2px" class="mut">Consensus-favored sides (&ge;'+(SELECT_MIN_PROB*100)+'% to win per the de-vig consensus of ALL books), priced AT HARD ROCK inside your range, ranked by win probability. One per game.</div>';
+  h+='<div class="card" style="border-color:rgba(59,130,246,.4)"><b style="font-size:13px;color:var(--blu)">&#9989; SELECTS'+(D&&D.selects?' ('+D.selects.length+')':'')+' ‚Äî most likely to WIN, on Hard Rock, at a FAIR price</b>';
+  h+='<div style="font-size:10px;margin-top:2px" class="mut">Games + MLB props. Consensus-favored sides (&ge;'+(SELECT_MIN_PROB*100)+'% to win across ALL books), priced AT HARD ROCK inside '+SELECT_MIN_ODDS+'..+'+SELECT_MAX_ODDS+' AND within 2pp of fair ‚Äî a 55% pick at -140 is a losing bet (the juice beats the edge), so it&rsquo;s excluded. Ranked by win probability.</div>';
   if(D&&D.selects&&D.selects.length){
     D.selects.forEach(function(sl){
       var vcol=sl.value>=-0.005?'var(--grn)':'var(--amb)';
       h+='<div class="pick">'
         +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">'
         +'<span class="tag" style="background:rgba(59,130,246,.12);color:var(--blu)">&#9989; '+(sl.prob*100).toFixed(0)+'% to win &middot; '+esc(sl.it.label)+'</span>'
-        +'<small>'+esc(sl.it.sportTitle)+'</small></div>'
+        +'<small>'+(sl.it.prop?'<span class="tag" style="background:rgba(167,139,250,.15);color:var(--pur)">PROP</span> ':'')+esc(sl.it.sportTitle)+'</small></div>'
         +'<div style="font-weight:800;font-size:14px">'+esc(sl.side)+' <span style="color:var(--grn)">'+fmtOdds(sl.price)+'</span> <small>&#127921; on Hard Rock</small></div>'
         +'<div style="font-size:11px" class="mut">'+esc(sl.it.game)+' &middot; '+whenTag(sl.it.start)+'</div>'
         +'<div style="font-size:11px;margin-top:3px">HR price vs fair: <b style="color:'+vcol+'">'+(sl.value>=0?'+':'')+(sl.value*100).toFixed(1)+'pp'+(sl.value>=-0.005?' &#10003;':'')+'</b> &middot; EV '+(sl.ev>=0?'+':'')+(sl.ev*100).toFixed(1)+'%'+(sl.bestPrice!=null&&sl.bestPrice>sl.price?' <span class="mut">(best elsewhere '+fmtOdds(sl.bestPrice)+')</span>':'')+' <span class="mut">('+sl.peers+' books)</span></div>'
@@ -430,7 +460,7 @@ function render(){
 
   // RESULTS ‚Äî every pick from the last 3 days, graded. This is where last night lives.
   var cut=Date.now()-72*3600e3;
-  var recent=allPicks().filter(function(p){return new Date(p.start).getTime()>cut;})
+  var recent=allPicks().filter(function(p){return new Date(p.start).getTime()>cut&&selectWorthIt(p);})
     .sort(function(a,b){return new Date(b.start)-new Date(a.start);});
   var done=recent.filter(function(p){return p.result!=='PENDING';});
   var waiting=recent.filter(function(p){return p.result==='PENDING';});
