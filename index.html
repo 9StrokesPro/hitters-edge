@@ -91,6 +91,10 @@ var CLV_PROVE_N      = 50;     // strategy needs >= N settled flagged picks...
 var CLV_PROVE_PCT    = 52;     // ...with >= this % beating the close AND avg CLV >= 0
 var REFRESH_MS       = 60*60*1000; // widened automatically by the budget guard
 var K = 'es14_';               // localStorage prefix (old he9_ history left untouched)
+// Always-on server (Cloudflare Worker) that scans + settles 24/7 with no browser open.
+// Paste your Worker URL here after deploy (see edge-scanner-server/DEPLOY.md). When set,
+// RESULTS + scoreboard read from the server, so tracking works even if the app is never open.
+var SYNC_URL = 'https://edge-scanner.joe-f3f.workers.dev'; // live server (scans+settles 24/7)
 
 // ‚îÄ‚îÄ UTIL ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
 function sg(k,d){try{var v=localStorage.getItem(K+k);return v?JSON.parse(v):d;}catch(e){return d;}}
@@ -199,14 +203,24 @@ function lineValue(it){ // best side to take, or null
 
 // ‚îÄ‚îÄ PICK LOG + CLOSE CAPTURE + SETTLEMENT ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
 function pickId(it,side,type){return (type||'setup')+'|'+it.sport+'|'+it.gameId+'|'+it.market+'|'+it.key+'|'+side;}
-function allPicks(){var a=[];for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(k&&k.indexOf(K+'pick_')===0){try{a.push(JSON.parse(localStorage.getItem(k)));}catch(e){}}}return a;}
+var SERVER_PICKS=null, SERVER_META=null;
+// When a server is connected, IT is the source of truth (it logs+settles 24/7). Else local.
+function allPicks(){
+  if(SERVER_PICKS!==null)return SERVER_PICKS;
+  var a=[];for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(k&&k.indexOf(K+'pick_')===0){try{a.push(JSON.parse(localStorage.getItem(k)));}catch(e){}}}return a;
+}
+async function loadServer(){
+  if(!SYNC_URL)return;
+  try{var r=await fetch(SYNC_URL.replace(/\/$/,'')+'/api/picks');var d=await r.json();
+    if(d&&Array.isArray(d.picks)){SERVER_PICKS=d.picks;SERVER_META=d.meta||null;}}catch(e){console.warn('server',e.message);}
+}
 // Log a pick once (first sighting = our "bet"). type: 'setup' (price out of line with
 // peers) or 'select' (market's most likely winner at the best price). Both settle + CLV.
 function logPick(it,o){
   var id=pickId(it,o.side,o.type),key=K+'pick_'+id;
   if(localStorage.getItem(key))return;
   var rec={id:id,type:o.type,flagged_at:new Date().toISOString(),date:new Date().toISOString().slice(0,10),
-    sport:it.sport,sportTitle:it.sportTitle,game:it.game,home:it.home,away:it.away,start:it.start,
+    sport:it.sport,sportTitle:it.sportTitle,gameId:it.gameId,game:it.game,home:it.home,away:it.away,start:it.start,
     market:it.market,mkey:it.key,label:it.label,side:o.side,f:o.f,point:it.point,
     price:o.price,book:o.book,edge:(o.edge!=null?Math.round(o.edge*1000)/1000:null),
     fair_at_flag:(o.fair!=null?Math.round(o.fair*1000)/1000:null),prob:(o.prob!=null?Math.round(o.prob*1000)/1000:null),peers:o.peers||0,
@@ -236,7 +250,7 @@ async function settle(){
     if(!sc)continue;
     var byId={};sc.forEach(function(g){byId[g.id]=g;});
     pend.filter(function(p){return p.sport===sports[i];}).forEach(function(p){
-      var g=byId[p.gameId];
+      var g=byId[p.gameId||(p.id||'').split('|')[2]]; // recover gameId from id for older records
       if(!g){ if(Date.now()-new Date(p.start).getTime()>3*864e5){p.result='VOID';save(p);} return; }
       if(!g.completed||!g.scores)return;
       var hs=null,as=null;
@@ -255,6 +269,12 @@ async function settle(){
 }
 // Toolbar action: settle now + show what happened (Joe: "where do I get the results?")
 async function checkResults(){
+  if(SYNC_URL){ // server settles on its own; just re-pull the latest results
+    toast('Refreshing from server...');
+    try{await fetch(SYNC_URL.replace(/\/$/,'')+'/settle');}catch(e){} // nudge a settle
+    await loadServer();updCount();render();toast('Results refreshed from server');
+    return;
+  }
   toast('Checking scores...');
   var n=await settle();
   render();
@@ -433,7 +453,17 @@ function render(){
       +waiting.slice(0,6).map(function(p){return esc(p.side);}).join(', ')+(waiting.length>6?'‚Ä¶':'')
       +'. Games grade ~2.5h after start ‚Äî tap &#9989; Results to check.</div>';
   }
-  h+='<div style="font-size:9px;margin-top:6px" class="mut">Results live in THIS browser (picks log where the app was open). If last night was on another device, open the app there or use Export/Import to merge.</div>';
+  // STORAGE DIAGNOSTIC ‚Äî the honest picture: exactly what THIS browser has logged, and when.
+  var all=allPicks();
+  if(!all.length){
+    h+='<div style="font-size:11px;margin-top:8px;padding:7px;border-radius:8px;background:rgba(245,158,11,.10);color:var(--amb)"><b>&#9888; 0 picks stored in this browser.</b><br><span style="color:var(--mut)">Nothing was logged here. Picks are only saved when the app is OPEN and a scan runs. Yesterday&rsquo;s picks were either on another device, or the app wasn&rsquo;t open when those games were on the board. Nothing settled = nothing to show.</span></div>';
+  } else {
+    var dates=all.map(function(p){return p.date;}).filter(Boolean).sort();
+    var byDate={};all.forEach(function(p){if(p.date)byDate[p.date]=(byDate[p.date]||0)+1;});
+    h+='<div style="font-size:10px;margin-top:8px" class="mut">Stored in this browser: <b>'+all.length+' picks</b> across '+Object.keys(byDate).length+' day(s) &middot; oldest '+dates[0]+', newest '+dates[dates.length-1]+'. '
+      +'<span style="color:'+(byDate[new Date(Date.now()-864e5).toISOString().slice(0,10)]?'var(--grn)':'var(--amb)')+'">'+(byDate[new Date(Date.now()-864e5).toISOString().slice(0,10)]?'Yesterday: '+byDate[new Date(Date.now()-864e5).toISOString().slice(0,10)]+' logged &#10003;':'Yesterday: 0 logged (app wasn&rsquo;t open, or different device)')+'</span></div>';
+  }
+  h+='<div style="font-size:9px;margin-top:6px" class="mut">Results live in THIS browser. The app can only track games it was open to see. To track reliably without keeping it open, it needs an always-on server (see below).</div>';
   h+='</div>';
   // setup bets
   h+='<div class="card"><b style="font-size:13px">&#127919; SETUP BETS'+(D?' ('+D.flags.length+')':'')+'</b>';
@@ -498,7 +528,7 @@ function copyPicks(){
   t+='\nKEY: setup bet = one book >= '+(EDGE_MIN*100)+'pp better than peer consensus. Not a prediction ‚Äî a mispriced number. Singles, flat stakes, paper until CLV proven.';
   navigator.clipboard.writeText(t).then(function(){toast('Copied');}).catch(function(){var ta=document.createElement('textarea');ta.value=t;document.body.appendChild(ta);ta.select();try{document.execCommand('copy');toast('Copied');}catch(e){toast('Copy failed');}document.body.removeChild(ta);});
 }
-function updCount(){var el=document.getElementById('data-count');if(el)el.textContent=allPicks().length+' flags stored';}
+function updCount(){var el=document.getElementById('data-count');if(el)el.textContent=(SYNC_URL?'‚òÅÔ∏è server: ':'')+allPicks().length+' picks'+(SERVER_META&&SERVER_META.last_scan?' ¬∑ last auto-scan '+new Date(SERVER_META.last_scan).toLocaleTimeString():(SYNC_URL?'':' (this browser only)'));}
 
 // ‚îÄ‚îÄ AUTO-REFRESH ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
 function startAR(){
@@ -507,7 +537,9 @@ function startAR(){
   REFRESH_T=setInterval(tick,REFRESH_MS);
   setInterval(function(){var el=document.getElementById('rtimer');if(!el)return;var d=NEXT_R-Date.now();if(d<=0){el.textContent='refreshing...';return;}el.textContent='next scan '+Math.floor(d/60000)+'m';},15000);
 }
-updCount();budgetLine();scanAll();
+updCount();budgetLine();
+// pull server results first (if connected), then run the live board scan
+loadServer().then(function(){updCount();render();scanAll();});
 </script>
 </body>
 </html>
