@@ -39,6 +39,7 @@ small,.mut{color:var(--mut)}
 <div class="bar">
   <button class="btn" onclick="exportData()">&#128190; Export</button>
   <label class="btn" style="cursor:pointer">&#128194; Import<input type="file" accept=".json" onchange="importData(this)" style="display:none"></label>
+  <button class="btn" onclick="checkResults()">&#9989; Results</button>
   <button class="btn" onclick="copyPicks()">&#129302; Copy picks</button>
   <span id="data-count" style="font-size:9px" class="mut"></span>
 </div>
@@ -226,8 +227,9 @@ function updateCloses(instances){ // pre-game: keep refreshing consensus; freeze
   });
 }
 async function settle(){
+  var settled=0;
   var pend=allPicks().filter(function(p){return p.result==='PENDING'&&new Date(p.start).getTime()<Date.now()-2.5*60*60*1000;});
-  if(!pend.length)return;
+  if(!pend.length)return 0;
   var sports=[];pend.forEach(function(p){if(sports.indexOf(p.sport)<0)sports.push(p.sport);});
   for(var i=0;i<sports.length;i++){
     var sc=await oddsFetch(BASE+'/sports/'+sports[i]+'/scores?daysFrom=3&apiKey='+API_KEY); // 2 credits
@@ -242,13 +244,21 @@ async function settle(){
       if(hs==null||as==null)return;
       var res=grade(p,hs,as);
       if(res==null)return;
-      p.result=res;
+      p.result=res;p.final_score=as+'-'+hs;settled++;
       // CLV: fair prob at close vs implied of the price we flagged. >0 = beat the close.
       if(p.close_fair!=null)p.clv=Math.round((p.close_fair-impliedProb(p.price))*1000)/1000;
       save(p);
     });
   }
   function save(p){try{localStorage.setItem(K+'pick_'+p.id,JSON.stringify(p));}catch(e){}}
+  return settled;
+}
+// Toolbar action: settle now + show what happened (Joe: "where do I get the results?")
+async function checkResults(){
+  toast('Checking scores...');
+  var n=await settle();
+  render();
+  toast(n?('Settled '+n+' pick'+(n>1?'s':'')+' ‚Äî see RESULTS'):'No new finals yet ‚Äî picks settle ~2.5h after game start');
 }
 function grade(p,hs,as){
   if(p.market==='h2h'){var winner=hs>as?p.home:(as>hs?p.away:null);if(winner==null)return'PUSH';return p.side===winner?'WIN':'LOSS';}
@@ -396,6 +406,34 @@ function render(){
         +'</div>';
     });
   } else h+='<div style="font-size:11px;margin-top:6px" class="mut">Nothing qualifies right now: needs a &ge;'+(SELECT_MIN_PROB*100)+'% consensus side POSTED ON HARD ROCK between '+SELECT_MIN_ODDS+' and +'+SELECT_MAX_ODDS+'. Hard Rock posts most lines closer to game time ‚Äî check back.</div>';
+  h+='</div>';
+
+  // RESULTS ‚Äî every pick from the last 3 days, graded. This is where last night lives.
+  var cut=Date.now()-72*3600e3;
+  var recent=allPicks().filter(function(p){return new Date(p.start).getTime()>cut;})
+    .sort(function(a,b){return new Date(b.start)-new Date(a.start);});
+  var done=recent.filter(function(p){return p.result!=='PENDING';});
+  var waiting=recent.filter(function(p){return p.result==='PENDING';});
+  h+='<div class="card"><b style="font-size:13px">&#128203; RESULTS (last 3 days)</b>';
+  if(done.length){
+    var dw=done.filter(function(p){return p.result==='WIN';}).length;
+    var dl=done.filter(function(p){return p.result==='LOSS';}).length;
+    h+='<div style="font-size:11px;margin-top:3px"><b>'+dw+'W ‚Äì '+dl+'L</b>'+(done.length-dw-dl?' ('+(done.length-dw-dl)+' push/void)':'')+'</div>';
+    done.forEach(function(p){
+      var col=p.result==='WIN'?'var(--grn)':p.result==='LOSS'?'var(--red)':'var(--mut)';
+      var badge=p.result==='WIN'?'&#9989; WIN':p.result==='LOSS'?'&#10060; LOSS':p.result;
+      h+='<div style="font-size:11px;margin-top:5px;border-left:3px solid '+col+';padding-left:7px">'
+        +'<b style="color:'+col+'">'+badge+'</b> '+esc(p.side)+' '+fmtOdds(p.price)
+        +' <span class="mut">&middot; '+esc(p.label||p.market)+' &middot; '+(p.type==='select'?'SELECT':'SETUP')+(p.prob!=null?' ('+(p.prob*100).toFixed(0)+'%)':'')+'</span>'
+        +'<div class="mut" style="font-size:10px">'+esc(p.game)+(p.final_score?' &middot; final '+esc(p.final_score)+' (away-home)':'')+' &middot; '+esc(p.sportTitle||'')+'</div></div>';
+    });
+  } else h+='<div style="font-size:11px;margin-top:5px" class="mut">Nothing settled in this browser yet.</div>';
+  if(waiting.length){
+    h+='<div style="font-size:10px;margin-top:7px" class="mut">&#8987; Waiting on finals: '+waiting.length+' pick'+(waiting.length>1?'s':'')+' ‚Äî '
+      +waiting.slice(0,6).map(function(p){return esc(p.side);}).join(', ')+(waiting.length>6?'‚Ä¶':'')
+      +'. Games grade ~2.5h after start ‚Äî tap &#9989; Results to check.</div>';
+  }
+  h+='<div style="font-size:9px;margin-top:6px" class="mut">Results live in THIS browser (picks log where the app was open). If last night was on another device, open the app there or use Export/Import to merge.</div>';
   h+='</div>';
   // setup bets
   h+='<div class="card"><b style="font-size:13px">&#127919; SETUP BETS'+(D?' ('+D.flags.length+')':'')+'</b>';
