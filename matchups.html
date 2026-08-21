@@ -634,16 +634,36 @@ function gradeMatchup(h){
       if(h.vuln.key==='TYPE4'){pv-=5;}
       else if((h.vuln.key==='TYPE1'&&h.bt&&h.bt.key==='POWER')||(h.vuln.key==='TYPE2'&&h.bt&&h.bt.key==='CONTACT')){pv+=3;pvd.push('PERFECT bat-type match');}
     }
-    // R4 ‚Äî CONFIDENCE GATE cross-check (brief ¬ß4): if the pitcher layer says his recent form is
-    // stale (trajectory), if he's not a full-game starter (role), or he's just off the IL, we are
-    // LESS sure of this vulnerability read ‚Üí shrink the factor toward neutral and say why.
+    // ‚îÄ‚îÄ R4: CONFIRM / CONFLICT cross-check (brief FIX 1) ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+    // Compare the INDEPENDENT pitcher recent-form (whip_L7 & k9_L3 trajectory) against the
+    // engine's own vulnerability read (sign of pv). DIRECTIONAL, not a blind shrink:
+    //   ‚Ä¢ agree  ‚Üí CONFIRM: push the factor further in the agreed direction, hold confidence
+    //   ‚Ä¢ disagree ‚Üí CONFLICT: the season read may be stale ‚Üí pull toward neutral + cut confidence
+    // This fixes the bug where "rounding into form" (a pitcher getting TOUGHER) was softening the
+    // hitter's penalty instead of hardening it.
     var KL=P.kLayer;
-    if(KL&&(KL.r2||KL.r3||KL.status==='returning_from_IL')){
-      var shrink=1;
-      if(KL.r2){shrink*=0.6;pvd.push('‚ö† '+KL.role+' ‚Äî hitters see him limited PAs');}
-      if(KL.r3){shrink*=0.6;pvd.push('‚ö† '+KL.trajectory_msg+' ‚Üí read softened');}
-      else if(KL.status==='returning_from_IL'){shrink*=0.7;pvd.push('‚ö† just back from a layoff ‚Äî recent form unstable');}
-      pv=Math.round(pv*shrink*10)/10;
+    if(KL){
+      var trend=0;                                        // +1 = trending TOUGHER, -1 = more HITTABLE
+      if(KL.k9Delta!=null)trend+=KL.k9Delta>=1.0?1:KL.k9Delta<=-1.0?-1:0;
+      if(KL.whipDelta!=null)trend+=KL.whipDelta<=-0.15?1:KL.whipDelta>=0.15?-1:0;
+      var engineHittable=pv>0.5?1:pv<-0.5?-1:0;           // engine: +1 sees him hittable, -1 sees him tough
+      var recentHittable=trend>0?-1:trend<0?1:0;          // tougher trend => LESS hittable
+      if(trend!==0&&engineHittable!==0){
+        if(recentHittable===engineHittable){              // AGREE ‚Üí confirm & strengthen
+          h._pitchTag='CONFIRM';
+          pv=pv+(pv>0?1.5:-1.5);
+          pvd.push('CONFIRM ‚úì recent form '+(trend>0?'trending tougher':'more hittable')+' ‚Äî agrees with the read');
+        }else{                                            // DISAGREE ‚Üí conflict, widen uncertainty
+          h._pitchTag='CONFLICT';h._pitchConfDown=true;
+          pv=Math.round(pv*0.45*10)/10;
+          pvd.push('CONFLICT ‚ö† recent form '+(trend>0?'trending TOUGHER':'more HITTABLE')+' vs the season read ‚Äî softened, confidence cut');
+        }
+      }
+      if(KL.status==='returning_from_IL'){h._pitchTag=h._pitchTag||'CONFLICT';h._pitchConfDown=true;pvd.push('‚ö† back from IL/layoff ‚Äî recent form unreliable');}
+      if(KL.r2){                                          // ROLE suppression: opener/reliever/bulk
+        pv=Math.round(pv*0.5*10)/10;h._pitchConfDown=true;
+        pvd.push('‚ö† '+KL.role+' ‚Äî hitters face him ~1-2 PAs (rest is the bullpen); read + PA assumption cut');
+      }
     }
     pv=Math.max(-12,Math.min(15,pv));
     add('Pitcher vulnerability',pv,pvd.join(' ¬∑ '));
@@ -676,7 +696,8 @@ function gradeMatchup(h){
   // confidence (spec 3.5): data completeness + lineup state
   var conf=(h.confirmed?1:0)+(h.bSav?1:0)+(h.mix&&h.mix.fit!=null?1:0)+(h.pit&&h.pit.reliable?1:0); // pitcher counts only if we've seen enough of him
   var confidence=conf>=4?'HIGH':conf>=2?'MEDIUM':'LOW';
-  return{score:score,grade:grade,confidence:confidence,factors:F};
+  if(h._pitchConfDown)confidence=confidence==='HIGH'?'MEDIUM':'LOW'; // R4 CONFLICT / role / IL ‚Üí drop a tier
+  return{score:score,grade:grade,confidence:confidence,factors:F,pitchTag:h._pitchTag||null};
 }
 // Best-fit stat (spec 4): profile -> which stat to back
 function bestFitStat(h){
@@ -749,7 +770,7 @@ async function loadAll(){
       mix:pit?pitchMixFit(j.pl.id,pit.arsenal,bps):null,
       bvp:null
     };
-    var gr=gradeMatchup(h);h.score=gr.score;h.grade=gr.grade;h.confidence=gr.confidence;h.factors=gr.factors;
+    var gr=gradeMatchup(h);h.score=gr.score;h.grade=gr.grade;h.confidence=gr.confidence;h.factors=gr.factors;h.pitchTag=gr.pitchTag;
     h.bestFit=bestFitStat(h);
     return h;
   },CONC);
@@ -805,8 +826,34 @@ function fRow(f){
   var c=f.pts>0?'var(--grn)':f.pts<0?'var(--red)':'var(--mut)';
   return '<div class="fx"><span class="mut">'+esc(f.name)+'</span><span><b style="color:'+c+'">'+(f.pts>0?'+':'')+f.pts+'</b></span></div><div style="font-size:10px;color:var(--mut);margin:-1px 0 4px">'+esc(f.detail)+'</div>';
 }
+// ‚îÄ‚îÄ PLAIN-ENGLISH TRAFFIC LIGHT ‚Äî replaces the CONFIRM/CONFLICT jargon ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+// üü¢ top play ¬∑ üü° playable (read the note) ¬∑ üî¥ weak/pass. A pitcher cross-check
+// or thin data knocks a pick down one light and says why in plain words.
+function pickLight(h){
+  var base=h.grade==='A'?2:h.grade==='B'?1:0;
+  if(h.pitchTag==='CONFLICT'||h.confidence==='LOW')base=Math.max(0,base-1);
+  return base===2?'green':base===1?'yellow':'red';
+}
+function lightDot(l){return l==='green'?'&#128994;':l==='yellow'?'&#128993;':'&#128308;';}
+function lightWord(l){return l==='green'?'TOP PLAY':l==='yellow'?'PLAYABLE':'WEAK ‚Äî LEAN PASS';}
+function lightCol(l){return l==='green'?'var(--grn)':l==='yellow'?'var(--amb)':'var(--red)';}
+function pickWhy(h){ // one plain-English sentence, or null when there's nothing to flag
+  var pn=esc(h.oppPitName||'the pitcher');
+  if(h.pitchTag==='CONFLICT'){
+    var KL=h.pit&&h.pit.kLayer;
+    if(KL){
+      if(KL.r2)return pn+' is an '+KL.role+' ‚Äî your hitter only faces him once or twice before the bullpen comes in, so this matchup read is thin.';
+      if(KL.status==='returning_from_IL')return pn+' just came off the injured list ‚Äî his recent numbers aren‚Äôt trustworthy yet, so the grade is shakier than it looks.';
+      if(KL.trajectory_direction==='better')return pn+' has been SHARPER lately than his season stats ‚Äî he may be tougher tonight than the grade assumes.';
+      if(KL.trajectory_direction==='worse')return pn+'‚Äôs season line looks fine, but he‚Äôs been getting hit lately ‚Äî could go either way, so treat it as lower confidence.';
+    }
+    return pn+'‚Äôs recent form doesn‚Äôt match his season stats ‚Äî read with caution.';
+  }
+  if(h.confidence==='LOW')return 'Thin data here (lineup not posted yet, or small samples) ‚Äî lower confidence.';
+  return null;
+}
 function mcard(h,ix){
-  var gcls='g'+h.grade;
+  var gcls='g'+h.grade,lt=pickLight(h),why=pickWhy(h);
   var when=new Date(h.start).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});
   var head='<div class="mhead" onclick="tg('+ix+')">'
     +'<div><div style="font-weight:800;font-size:14px">'+esc(h.name)+' <small>('+esc(TEAM_ABBR[h.team]||h.team)+')</small>'
@@ -814,8 +861,10 @@ function mcard(h,ix){
     +'<div style="font-size:10px" class="mut">'+esc(h.game)+' ¬∑ '+when+(h.total!=null?' ¬∑ total '+h.total:'')+' ¬∑ '
     +(h.spot?'#'+h.spot+' '+(h.confirmed?'<b style="color:var(--grn)">CONFIRMED</b>':'<span style="color:var(--amb)">PROJECTED</span>'):'no lineup')
     +' ¬∑ vs '+esc(h.oppPitName||'TBD')+(h.oppThrows?' ('+h.oppThrows+'HP)':'')+'</div></div>'
-    +'<div style="text-align:right"><span class="g '+gcls+'">'+h.grade+'</span><div style="font-size:9px" class="mut">'+h.score+' pts ¬∑ '+h.confidence+'</div></div></div>';
+    +'<div style="text-align:right"><div style="font-size:16px">'+lightDot(lt)+' <span class="g '+gcls+'">'+h.grade+'</span></div><div style="font-size:9px;color:'+lightCol(lt)+';font-weight:800">'+lightWord(lt)+'</div><div style="font-size:9px" class="mut">'+h.score+' pts ¬∑ '+h.confidence+'</div></div></div>';
   var b='<div class="mbody">';
+  // plain-English verdict banner (top of card)
+  b+='<div class="sect" style="border-top:none"><span style="font-size:15px">'+lightDot(lt)+'</span> <b style="color:'+lightCol(lt)+'">'+lightWord(lt)+'</b>'+(why?' <span style="font-size:11px">‚Äî '+why+'</span>':' <span style="font-size:11px" class="mut">‚Äî data all lines up, no red flags.</span>')+'</div>';
   // factor breakdown ‚Äî the transparent grade (spec 4: no black box)
   b+='<div class="sect"><div class="sh">WHY '+h.grade+' ‚Äî FACTOR BREAKDOWN ('+h.score+' pts)</div>'+h.factors.map(fRow).join('')+'</div>';
   // hitter profile
@@ -843,7 +892,15 @@ function mcard(h,ix){
     }else{
       b+='<span style="color:var(--amb)">Season line is SMALL SAMPLE ('+(P.ip||0)+' IP, '+(P.gs||0)+' GS) ‚Äî ERA '+(P.eraRaw!=null?P.eraRaw.toFixed(2):'n/a')+' is noise, not used. Read is Statcast-led'+(h.pSav?'.':' but he has no Statcast row yet either ‚Üí LOW confidence.')+'</span>';
     }
-    b+=(h.vuln?'<br>Vulnerability: <b>'+h.vuln.label+'</b>':'')+'</div>';
+    b+=(h.vuln?'<br>Vulnerability: <b>'+h.vuln.label+'</b>':'');
+    // independent recent-form + confirm/conflict tag (brief FIX 1 #6 ‚Äî audit next to the hitter)
+    if(P.reliable&&P.kLayer){var KL=P.kLayer;
+      b+='<br><b>Recent form (independent):</b> WHIP-L7 '+(KL.whip_L7!=null?KL.whip_L7:'--')+' ¬∑ K/9-L3 '+(KL.k9_L3!=null?KL.k9_L3:'--')
+        +' <span class="mut">(vs season: WHIP '+(KL.whipDelta!=null?(KL.whipDelta>0?'+':'')+KL.whipDelta:'--')+', K/9 '+(KL.k9Delta!=null?(KL.k9Delta>0?'+':'')+KL.k9Delta:'--')+')</span> ¬∑ role '+KL.role+(KL.status==='returning_from_IL'?' ¬∑ <span style="color:var(--amb)">back from IL</span>':'');
+    }
+    if(h.pitchTag==='CONFLICT'&&why)b+='<br><b style="color:var(--amb)">‚ö† '+why+'</b>';
+    else if(h.pitchTag==='CONFIRM')b+='<br><span style="color:var(--grn)">‚úì His recent form backs up his season stats ‚Äî the read is solid.</span>';
+    b+='</div>';
   }
   // pitch mix ‚Äî the 3.6 upgrade
   b+='<div class="sect"><div class="sh">PITCH-MIX FIT</div>';
@@ -947,9 +1004,11 @@ function render(){
   var A=D.hitters.filter(function(x){return x.grade==='A';});
   var conf=D.games.filter(function(g){return g.posted;}).length;
   h+='<div class="card" style="border-color:var(--gld)"><b style="color:var(--gld);font-size:13px">&#11088; TOP MATCHUPS TONIGHT ('+A.length+' A-grades)</b>';
-  h+='<div style="font-size:10px;margin-top:2px" class="mut">Lineups posted: '+conf+'/'+D.games.length+' games ¬∑ cards ranked by matchup grade ¬∑ grade = how well the hitter is SET UP to produce, not a bet signal</div>';
+  h+='<div style="font-size:10px;margin-top:2px" class="mut">Lineups posted: '+conf+'/'+D.games.length+' games ¬∑ ranked best-to-worst ¬∑ &#128994; top play &nbsp; &#128993; playable (read the note) &nbsp; &#128308; weak ‚Äî lean pass. A yellow/red pick shows why in plain words.</div>';
   if(A.length)A.slice(0,12).forEach(function(x){
-    h+='<div style="font-size:12px;margin-top:6px"><b>'+esc(x.name)+'</b> <span class="mut">('+esc(TEAM_ABBR[x.team]||x.team)+' vs '+esc(x.oppPitName||'TBD')+')</span> ‚Äî '+x.score+' pts ¬∑ '+(x.confirmed?'#'+x.spot+' conf':'proj')
+    var lt=pickLight(x),why=pickWhy(x);
+    h+='<div style="font-size:12px;margin-top:6px">'+lightDot(lt)+' <b>'+esc(x.name)+'</b> <span class="mut">('+esc(TEAM_ABBR[x.team]||x.team)+' vs '+esc(x.oppPitName||'TBD')+')</span> ‚Äî '+x.score+' pts ¬∑ '+(x.confirmed?'#'+x.spot+' conf':'proj')
+      +(why?'<br><span style="font-size:10px;color:'+lightCol(lt)+'">'+why+'</span>':'')
       +(x.bestProp?'<br><span style="color:var(--gld);font-size:11px">&#127921; '+esc(x.bestProp.label)+' O'+x.bestProp.line+' '+(x.bestProp.hr>0?'+':'')+x.bestProp.hr+' on Hard Rock'+(x.bestProp.fair!=null?(x.bestProp.fair-impliedP(x.bestProp.hr)>=-0.005?' ‚úì fair':''):'')+(x.bestProp.stale?' (stale)':'')+'</span>':'<br><span style="font-size:10px;color:'+(x.propFetch==='failed'||x.propFetch==='not_covered'?'var(--amb)':'var(--mut)')+'">'+(x.propFetch==='failed'?'‚ö† server unreachable':x.propFetch==='not_covered'?'not pulled yet':'not posted yet')+'</span>')+'</div>';
   });
   else h+='<div style="font-size:11px;margin-top:5px" class="mut">No A-grades right now ‚Äî check back when lineups post.</div>';
@@ -972,7 +1031,9 @@ function copyTop(){
   var t='MATCHUP ENGINE v15 ‚Äî '+new Date().toLocaleString()+' (data '+D.generatedAt.toLocaleTimeString()+')\n';
   t+='Grade = how well the hitter is set up tonight (talent/form-vs-expected/platoon/pitcher/pitch-mix/park/slot). NOT a bet signal ‚Äî price-check before betting.\n\n';
   A.forEach(function(x){
-    t+=x.grade+' ('+x.score+') '+x.name+' ('+(TEAM_ABBR[x.team]||x.team)+') vs '+(x.oppPitName||'TBD')+(x.oppThrows?' ('+x.oppThrows+'HP)':'')+' | '+(x.confirmed?'#'+x.spot+' CONF':'PROJ')+' | '+x.confidence+'\n';
+    var lt=pickLight(x),why=pickWhy(x);
+    t+=(lt==='green'?'üü¢':lt==='yellow'?'üü°':'üî¥')+' '+x.grade+' ('+x.score+') '+x.name+' ('+(TEAM_ABBR[x.team]||x.team)+') vs '+(x.oppPitName||'TBD')+(x.oppThrows?' ('+x.oppThrows+'HP)':'')+' | '+(x.confirmed?'#'+x.spot+' CONF':'PROJ')+' | '+x.confidence+'\n';
+    if(why)t+='   ‚ö† '+why.replace(/<[^>]+>/g,'')+'\n';
     t+='   THE BET: '+(x.bestProp?propLine(x.bestProp):(x.propFetch==='failed'?'[server unreachable]':x.propFetch==='not_covered'?'[not pulled yet]':'[HR not posted yet]')+' ('+x.bestFit.split(' (')[0]+')')+'\n';
     var top=x.factors.slice().sort(function(a,b){return b.pts-a.pts;}).slice(0,2);
     t+='   why: '+top.map(function(f){return f.name+' +'+f.pts+' ('+f.detail.split(' ¬∑ ')[0]+')';}).join('; ')+'\n';
