@@ -61,7 +61,7 @@ small,.mut{color:var(--mut)}
 var SEASON=2026;
 var MLB='https://statsapi.mlb.com/api/v1';
 var OWM_KEY='6a060c8de21d6f1a5cd9d6fed2b7a53b';
-var ODDS_KEY='c662d3af7ba8e40cddf08b0fca0684a9'; // ONLY for game totals context (~2 credits/load)
+var ODDS_KEY='e738de03c4b7e835c52b50e1a0b1c494'; // ONLY for game totals context (~2 credits/load)
 var K='me15_';
 var STALE_MIN=30;          // auto re-pull grades + prices every 30m (matches the server cron)
 var PITCH_MIN_SEEN=50;     // hitter needs >=N pitches seen vs a type to trust his xSLG vs it
@@ -148,6 +148,7 @@ function buildKLayer(gls,season){
   return{kGames:games.slice(-5),qStarts:qual.length,
     k_per_game_L3:k_per_game_L3,k9_L3:k9_L3,avg_ip_L3:avg_ip_L3,whip_L7:whip_L7,recent_kpct:recent_kpct,
     season_kpct:season.kpct,season_era:season.era,season_whip:season.whip,season_k9:season.k9,
+    blended_kpct:(recent_kpct!=null&&season.kpct!=null)?0.70*season.kpct+0.30*recent_kpct:(season.kpct!=null?season.kpct:recent_kpct), // SINGLE SOURCE of pitcher K% ‚Äî both boards read this
     role:role,short_leash:short_leash,status:status,confidence:confidence,flags:flags,
     r1:r1,r2:r2,r3:r3,trajectory_direction:direction,trajectory_msg:trajMsg,whipDelta:whipDelta,k9Delta:k9Delta};
 }
@@ -541,7 +542,7 @@ function expectedKs(kpct,bf){
 function projectK(P,oppKpct,kprop){
   var L=P&&P.kLayer;if(!L)return null;
   // 1. pitcher K% ‚Äî blend season (70%) + recent qualifying starts (30%); K per batter faced
-  var pit_kpct=(L.recent_kpct!=null&&L.season_kpct!=null)?0.70*L.season_kpct+0.30*L.recent_kpct:(L.season_kpct!=null?L.season_kpct:L.recent_kpct);
+  var pit_kpct=(L.blended_kpct!=null)?L.blended_kpct:null; // single source (same K% the hitter grade uses)
   if(pit_kpct==null)return{ok:false,reason:'no season K% for this pitcher yet',confidence:'LOW'};
   var opp=(oppKpct!=null)?oppKpct:LG_K_PCT;
   var matchup=log5K(pit_kpct,opp,LG_K_PCT);                              // 3. Log5 combine
@@ -641,7 +642,8 @@ function gradeMatchup(h){
       if(ps.xslg!=null){pv+=ps.xslg>=0.480?7:ps.xslg>=0.430?4:ps.xslg>=0.390?1:ps.xslg>=0.340?-2:-5;pvd.push('xSLG-against '+f3(ps.xslg)+(ps.xslg>=0.430?' (gets squared up)':ps.xslg<=0.340?' (limits damage)':''));}
       if(ps.hard_hit_percent!=null){pv+=ps.hard_hit_percent>44?4:ps.hard_hit_percent>40?2:ps.hard_hit_percent<32?-3:0;pvd.push('HardHit '+ps.hard_hit_percent+'%');}
       if(ps.barrel_batted_rate!=null){pv+=ps.barrel_batted_rate>9?3:ps.barrel_batted_rate>7?1:ps.barrel_batted_rate<5?-2:0;pvd.push('Barrel '+ps.barrel_batted_rate+'%');}
-      if(ps.whiff_percent!=null){pv+=ps.whiff_percent>30?-4:ps.whiff_percent>26?-2:ps.whiff_percent<22?2:0;pvd.push('Whiff '+ps.whiff_percent+'%');}
+      // NOTE: whiff/K (contact-PREVENTION) moved OUT of this damage factor into its own
+      // 'Pitcher K-suppression' factor below ‚Äî two distinct axes, no double-count (advisor's fix).
       if(ps.bb_percent!=null&&ps.bb_percent>10){pv+=2;pvd.push('walks people (BB% '+ps.bb_percent+')');}
     }else pvd.push('no Statcast row');
     // -- SECONDARY: season ERA, sanity-capped --
@@ -688,6 +690,19 @@ function gradeMatchup(h){
     }
     pv=Math.max(-12,Math.min(15,pv));
     add('Pitcher vulnerability',pv,pvd.join(' ¬∑ '));
+    // ‚îÄ‚îÄ 4b. PITCHER K-SUPPRESSION (advisor's integration fix) ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
+    // A SECOND, distinct pitcher axis: contact-PREVENTION (strikeout rate), separate from the
+    // damage-on-contact factor above. Uses the SAME blended K% the K-prop board outputs (single
+    // source ‚Äî the two boards can't drift). High-K arm suppresses contact ‚Üí lowers the hitter;
+    // contact pitcher ‚Üí raises him. Weighted HEAVIER for contact bats (their value is Hits/H+R+RBI)
+    // and LIGHTER for power bats (Total Bases is less K-sensitive).
+    var okpct=P.kLayer&&P.kLayer.blended_kpct;
+    if(okpct!=null){
+      var dev=okpct-LG_K_PCT;                                // + = more Ks than league
+      var w=(h.bt&&h.bt.key==='CONTACT')?1.3:(h.bt&&h.bt.key==='POWER')?0.6:1.0;
+      var ksup=Math.max(-8,Math.min(6,Math.round(-dev*70*w*10)/10));
+      add('Pitcher K-suppression',ksup,'opp K% '+(okpct*100).toFixed(1)+'% ('+(dev>=0?'+':'')+(dev*100).toFixed(1)+' vs lg) ‚Äî '+(dev>0.02?'misses bats, suppresses contact props':dev<-0.02?'contact pitcher, lets hitters put it in play':'league-average K rate')+' ¬∑ weighted for '+(h.bt?h.bt.label.toLowerCase():'balanced bat'));
+    }
   }
   // 5. Pitch-mix fit (spec 3.6 ‚Äî weighted heavily once wired)
   var pmix=0,pmd='';
@@ -1063,10 +1078,19 @@ function copyTop(){
   // pitcher strikeout props ‚Äî top edges (brief ¬ß6: combined board)
   var kb=(D.pitchers||[]).filter(function(p){return p.proj&&p.proj.recommend;}).slice(0,8);
   if(kb.length){
-    t+='\n‚Äî PITCHER STRIKEOUT PROPS (projection, not a lock; edge vs de-vig fair) ‚Äî\n';
+    t+='\n‚Äî PITCHER STRIKEOUT PROPS (recommended ¬∑ projection, not a lock; edge vs de-vig fair) ‚Äî\n';
     kb.forEach(function(p){var pr=p.proj;
       t+=p.name+' ('+(TEAM_ABBR[p.team]||p.team)+' '+p.throws+'HP) vs '+p.opp+' ‚Äî Ks '+(pr.side==='Over'?'O':'U')+pr.line+(pr.hrPrice!=null?' '+(pr.hrPrice>0?'+':'')+pr.hrPrice:'')+' | model '+pr.mu+' Ks'+(pr.edge!=null?', '+(pr.edge*100).toFixed(1)+'pp edge':'')+' ¬∑ '+pr.confidence+'\n';
     });
+  }else{
+    // no posted K lines yet (dead odds key / server not pulled) ‚Äî surface the top projections anyway
+    var kp=(D.pitchers||[]).filter(function(p){return p.proj&&p.proj.ok&&!p.proj.suppressed&&p.proj.mu!=null;}).sort(function(a,b){return b.proj.mu-a.proj.mu;}).slice(0,5);
+    if(kp.length){
+      t+='\n‚Äî TOP PITCHER K PROJECTIONS (no Hard Rock line posted yet) ‚Äî\n';
+      kp.forEach(function(p){var pr=p.proj;
+        t+=p.name+' ('+(TEAM_ABBR[p.team]||p.team)+' '+p.throws+'HP) vs '+p.opp+' ‚Äî proj '+pr.mu+' Ks'+(pr.line!=null&&pr.holdReason?' [held: '+pr.holdReason.split(' ‚Äî')[0]+']':'')+' ¬∑ '+pr.confidence+'\n';
+      });
+    }
   }
   navigator.clipboard.writeText(t).then(function(){toast('Copied top matchups + K props');}).catch(function(){toast('Copy failed');});
 }
