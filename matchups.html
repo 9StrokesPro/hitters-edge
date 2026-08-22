@@ -529,12 +529,19 @@ function poissonOver(mu,line){
 // Fix 1 (principled) ‚Äî expected Ks with a TIMES-THROUGH-ORDER K% decay. K rate falls each turn
 // through the lineup (fatigue, familiarity, pitching to contact with a lead), so applying peak K%
 // to all 25+ batters over-projects. Bucket batters by TTO (every 9 hitters), declining multiplier.
-var TTO_MULT=[1.00,0.93,0.86,0.80];
-function expectedKs(kpct,bf){
-  var ks=0,remaining=bf,tto=0;
+// TTO K% decay curves. Power pitchers maintain their K rate deeper into a game, so ELITE-K arms
+// get a gentler decline (asymmetric ‚Äî high-K QA fix); average/contact arms fade normally. Tier is
+// by the pitcher's OWN K% talent, not the matchup rate.
+function ttoMult(kpct){
+  if(kpct>=0.28)return[1.00,0.96,0.92,0.88]; // elite bat-missers fade least
+  if(kpct>=0.24)return[1.00,0.94,0.89,0.84]; // above-average
+  return[1.00,0.93,0.86,0.80];               // average / contact
+}
+function expectedKs(matchupKpct,bf,tierKpct){
+  var mult=ttoMult(tierKpct!=null?tierKpct:matchupKpct),ks=0,remaining=bf,tto=0;
   while(remaining>0&&tto<=12){
-    var m=TTO_MULT[Math.min(tto,TTO_MULT.length-1)],chunk=Math.min(remaining,9);
-    ks+=chunk*kpct*m;remaining-=chunk;tto++;
+    var m=mult[Math.min(tto,mult.length-1)],chunk=Math.min(remaining,9);
+    ks+=chunk*matchupKpct*m;remaining-=chunk;tto++;
   }
   return ks;
 }
@@ -555,7 +562,7 @@ function projectK(P,oppKpct,kprop){
   var whip=(L.whip_L7!=null?L.whip_L7:(L.season_whip!=null?L.season_whip:1.25));
   var bfPerInn=Math.max(3.1,Math.min(3+whip,4.6));
   var expBF=expIP*bfPerInn;
-  var mu=expectedKs(matchup,expBF);                                     // 5. expected Ks (Fix 1: TTO decay)
+  var mu=expectedKs(matchup,expBF,pit_kpct);                            // 5. expected Ks (TTO decay, tiered by ace-level)
   var lowK=pit_kpct<LG_K_PCT;                                           // Fix 3 ‚Äî below-average-K arm
   var out={ok:true,pit_kpct:pit_kpct,opp_kpct:opp,matchup_kpct:matchup,bfPerInn:Math.round(bfPerInn*100)/100,
     expIP:Math.round(expIP*10)/10,expBF:Math.round(expBF),mu:Math.round(mu*10)/10,lowK:lowK,
@@ -573,6 +580,15 @@ function projectK(P,oppKpct,kprop){
       out.side=pOver>=0.5?'Over':'Under';out.modelP=Math.max(pOver,pUnder);out.hrPrice=pOver>=0.5?kprop.over:kprop.under;
     }
     out.divergence=Math.round((mu-kprop.line)*10)/10;                    // + = model above the line
+    // ‚îÄ‚îÄ DIVERGENCE GUARDRAIL ‚Üí CONFIDENCE (symmetric, Issue 2) ‚îÄ‚îÄ
+    // An oversized model-vs-market EDGE (probability gap, not K-count) is more likely model/line
+    // error than true value ‚Äî downgrade the tier and flag "verify", firing on giant UNDER edges
+    // (Hunter Brown 19.7pp) exactly as on giant OVER edges. A 19.7pp edge must never read HIGH.
+    out.marketFlag=null;
+    if(out.edge!=null&&out.edge>=0.10){
+      out.confidence='LOW';
+      out.marketFlag='model runs '+(out.side==='Over'?'HOT':'COLD')+' vs market ('+(out.edge*100).toFixed(0)+'pp edge'+((kprop.nBooks||0)<4?', thin '+(kprop.nBooks||0)+'-book line':'')+') ‚Äî verify on the book before betting';
+    }
     // ‚îÄ‚îÄ recommendation gates (Fixes 3 & 4) ‚îÄ‚îÄ
     out.recommend=true;out.holdReason=null;
     if(out.suppressed){out.recommend=false;out.holdReason='not a full-game starter ‚Äî no full-start K line';}
@@ -1008,7 +1024,7 @@ function pcard(p,ix){
   }else if(!pr.recommend){
     b+='<div style="padding:6px 8px;border-radius:8px;background:rgba(139,148,167,.12)"><b>NO PLAY</b> ‚Äî '+esc(pr.holdReason||'')+'<div style="font-size:10px;margin-top:2px" class="mut">Model projects '+pr.mu+' Ks (leans '+esc(pr.side||'')+' '+pr.line+'), but a guardrail says sit this one out.</div></div>';
   }else{
-    b+='<div style="padding:6px 8px;border-radius:8px;background:rgba(234,179,8,.10)">&#127919; <b>'+esc(kBetHeadline(p))+'</b></div>';
+    b+='<div style="padding:6px 8px;border-radius:8px;background:rgba(234,179,8,.10)">&#127919; <b>'+esc(kBetHeadline(p))+'</b>'+(pr.marketFlag?'<div style="font-size:10px;color:var(--amb);margin-top:2px">‚ö† '+esc(pr.marketFlag)+'</div>':'')+'</div>';
   }
   b+='</div>';
   // PROJECTION MATH
@@ -1080,7 +1096,7 @@ function copyTop(){
   if(kb.length){
     t+='\n‚Äî PITCHER STRIKEOUT PROPS (recommended ¬∑ projection, not a lock; edge vs de-vig fair) ‚Äî\n';
     kb.forEach(function(p){var pr=p.proj;
-      t+=p.name+' ('+(TEAM_ABBR[p.team]||p.team)+' '+p.throws+'HP) vs '+p.opp+' ‚Äî Ks '+(pr.side==='Over'?'O':'U')+pr.line+(pr.hrPrice!=null?' '+(pr.hrPrice>0?'+':'')+pr.hrPrice:'')+' | model '+pr.mu+' Ks'+(pr.edge!=null?', '+(pr.edge*100).toFixed(1)+'pp edge':'')+' ¬∑ '+pr.confidence+'\n';
+      t+=p.name+' ('+(TEAM_ABBR[p.team]||p.team)+' '+p.throws+'HP) vs '+p.opp+' ‚Äî Ks '+(pr.side==='Over'?'O':'U')+pr.line+(pr.hrPrice!=null?' '+(pr.hrPrice>0?'+':'')+pr.hrPrice:'')+' | model '+pr.mu+' Ks'+(pr.edge!=null?', '+(pr.edge*100).toFixed(1)+'pp edge':'')+' ¬∑ '+pr.confidence+'\n'+(pr.marketFlag?'   ‚ö† '+pr.marketFlag+'\n':'');
     });
   }else{
     // no posted K lines yet (dead odds key / server not pulled) ‚Äî surface the top projections anyway
