@@ -571,6 +571,7 @@ function projectK(P,oppKpct,kprop){
   if(kprop&&kprop.line!=null){
     var pOver=poissonOver(mu,kprop.line),pUnder=1-pOver;                 // 6. distribution at the line
     out.line=kprop.line;out.pOver=pOver;out.pUnder=pUnder;out.nBooks=kprop.nBooks;
+    out.hasHR=!!kprop.hasHR;out.totalBooks=kprop.totalBooks||0;out.lineSpread=kprop.lineSpread;out.lineDisagree=!!kprop.lineDisagree;
     if(kprop.fair!=null){                                               // 7. edge vs de-vig fair
       var edgeOver=pOver-kprop.fair;
       out.side=edgeOver>=0?'Over':'Under';out.edge=Math.abs(edgeOver);
@@ -579,21 +580,24 @@ function projectK(P,oppKpct,kprop){
     }else{
       out.side=pOver>=0.5?'Over':'Under';out.modelP=Math.max(pOver,pUnder);out.hrPrice=pOver>=0.5?kprop.over:kprop.under;
     }
-    out.divergence=Math.round((mu-kprop.line)*10)/10;                    // + = model above the line
-    // ‚îÄ‚îÄ DIVERGENCE GUARDRAIL ‚Üí CONFIDENCE (symmetric, Issue 2) ‚îÄ‚îÄ
-    // An oversized model-vs-market EDGE (probability gap, not K-count) is more likely model/line
-    // error than true value ‚Äî downgrade the tier and flag "verify", firing on giant UNDER edges
-    // (Hunter Brown 19.7pp) exactly as on giant OVER edges. A 19.7pp edge must never read HIGH.
-    out.marketFlag=null;
-    if(out.edge!=null&&out.edge>=0.10){
-      out.confidence='LOW';
-      out.marketFlag='model runs '+(out.side==='Over'?'HOT':'COLD')+' vs market ('+(out.edge*100).toFixed(0)+'pp edge'+((kprop.nBooks||0)<4?', thin '+(kprop.nBooks||0)+'-book line':'')+') ‚Äî verify on the book before betting';
-    }
-    // ‚îÄ‚îÄ recommendation gates (Fixes 3 & 4) ‚îÄ‚îÄ
+    out.divergence=Math.round((mu-kprop.line)*10)/10;                    // + = model above the CURRENT line
+    // ‚îÄ‚îÄ LINE RELIABILITY (line-sync fix) ‚îÄ‚îÄ
+    // The edge AND the guardrail read the SAME reconciled line (server: Hard Rock's line, else the
+    // modal line ‚Äî never a lone outlier). Only trust that line if HR posted it OR ‚â•3 books agree.
+    // An unreliable/thin line, or wide cross-book disagreement, can't be allowed to fire a NO PLAY.
+    var reliableLine=out.hasHR||(out.nBooks||0)>=3;
+    var flags=[];
+    if(!reliableLine)flags.push('line not confirmed ('+(out.hasHR?'':'no Hard Rock line; ')+out.totalBooks+' book'+(out.totalBooks===1?'':'s')+') ‚Äî verify');
+    if(out.lineDisagree)flags.push('books disagree on the line (spread '+out.lineSpread+' K) ‚Äî verify');
+    // ‚îÄ‚îÄ DIVERGENCE ‚Üí CONFIDENCE (symmetric): oversized edge = likely model/line error, not value ‚îÄ‚îÄ
+    if(out.edge!=null&&out.edge>=0.10)flags.push('model runs '+(out.side==='Over'?'HOT':'COLD')+' vs market ('+(out.edge*100).toFixed(0)+'pp) ‚Äî verify');
+    out.marketFlag=flags.length?flags.join(' ¬∑ '):null;
+    if(flags.length)out.confidence='LOW';
+    // ‚îÄ‚îÄ recommendation gates ‚îÄ‚îÄ
     out.recommend=true;out.holdReason=null;
     if(out.suppressed){out.recommend=false;out.holdReason='not a full-game starter ‚Äî no full-start K line';}
     else if(out.side==='Over'&&lowK){out.recommend=false;out.holdReason='below-average strikeout arm (K% '+(pit_kpct*100).toFixed(1)+'<'+(LG_K_PCT*100).toFixed(0)+' lg) ‚Äî the model won‚Äôt chase an over here';}
-    else if(out.side==='Over'&&out.divergence>=1.5){out.recommend=false;out.holdReason='model runs '+out.divergence.toFixed(1)+' K hot vs the line ‚Äî too far above market to trust (this profile lost on 8/21)';}
+    else if(out.side==='Over'&&out.divergence>=1.5&&reliableLine){out.recommend=false;out.holdReason='model runs '+out.divergence.toFixed(1)+' K hot vs the line ‚Äî too far above market to trust (this profile lost on 8/21)';}
     else if(out.flagged){out.recommend=false;out.holdReason='recent-form flag ‚Äî low confidence, no auto-bet';}
   }
   return out;
@@ -1025,6 +1029,11 @@ function pcard(p,ix){
     b+='<div style="padding:6px 8px;border-radius:8px;background:rgba(139,148,167,.12)"><b>NO PLAY</b> ‚Äî '+esc(pr.holdReason||'')+'<div style="font-size:10px;margin-top:2px" class="mut">Model projects '+pr.mu+' Ks (leans '+esc(pr.side||'')+' '+pr.line+'), but a guardrail says sit this one out.</div></div>';
   }else{
     b+='<div style="padding:6px 8px;border-radius:8px;background:rgba(234,179,8,.10)">&#127919; <b>'+esc(kBetHeadline(p))+'</b>'+(pr.marketFlag?'<div style="font-size:10px;color:var(--amb);margin-top:2px">‚ö† '+esc(pr.marketFlag)+'</div>':'')+'</div>';
+  }
+  // auditable line source: the SAME line the edge + guardrail used (line-sync fix)
+  if(pr&&pr.ok&&pr.line!=null){
+    var kAge=(D&&D.propsAt)?Math.round((Date.now()-D.propsAt)/60000):null;
+    b+='<div style="font-size:9px;margin-top:3px" class="mut">line '+pr.line+' ¬∑ '+(pr.hasHR?'<b>Hard Rock</b>':((pr.totalBooks||0)+'-book'+((pr.totalBooks||0)<3?' (thin)':'')))+(pr.lineDisagree?' ¬∑ <span style="color:var(--amb)">books disagree, spread '+pr.lineSpread+'K</span>':'')+(kAge!=null?' ¬∑ as of '+hhmm(D.propsAt)+' ('+kAge+'m ago)':'')+'</div>';
   }
   b+='</div>';
   // PROJECTION MATH
