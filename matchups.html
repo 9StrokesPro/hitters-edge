@@ -85,6 +85,9 @@ function capEra(e){if(e==null||isNaN(e))return null;return Math.round(Math.max(0
 var MIN_PITCHER_IP=20;  // below this, season ERA is small-sample noise -> anchor on Statcast, not ERA
 var MIN_PITCHER_G=4;    // and this many appearances
 var LG_K_PCT=0.220;     // MLB league strikeout rate (K per plate appearance) ‚Äî the Log5 baseline
+var K_MKT_WEIGHT=0.5;   // K-prop edge: keep this fraction of the model's disagreement with the sharp
+                        // de-vig market (the rest is model noise) ‚Äî centers the board, kills phantom edges
+var K_SLATE_FLAG_MAX=0.30; // if >this share of K props still flag "vs market", warn the slate is miscalibrated
 var BF_PER_IP=4.30;     // batters faced per inning (~3 outs + baserunners) ‚Äî for expected-BF
 
 // ‚ïê‚ïê PITCHER DATA LAYER (brief ¬ß3) + CONFIDENCE GATE (¬ß4) ‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê
@@ -572,11 +575,15 @@ function projectK(P,oppKpct,kprop){
     var pOver=poissonOver(mu,kprop.line),pUnder=1-pOver;                 // 6. distribution at the line
     out.line=kprop.line;out.pOver=pOver;out.pUnder=pUnder;out.nBooks=kprop.nBooks;
     out.hasHR=!!kprop.hasHR;out.totalBooks=kprop.totalBooks||0;out.lineSpread=kprop.lineSpread;out.lineDisagree=!!kprop.lineDisagree;
-    if(kprop.fair!=null){                                               // 7. edge vs de-vig fair
-      var edgeOver=pOver-kprop.fair;
+    if(kprop.fair!=null){                                               // 7. edge vs de-vig fair ‚Äî MARKET-ANCHORED
+      // A deep-book de-vig fair is a SHARP prior; a public-data model doesn't beat it by 15-20pp, and
+      // Poisson over-states its own confidence at low K lines. Keep only K_MKT_WEIGHT of the model's
+      // disagreement so edges are honest and the board centers on the market. Œº stays raw (below).
+      var anchoredOver=kprop.fair+K_MKT_WEIGHT*(pOver-kprop.fair);
+      var edgeOver=anchoredOver-kprop.fair;                             // = K_MKT_WEIGHT*(pOver‚àífair)
       out.side=edgeOver>=0?'Over':'Under';out.edge=Math.abs(edgeOver);
-      out.modelP=edgeOver>=0?pOver:pUnder;out.fairP=edgeOver>=0?kprop.fair:(1-kprop.fair);
-      out.hrPrice=edgeOver>=0?kprop.over:kprop.under;
+      out.modelP=edgeOver>=0?anchoredOver:(1-anchoredOver);out.fairP=edgeOver>=0?kprop.fair:(1-kprop.fair);
+      out.rawModelP=pOver;out.hrPrice=edgeOver>=0?kprop.over:kprop.under;
     }else{
       out.side=pOver>=0.5?'Over':'Under';out.modelP=Math.max(pOver,pUnder);out.hrPrice=pOver>=0.5?kprop.over:kprop.under;
     }
@@ -1079,8 +1086,14 @@ function render(){
   if(D.pitchers&&D.pitchers.length){
     var withBet=D.pitchers.filter(function(p){return p.proj&&p.proj.recommend;});
     var held=D.pitchers.filter(function(p){return p.proj&&p.proj.ok&&p.proj.line!=null&&!p.proj.recommend;}).length;
-    h+='<div class="card" style="border-color:var(--pur)"><b style="color:var(--pur);font-size:13px">&#9918; PITCHER STRIKEOUT PROPS ('+withBet.length+' recommended ¬∑ '+held+' held)</b>';
-    h+='<div style="font-size:10px;margin-top:2px" class="mut">Expected Ks = Log5 (pitcher K% √ó opp K% vs hand) ‚Üí times-through-order decay ‚Üí Poisson vs de-vig fair. Guardrails hold back below-average-K arms, openers, injury/trajectory flags, and lines the model runs &gt;1.5 K hot (the profile that lost on 8/21). Ranked by edge. Projection, not a lock.</div></div>';
+    // SLATE-LEVEL CALIBRATION GUARD ‚Äî if too many props diverge from the market, the model (not the
+    // market) is probably off. Read a mostly-flagged board as "miscalibrated," not a stack of edges.
+    var withLine=D.pitchers.filter(function(p){return p.proj&&p.proj.ok&&p.proj.line!=null&&p.proj.edge!=null;});
+    var flaggedCt=withLine.filter(function(p){return p.proj.edge>=0.10;}).length;
+    var miscal=withLine.length>=4&&(flaggedCt/withLine.length)>K_SLATE_FLAG_MAX;
+    h+='<div class="card" style="border-color:'+(miscal?'var(--red)':'var(--pur)')+'"><b style="color:'+(miscal?'var(--red)':'var(--pur)')+';font-size:13px">&#9918; PITCHER STRIKEOUT PROPS ('+withBet.length+' recommended ¬∑ '+held+' held)</b>';
+    if(miscal)h+='<div style="color:var(--red);font-weight:800;font-size:11px;margin-top:4px">‚ö† MODEL LIKELY MISCALIBRATED FOR THIS SLATE ‚Äî '+flaggedCt+'/'+withLine.length+' props diverge from the market. Treat all K props as low-confidence tonight; the sharp market is probably right.</div>';
+    h+='<div style="font-size:10px;margin-top:2px" class="mut">Expected Ks = Log5 (pitcher K% √ó opp K% vs hand) ‚Üí times-through-order decay ‚Üí Poisson, edge MARKET-ANCHORED to the de-vig fair. Guardrails hold back below-average-K arms, openers, injury/trajectory flags, oversized edges, and unconfirmed lines. Ranked by edge. Projection, not a lock.</div></div>';
     D.pitchers.forEach(function(p,ix){h+=pcard(p,ix);});
   }
   D.hitters.slice(0,120).forEach(function(x,ix){h+=mcard(x,ix);});
