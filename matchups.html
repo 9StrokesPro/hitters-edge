@@ -895,7 +895,7 @@ function pickWhy(h){ // one plain-English sentence, or null when there's nothing
   if(h.pitchTag==='CONFLICT'){
     var KL=h.pit&&h.pit.kLayer;
     if(KL){
-      if(KL.r2)return pn+' is an '+KL.role+' ‚Äî your hitter only faces him once or twice before the bullpen comes in, so this matchup read is thin.';
+      if(KL.r2)return pn+' is '+(KL.role==='opener'?'an opener':KL.role==='bulk'?'a bulk reliever':'a '+KL.role)+' ‚Äî your hitter only faces him once or twice before the bullpen comes in, so this matchup read is thin.';
       if(KL.status==='returning_from_IL')return pn+' just came off the injured list ‚Äî his recent numbers aren‚Äôt trustworthy yet, so the grade is shakier than it looks.';
       if(KL.trajectory_direction==='better')return pn+' has been SHARPER lately than his season stats ‚Äî he may be tougher tonight than the grade assumes.';
       if(KL.trajectory_direction==='worse')return pn+'‚Äôs season line looks fine, but he‚Äôs been getting hit lately ‚Äî could go either way, so treat it as lower confidence.';
