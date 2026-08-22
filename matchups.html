@@ -88,8 +88,8 @@ var LG_K_PCT=0.220;     // MLB league strikeout rate (K per plate appearance) �
 var K_MKT_WEIGHT=0.5;   // K-prop edge: keep this fraction of the model's disagreement with the sharp
                         // de-vig market (the rest is model noise) ‚Äî centers the board, kills phantom edges
 var K_SLATE_FLAG_MAX=0.30; // if >this share of K props still flag "vs market", warn the slate is miscalibrated
-var LG_WHIFF=24.5;      // league-avg whiff% (swinging-strike rate) ‚Äî the reachable FINISH/put-away proxy
-                        // (Savant's true put_away column returns empty via the public API, so we use whiff%)
+var LG_WHIFF=24.5;      // league-avg whiff% (swinging-strike rate)
+var LG_BAT_WHIFF=24.5;  // league-avg BATTER whiff% ‚Äî the reachable SwStr/Contact substitute (varies ~18-32%)
 var LG_PITCHES_PA=3.90; // league-avg pitches per PA (battle-to-contact baseline)
 var LG_TEAM_XWOBA=0.315;// league-avg team xwOBA (offense-quality baseline)
 var PITCH_CEILING=100;  // realistic starter pitch-count ceiling ‚Üí couples grind lineups to fewer innings
@@ -529,6 +529,23 @@ async function loadTeamKSplits(teamIds){
   }
   return cached;
 }
+// Batter whiff% (Savant, free): the reachable SwStr/Contact substitute ‚Äî VARIES widely (~18-32%),
+// unlike pitches/PA. Player-level (no team column), aggregated to each pitcher's actual LINEUP below.
+async function loadBatterWhiff(){
+  var ck='bw_'+todayStr(),c=sg(ck,null);if(c&&Object.keys(c).length)return c;
+  var map={};
+  try{var r=await fetch('https://baseballsavant.mlb.com/leaderboard/custom?year='+SEASON+'&type=batter&filter=&min=25&selections=pa,whiff_percent&csv=true');
+    if(r.ok){var m=parseSavant(await r.text());for(var id in m){if(m[id].whiff_percent!=null)map[id]={whiff:m[id].whiff_percent,pa:m[id].pa||1};}}}catch(e){}
+  if(Object.keys(map).length)ss(ck,map);
+  return map;
+}
+// PA-weighted whiff% of an actual lineup (the 9 hitters facing the pitcher). null if no data.
+function lineupWhiff(lineup,wmap){
+  if(!lineup||!lineup.length||!wmap)return null;
+  var num=0,den=0;
+  lineup.forEach(function(p){var w=wmap[p.id];if(w&&w.whiff!=null){var pa=w.pa||1;num+=pa*w.whiff;den+=pa;}});
+  return den>0?Math.round(num/den*10)/10:null;
+}
 // Team OFFENSE quality: Savant team xwOBA (est_woba) ‚Äî the wRC+ substitute we can reach. teamId -> xwOBA.
 async function loadTeamOffense(){
   var ck='toff_'+todayStr(),c=sg(ck,null);if(c)return c;
@@ -576,10 +593,13 @@ function projectK(P,oppSplit,kprop,ctx){
   var pit_kpct=(L.blended_kpct!=null)?L.blended_kpct:null; // single source (same K% the hitter grade uses)
   if(pit_kpct==null)return{ok:false,reason:'no season K% for this pitcher yet',confidence:'LOW'};
   var opp=(oppSplit&&oppSplit.kpct!=null)?oppSplit.kpct:LG_K_PCT;
-  var matchup=log5K(pit_kpct,opp,LG_K_PCT);                              // 3. Log5 combine (opponent contact = PRIMARY)
-  // 3b. FINISH / put-away: intentionally NOT a factor. True put-away% (2-strike K rate) isn't
-  // browser-reachable, and whiff% ‚Äî the only reachable proxy ‚Äî is collinear with K% (using it just
-  // re-amplifies K and pushes high-K arms even higher, the wrong direction). So finish is display-only.
+  // 3. BATTLE-TO-CONTACT (spec): blend the opposing LINEUP's whiff% into the opponent K input, so a
+  // low-whiff contact lineup lowers the matchup K% even if its raw K% looks average (the Henderson
+  // case). Whiff varies widely (~18-32%) ‚Üí a real, visible signal. sqrt-dampened to not double-count K%.
+  var battleFactor=1,effOpp=opp;
+  if(oppSplit&&oppSplit.whiff!=null){battleFactor=Math.max(0.85,Math.min(1.15,Math.sqrt(oppSplit.whiff/LG_BAT_WHIFF)));effOpp=Math.max(0.10,Math.min(0.34,opp*battleFactor));}
+  var matchup=log5K(pit_kpct,effOpp,LG_K_PCT);                           // Log5 combine (opponent contact = PRIMARY)
+  // FINISH / put-away: intentionally NOT a factor ‚Äî unreachable, and whiff% (only proxy) is collinear with K%.
   var finishFactor=1;
   // 4. expected innings ‚Üí batters faced (this is where avg_ip_L3 / role pay off)
   var baseIP=L.avg_ip_L3!=null?L.avg_ip_L3:(P.gs>0?Math.min(P.ip/Math.max(P.gs,1),6):null);
@@ -603,7 +623,7 @@ function projectK(P,oppSplit,kprop,ctx){
   var lowK=pit_kpct<LG_K_PCT;                                           // Fix 3 ‚Äî below-average-K arm
   var out={ok:true,pit_kpct:pit_kpct,opp_kpct:opp,matchup_kpct:matchup,bfPerInn:Math.round(bfPerInn*100)/100,
     expIP:Math.round(expIP*10)/10,expBF:Math.round(expBF),mu:Math.round(mu*10)/10,lowK:lowK,
-    finish:P.finish,finishFactor:Math.round(finishFactor*100)/100,ppaMatch:ppaMatch?Math.round(ppaMatch*100)/100:null,oppPPA:(oppSplit&&oppSplit.pPA)||null,
+    finish:P.finish,battleFactor:Math.round(battleFactor*1000)/1000,oppWhiff:(oppSplit&&oppSplit.whiff)||null,effOpp:Math.round(effOpp*1000)/1000,ppaMatch:ppaMatch?Math.round(ppaMatch*100)/100:null,oppPPA:(oppSplit&&oppSplit.pPA)||null,
     suppressed:L.r2||L.qStarts<1,flagged:L.r3,confidence:L.confidence,
     trajectory_direction:L.trajectory_direction,recommend:false,holdReason:'no posted line'};
   if(kprop&&kprop.line!=null){
@@ -832,7 +852,8 @@ async function loadAll(){
   setS('Loading Statcast layers...');
   var sc=await loadStatcast();
   var bps=await loadBatterPitchStats();
-  var teamOff={};try{teamOff=await loadTeamOffense();}catch(e){} // finish/put-away proxy = pitcher whiff% from sc.pit
+  var teamOff={};try{teamOff=await loadTeamOffense();}catch(e){}
+  var whiffMap={};try{whiffMap=await loadBatterWhiff();}catch(e){} // opponent-lineup contact (SwStr substitute)
   var wx=await loadWeatherFor(games);
   var totals=await loadTotals();
   // projected lineups for unposted games (real last-game orders ‚Äî no phantoms, spec 3.5)
@@ -902,10 +923,12 @@ async function loadAll(){
   var kSplits={};try{kSplits=await loadTeamKSplits(Object.keys(teamIdSet).map(Number));}catch(e){}
   var pitchers=[];
   games.forEach(function(g){
-    [[g.awayPit,g.homeId,g.awayTeam,g.homeTeam],[g.homePit,g.awayId,g.homeTeam,g.awayTeam]].forEach(function(x){
+    [[g.awayPit,g.homeId,g.awayTeam,g.homeTeam,g.homeLu],[g.homePit,g.awayId,g.homeTeam,g.awayTeam,g.awayLu]].forEach(function(x){
       var pp=x[0];if(!pp)return;var P=pitMap[pp.id];if(!P)return;
       if(P.finish==null&&sc.pit[P.id]&&sc.pit[P.id].whiff_percent!=null)P.finish=sc.pit[P.id].whiff_percent; // whiff/finish
-      var ts=kSplits[x[1]]||{},oppSplit=(P.throws==='L')?ts.vL:(P.throws==='R')?ts.vR:null;
+      var ts=kSplits[x[1]]||{},base=(P.throws==='L')?ts.vL:(P.throws==='R')?ts.vR:null;
+      var lw=lineupWhiff(x[4],whiffMap);                 // the actual opposing lineup's whiff% (contact)
+      var oppSplit=base?Object.assign({},base,{whiff:lw}):(lw!=null?{whiff:lw}:null); // copy ‚Äî never mutate cache
       var kprop=(propRes.pitchers&&propRes.pitchers[P.name])||null;
       pitchers.push({name:P.name,team:x[2],opp:x[3],game:g.awayTeam+' @ '+g.homeTeam,start:g.start,throws:P.throws,P:P,oppSplit:oppSplit,oppKpct:oppSplit?oppSplit.kpct:null,kprop:kprop,proj:projectK(P,oppSplit,kprop)});
     });
@@ -1098,7 +1121,8 @@ function pcard(p,ix){
     b+='<div class="sect"><div class="sh">PROJECTION MATH (¬ß5)</div>'
       +'Pitcher K% (70% season / 30% recent): <b>'+kpctTxt(pr.pit_kpct)+'</b><br>'
       +'Opp '+esc(p.opp)+' K% vs '+(p.throws||'?')+'HP: <b>'+kpctTxt(pr.opp_kpct)+'</b>'+(p.oppKpct==null?' <span class="mut">(league avg ‚Äî no split)</span>':'')+'<br>'
-      +(pr.oppPPA!=null?'Opp battle (pitches/PA seen): <b>'+pr.oppPPA+'</b>'+(pr.oppPPA>=4.0?' (grinds counts)':pr.oppPPA<=3.8?' (quick outs)':'')+'<br>':'')
+      +(pr.oppWhiff!=null?'Lineup whiff% (contact): <b>'+pr.oppWhiff+'%</b>'+(pr.oppWhiff<=22?' (contact ‚Äî battles, fewer Ks)':pr.oppWhiff>=27?' (free-swingers ‚Äî more Ks)':'')+' ‚Üí effective opp K% <b>'+kpctTxt(pr.effOpp)+'</b><br>':'')
+      +(pr.oppPPA!=null?'Opp pitches/PA seen: <b>'+pr.oppPPA+'</b>'+(pr.oppPPA>=4.0?' (grinds counts)':'')+'<br>':'')
       +'Log5 matchup K%: <b>'+kpctTxt(pr.matchup_kpct)+'</b> ‚Üí '+pr.expIP+' IP'+(pr.ppaMatch!=null?' <span class="mut">(pitch-count-capped @'+pr.ppaMatch+' P/PA)</span>':'')+' √ó '+(pr.bfPerInn||'--')+' batters/inn ‚âà '+pr.expBF+' faced, times-order K decay ‚Üí <b>Œº '+pr.mu+' Ks</b>'
       +(pr.finish!=null?'<br><span class="mut">finish (whiff) '+pr.finish.toFixed(1)+'% ‚Äî shown for context, not scored (collinear with K%)</span>':'')
       +(pr.line!=null?'<br>Poisson at '+pr.line+': P(Over) '+kpctTxt(pr.pOver)+' ¬∑ P(Under) '+kpctTxt(pr.pUnder)+(pr.divergence!=null?' ¬∑ model '+(pr.divergence>=0?'+':'')+pr.divergence+' K vs line':''):'')+'</div>';
