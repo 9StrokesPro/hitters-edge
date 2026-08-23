@@ -485,34 +485,37 @@ function hitterLambda(b,mkt){
 // arsenal, THIS pitcher's contact-quality-allowed, and line-lags-form flags. Park/total/slot/power stay
 // as DISPLAY context elsewhere on the card ‚Äî never in the edge math. (8/23 QA fix.)
 function contextTilt(h,mkt){
-  var t=0,why=[];
+  var why=[],byTag={};
+  function add(tag,amt,txt){byTag[tag]=(byTag[tag]||0)+amt;why.push(txt);} // tag each contribution (for the tracker)
   // 1. Luck gap ‚Äî hitting the ball harder than results show ‚Üí under-rewarded, line lags his true form.
   if(h.lg&&h.lg.sum!=null){
-    if(h.lg.sum>=0.050){t+=0.022;why.push('under-rewarded (luck gap +'+f3(h.lg.sum)+')');}
-    else if(h.lg.sum>=0.030){t+=0.012;why.push('mild luck gap +'+f3(h.lg.sum));}
-    else if(h.lg.sum<=-0.055){t-=0.020;why.push('over-performing expected ‚Äî regression risk ('+f3(h.lg.sum)+')');}
+    if(h.lg.sum>=0.050)add('luck_gap',0.022,'under-rewarded (luck gap +'+f3(h.lg.sum)+')');
+    else if(h.lg.sum>=0.030)add('luck_gap',0.012,'mild luck gap +'+f3(h.lg.sum));
+    else if(h.lg.sum<=-0.055)add('luck_gap',-0.020,'over-performing expected ‚Äî regression risk ('+f3(h.lg.sum)+')');
   }
   // 2. Pitch-mix fit ‚Äî crushes THIS pitcher's specific arsenal (not generic power the book already prices).
   if(h.mix&&h.mix.fit!=null){
-    if(h.mix.fit>=0.490){t+=0.018;why.push('pitch-mix fit '+f3(h.mix.fit)+' vs this arsenal');}
-    else if(h.mix.fit<=0.340){t-=0.015;why.push('poor pitch-mix fit '+f3(h.mix.fit));}
+    if(h.mix.fit>=0.490)add('pitch_mix_fit',0.018,'pitch-mix fit '+f3(h.mix.fit)+' vs this arsenal');
+    else if(h.mix.fit<=0.340)add('pitch_mix_fit',-0.015,'poor pitch-mix fit '+f3(h.mix.fit));
   }
   // 3. THIS pitcher's contact quality allowed ‚Äî squared up / barrels (Statcast the market is slow on vs ERA).
   if(h.pSav){
-    if(h.pSav.xslg!=null&&h.pSav.xslg>=0.470){t+=0.016;why.push('pitcher gets squared up (xSLG-agst '+f3(h.pSav.xslg)+')');}
-    else if(h.pSav.xslg!=null&&h.pSav.xslg<=0.310){t-=0.014;why.push('pitcher limits damage');}
-    if(h.pSav.barrel_batted_rate!=null&&h.pSav.barrel_batted_rate>=10.5){t+=0.010;why.push('yields barrels ('+h.pSav.barrel_batted_rate+'%)');}
+    if(h.pSav.xslg!=null&&h.pSav.xslg>=0.470)add('pitcher_squared_up',0.016,'pitcher gets squared up (xSLG-agst '+f3(h.pSav.xslg)+')');
+    else if(h.pSav.xslg!=null&&h.pSav.xslg<=0.310)add('pitcher_squared_up',-0.014,'pitcher limits damage');
+    if(h.pSav.barrel_batted_rate!=null&&h.pSav.barrel_batted_rate>=10.5)add('pitcher_squared_up',0.010,'yields barrels ('+h.pSav.barrel_batted_rate+'%)');
   }
   // 4. Line lags true form ‚Äî pitcher just off IL / recent form worse than season (market slow to adjust).
   var kl=h.pit&&h.pit.kLayer;
   if(kl){
-    if(kl.status==='returning_from_IL'){t+=0.012;why.push('pitcher just off IL ‚Äî line lags');}
-    if(kl.r3&&kl.trajectory_direction==='worse'){t+=0.010;why.push('pitcher trending worse than his season line');}
+    if(kl.status==='returning_from_IL')add('off_il_line_lags',0.012,'pitcher just off IL ‚Äî line lags');
+    if(kl.r3&&kl.trajectory_direction==='worse')add('pitcher_trending_worse',0.010,'pitcher trending worse than his season line');
   }
-  // Cap: even a full stack of orthogonal signals doesn't beat a sharp market by more than ~5pp, and the
-  // signals overlap. Diminish beyond the first two contributors, then hard-cap.
-  t=Math.max(-0.045,Math.min(0.05,t));
-  return{tilt:Math.round(t*1000)/1000,why:why};
+  var t=Object.keys(byTag).reduce(function(a,k){return a+byTag[k];},0);
+  t=Math.max(-0.045,Math.min(0.05,t)); // orthogonal or not, a model doesn't beat a sharp market by >5pp
+  // tags present (positive contributors) + primary (biggest) ‚Äî persisted with the play for per-signal QA
+  var tags=[],primary=null;
+  Object.keys(byTag).forEach(function(k){if(byTag[k]>0){tags.push(k);if(!primary||byTag[k]>byTag[primary])primary=k;}});
+  return{tilt:Math.round(t*1000)/1000,why:why,tags:tags,primary:primary};
 }
 // Pick the BEST prop across EVERY open market for this hitter ‚Äî driven by the PLAYER'S OWN production:
 // his per-game rate ‚Üí P(clear the line) vs the market's fair. The prop where HIS rate most exceeds the
@@ -543,7 +546,7 @@ function pickBestProp(pm,h,allowed){
     var score=tilt*130+affinity*9+likely*7+(value!=null?value*40:0)+fitB*2-longshotPen;
     var rec={mkt:mkt,label:MKT_LABEL[mkt]||mkt,line:p.line,hr:p.hr,fair:p.fair,nBooks:p.nBooks,at:p.at,stale:p.stale,
       value:value,likely:Math.round(likely*1000)/1000,modelP:modelP!=null?Math.round(modelP*1000)/1000:null,affinity:Math.round(affinity*100)/100,
-      tilt:tilt,edgeP:edgeP!=null?Math.round(edgeP*1000)/1000:null,edgeWhy:ct.why,score:score};
+      tilt:tilt,edgeP:edgeP!=null?Math.round(edgeP*1000)/1000:null,edgeWhy:ct.why,edgeTags:ct.tags,edgePrimary:ct.primary,score:score};
     ranked.push(rec);
     if(score>bs){bs=score;best=rec;}
   });
@@ -680,6 +683,50 @@ async function settleKProjections(){
     else ss('kproj_'+date,proj); // keep partially-settled (game not final yet) for next load
   }
   ss('kcalib',cal);return cal;
+}
+// ‚ïê‚ïê EDGE-PLAY CALIBRATION ‚Äî tagged by SIGNAL, so we learn WHICH orthogonal signal beats its lines ‚ïê‚ïê
+var SIGNAL_LABEL={luck_gap:'Luck gap',pitch_mix_fit:'Pitch-mix fit',pitcher_squared_up:'Pitcher squared-up',off_il_line_lags:'Off-IL (line lags)',pitcher_trending_worse:'Pitcher trending worse',none:'(no tag)'};
+function logEdgePlays(hitters){
+  var recs=(hitters||[]).filter(function(h){return h.edgeProp&&h.edgeProp.tilt>=0.035&&h.spot&&h.grade!=='D'&&h.edgeProp.line!=null&&h.edgeProp.mkt;})
+    .map(function(h){var bp=h.edgeProp;return{id:h.id,name:h.name,mkt:bp.mkt,line:bp.line,hr:bp.hr,tilt:bp.tilt,light:pickLight(h),tags:bp.edgeTags||[],primary:bp.edgePrimary||'none',opp:h.oppPitName||''};});
+  if(recs.length)ss('eproj_'+todayStr(),recs);
+}
+function edgeStat(gls,date,mkt){ // sum the settled stat over that date's game(s)
+  var f=mkt==='batter_runs_scored'?'runs':mkt==='batter_rbis'?'rbi':mkt==='batter_home_runs'?'homeRuns':mkt==='batter_total_bases'?'totalBases':mkt==='batter_hits'?'hits':null;
+  if(!f)return null;var g=gls.filter(function(x){return x.date===date;});if(!g.length)return null;
+  return g.reduce(function(a,x){return a+(parseInt(x.stat[f])||0);},0);
+}
+function ecB(o,k){if(!o[k])o[k]={w:0,l:0,u:0};return o[k];}
+async function settleEdgePlays(){
+  var today=todayStr(),pre=K+'eproj_',dates=[];
+  for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(k&&k.indexOf(pre)===0){var d=k.slice(pre.length);if(d<today)dates.push(d);}}
+  if(!dates.length)return sg('ecalib',null);
+  var cal=sg('ecalib',{bySignal:{},byType:{},byLight:{},n:0,w:0,l:0,u:0,recent:[]});
+  for(var di=0;di<dates.length;di++){
+    var date=dates[di],proj=sg('eproj_'+date,null);if(!proj||!proj.length){localStorage.removeItem(K+'eproj_'+date);continue;}
+    await pool(proj,async function(pr){
+      if(pr._done)return;
+      var gl=await apiFetch(MLB+'/people/'+pr.id+'/stats?stats=gameLog&group=hitting&season='+SEASON+'&sportId=1');
+      var gls=gl&&gl.stats&&gl.stats[0]&&gl.stats[0].splits||[];
+      var stat=edgeStat(gls,date,pr.mkt);
+      if(stat!=null){
+        var win=stat>pr.line;                                            // edge plays are all overs
+        var units=win?(pr.hr>0?pr.hr/100:(pr.hr<0?100/(-pr.hr):0.9)):-1;  // W = payout at the price, L = -1u
+        cal.n++;win?cal.w++:cal.l++;cal.u+=units;
+        var b1=ecB(cal.bySignal,pr.primary||'none');win?b1.w++:b1.l++;b1.u+=units;   // attribute to PRIMARY signal
+        var typ=pr.mkt==='batter_home_runs'?'HR':pr.mkt==='batter_rbis'?'RBI':pr.mkt==='batter_runs_scored'?'Runs':'Other';
+        var b2=ecB(cal.byType,typ);win?b2.w++:b2.l++;b2.u+=units;
+        var b3=ecB(cal.byLight,pr.light||'red');win?b3.w++:b3.l++;b3.u+=units;
+        cal.recent.unshift({name:pr.name,date:date,type:typ,line:pr.line,act:stat,win:win,primary:pr.primary,tags:pr.tags,light:pr.light,opp:pr.opp,units:Math.round(units*100)/100});
+        if(cal.recent.length>80)cal.recent.pop();
+        pr._done=true;
+      }
+    },CONC);
+    var allDone=proj.every(function(p){return p._done;});
+    if(allDone||date<new Date(Date.now()-5*864e5).toISOString().slice(0,10))localStorage.removeItem(K+'eproj_'+date);
+    else ss('eproj_'+date,proj);
+  }
+  ss('ecalib',cal);return cal;
 }
 // Log5 / odds-ratio: combine pitcher K% and opponent K% against the league baseline.
 function log5K(pit,opp,lg){var num=pit*opp/lg,den=num+((1-pit)*(1-opp)/(1-lg));return den>0?num/den:pit;}
@@ -1064,9 +1111,10 @@ async function loadAll(){
     var ae=(a.proj&&a.proj.edge!=null)?a.proj.edge:-1,be=(b.proj&&b.proj.edge!=null)?b.proj.edge:-1;
     return be-ae;
   });
-  logKProjections(pitchers);                              // instrument: record tonight's K projections
+  logKProjections(pitchers);logEdgePlays(hitters);        // instrument: record tonight's K + edge plays (tagged)
   var kcal=null;try{kcal=await settleKProjections();}catch(e){} // settle prior nights vs real box-score Ks
-  D={hitters:hitters,games:games,pitchers:pitchers,kcalib:kcal,generatedAt:new Date(),loadSec:Math.round((Date.now()-t0)/1000),propsAt:propRes.at,serverDown:propRes.serverDown};
+  var ecal=null;try{ecal=await settleEdgePlays();}catch(e){}     // settle prior edge plays, grouped by signal
+  D={hitters:hitters,games:games,pitchers:pitchers,kcalib:kcal,ecalib:ecal,generatedAt:new Date(),loadSec:Math.round((Date.now()-t0)/1000),propsAt:propRes.at,serverDown:propRes.serverDown};
   render();
   setS(hitters.length+' matchup cards ‚Ä¢ '+games.length+' games ‚Ä¢ built in '+D.loadSec+'s');
   freshLine();
@@ -1310,7 +1358,15 @@ function render(){
   // ‚îÄ‚îÄ EDGE PLAYS ‚Äî Runs / RBI / HR (top of page so all boards are visible together) ‚îÄ‚îÄ
   var edgeList=BD.edge.slice(0,15);
   h+='<div class="card" style="border-color:var(--grn)"><b style="color:var(--grn);font-size:13px">&#127919; EDGE PLAYS ‚Äî Runs / RBI / HR ('+edgeList.length+')</b>';
-  h+='<div style="font-size:10px;margin-top:2px" class="mut">The derivative props where context (lineup traffic, game total, park, barrel-prone arm) can beat the generic market price ‚Äî this is where we try to win. Ranked by our tilt. Our read, unproven ‚Äî the market may already price some of it, so treat as leans.</div>';
+  h+='<div style="font-size:10px;margin-top:2px" class="mut">Built on ORTHOGONAL signals the market is slow on (luck gap, pitch-mix fit, this pitcher squared-up, line-lags-form) ‚Äî park/total/slot/power are context only, not edge. Ranked by tilt. Leans, not locks.</div>';
+  // per-SIGNAL calibration scoreboard ‚Äî learn WHICH orthogonal signal actually beats its lines
+  var ec=D.ecalib;
+  if(ec&&ec.n>0){
+    var sigs=Object.keys(ec.bySignal).sort(function(a,b){return (ec.bySignal[b].u)-(ec.bySignal[a].u);});
+    h+='<div style="font-size:10px;margin-top:5px;padding:5px 7px;border-radius:7px;background:rgba(34,197,94,.09)"><b>&#128202; EDGE CALIBRATION</b> ‚Äî '+ec.w+'‚Äì'+ec.l+', <b style="color:'+(ec.u>=0?'var(--grn)':'var(--red)')+'">'+(ec.u>=0?'+':'')+ec.u.toFixed(1)+'u</b> over '+ec.n+' settled'+(ec.n<25?' <span class="mut">(small sample ‚Äî watch, don‚Äôt cut yet)</span>':'');
+    h+='<br><b>by signal:</b> '+sigs.map(function(sig){var s=ec.bySignal[sig];return (SIGNAL_LABEL[sig]||sig)+' <b>'+s.w+'‚Äì'+s.l+'</b> ('+(s.u>=0?'+':'')+s.u.toFixed(1)+'u)';}).join(' ¬∑ ');
+    h+='<br><b>by type:</b> '+Object.keys(ec.byType).map(function(ty){var s=ec.byType[ty];return ty+' '+s.w+'‚Äì'+s.l+' ('+(s.u>=0?'+':'')+s.u.toFixed(1)+'u)';}).join(' ¬∑ ')+' ¬∑ <b>by dot:</b> '+['green','yellow','red'].filter(function(l){return ec.byLight[l];}).map(function(l){var s=ec.byLight[l];return (l==='green'?'üü¢':l==='yellow'?'üü°':'üî¥')+s.w+'‚Äì'+s.l;}).join(' ')+'</div>';
+  }
   edgeList.forEach(function(x){var bp=x.edgeProp;
     h+='<div style="font-size:12px;margin-top:6px"><b>'+esc(x.name)+'</b> <span class="mut">('+esc(TEAM_ABBR[x.team]||x.team)+' vs '+esc(x.oppPitName||'TBD')+')</span> ‚Äî <b style="color:var(--grn)">'+bp.label+' O'+bp.line+' '+(bp.hr>0?'+':'')+bp.hr+'</b> <span class="mut">'+Math.round((bp.edgeP||bp.likely)*100)+'%</span> ¬∑ <b style="color:var(--grn)">+'+(bp.tilt*100).toFixed(1)+'pp</b><br><span style="font-size:10px" class="mut">'+esc((bp.edgeWhy||[]).join(' ¬∑ '))+'</span></div>';
   });
