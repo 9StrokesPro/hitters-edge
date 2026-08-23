@@ -387,7 +387,7 @@ async function loadWeatherFor(games){
 // Matchup-first: the GRADE ranks the card; the prop is just "here's the bet if you
 // like the read." Pulled per game (~10 credits each) for tonight's slate.
 var PROP_MKTS='batter_total_bases,batter_hits,batter_hits_runs_rbis,batter_rbis,batter_runs_scored';
-var MKT_LABEL={batter_total_bases:'Total Bases',batter_hits:'Hits',batter_hits_runs_rbis:'H+R+RBI',batter_rbis:'RBI',batter_runs_scored:'Runs'};
+var MKT_LABEL={batter_total_bases:'Total Bases',batter_hits:'Hits',batter_hits_runs_rbis:'H+R+RBI',batter_rbis:'RBI',batter_runs_scored:'Runs',batter_home_runs:'Home Run',batter_singles:'Singles',batter_doubles:'Doubles'};
 function devig(po,pu){function ip(a){return a<0?(-a)/(-a+100):100/(a+100);}var qo=ip(po),qu=ip(pu),s=qo+qu;return s>0?qo/s:null;}
 function impliedP(a){return a==null?null:(a<0?(-a)/(-a+100):100/(a+100));}
 // Fetch with retry+backoff; distinguishes transient (429/5xx/network -> retry) from
@@ -452,33 +452,49 @@ async function loadProps(games){
   games.forEach(function(g){var gk=g.awayTeam+' @ '+g.homeTeam;status[gk]=covered[gk]?'ok':'not_covered';});
   return{props:d.players||{},pitchers:d.pitchers||{},status:status,at:d.at};
 }
-// best-fit stat text -> ordered market preference
-function bestFitMkts(fitText){
-  var t=fitText.toLowerCase();
-  if(t.indexOf('total bases')===0)return['batter_total_bases','batter_hits_runs_rbis'];
-  if(t.indexOf('hits')===0)return['batter_hits','batter_total_bases'];
-  if(t.indexOf('runs')===0)return['batter_runs_scored','batter_hits_runs_rbis'];
-  if(t.indexOf('rbi')===0)return['batter_rbis','batter_hits_runs_rbis'];
-  return['batter_hits_runs_rbis','batter_total_bases','batter_hits'];
+// Profile fit weights (tiebreak only) ‚Äî where a bat's value concentrates. NO market is excluded.
+var PROP_FIT={
+  POWER:{batter_total_bases:1.0,batter_home_runs:0.9,batter_doubles:0.7,batter_rbis:0.7,batter_hits_runs_rbis:0.6,batter_hits:0.4,batter_singles:0.2,batter_runs_scored:0.4},
+  CONTACT:{batter_hits:1.0,batter_singles:1.0,batter_total_bases:0.7,batter_runs_scored:0.6,batter_hits_runs_rbis:0.5,batter_doubles:0.4,batter_rbis:0.4,batter_home_runs:0.2},
+  HYBRID:{batter_total_bases:0.8,batter_hits:0.7,batter_singles:0.6,batter_hits_runs_rbis:0.6,batter_doubles:0.6,batter_rbis:0.6,batter_home_runs:0.5,batter_runs_scored:0.6}
+};
+// Pick the BEST prop across EVERY open market for this hitter ‚Äî by VALUE (Hard Rock price vs the de-vig
+// fair) first, then hit-LIKELIHOOD (the fair prob), then a light profile-fit tiebreak. There is NO
+// default to H+R+RBI anymore (it was the biggest loser ‚Äî it needs the whole lineup to produce, and it
+// was force-picked regardless of price). Every market competes on its own merits.
+function pickBestProp(pm,h){
+  if(!pm)return null;
+  var fit=PROP_FIT[h.bt?h.bt.key:'HYBRID']||PROP_FIT.HYBRID;
+  var best=null,bs=-1e9,ranked=[];
+  Object.keys(pm).forEach(function(mkt){
+    var p=pm[mkt];if(!p||p.hr==null)return;
+    var imp=impliedP(p.hr);
+    var value=(p.fair!=null&&imp!=null)?Math.round((p.fair-imp)*1000)/1000:null; // + = HR beats fair
+    var likely=p.fair!=null?p.fair:(imp!=null?imp:0.5);                          // de-vig hit likelihood
+    var fitB=fit[mkt]!=null?fit[mkt]:0.5;
+    var score=(value!=null?value*100:-3)+likely*10+fitB*5; // VALUE primary ¬∑ LIKELIHOOD secondary ¬∑ FIT tiebreak
+    var rec={mkt:mkt,label:MKT_LABEL[mkt]||mkt,line:p.line,hr:p.hr,fair:p.fair,nBooks:p.nBooks,at:p.at,stale:p.stale,value:value,likely:Math.round(likely*1000)/1000,score:score};
+    ranked.push(rec);
+    if(score>bs){bs=score;best=rec;}
+  });
+  if(best)best.ranked=ranked.sort(function(a,b){return b.score-a.score;});
+  return best;
 }
 function attachProps(hitters,res){
   var props=res&&res.props||{},status=res&&res.status||{};
   hitters.forEach(function(h){
-    var pm=props[h.name];h.props=pm||null;h.bestProp=null;
+    var pm=props[h.name];h.props=pm||null;
     h.propFetch=status[h.game]||(pm?'ok':'no_event'); // ok | stale | failed | no_event
-    if(!pm)return;
-    var pref=bestFitMkts(h.bestFit);
-    for(var i=0;i<pref.length;i++){var p=pm[pref[i]];if(p){h.bestProp={mkt:pref[i],label:MKT_LABEL[pref[i]]||pref[i],line:p.line,hr:p.hr,fair:p.fair,nBooks:p.nBooks,at:p.at,stale:p.stale};break;}}
+    h.bestProp=pickBestProp(pm,h);
   });
 }
 function hhmm(ts){return ts?new Date(ts).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}):'';}
-function propLine(bp){ // "TB O1.5 ‚àí120 on Hard Rock ‚Äî fair price ‚úì (as of 1:01)"
+function propLine(bp){ // "TB O1.5 ‚àí120 on Hard Rock ‚Äî +2.1pp value (as of 1:01)"
   if(!bp)return null;
   var s=bp.label+' O'+bp.line+' '+(bp.hr>0?'+':'')+bp.hr+' on Hard Rock';
-  if(bp.fair!=null){
-    var diff=bp.fair-impliedP(bp.hr); // >0 = HR price better than fair
-    s+=diff>=-0.005?' ‚Äî fair price ‚úì':' ‚Äî paying '+Math.abs(diff*100).toFixed(1)+'pp over fair';
-  }
+  var v=bp.value!=null?bp.value:(bp.fair!=null?bp.fair-impliedP(bp.hr):null);
+  if(v!=null)s+=v>=0.005?' ‚Äî +'+(v*100).toFixed(1)+'pp value':v>=-0.005?' ‚Äî fair price ‚úì':' ‚Äî paying '+Math.abs(v*100).toFixed(1)+'pp over fair';
+  if(bp.likely!=null)s+=' ('+Math.round(bp.likely*100)+'% to hit)';
   if(bp.stale)s+=' (price as of '+hhmm(bp.at)+' ‚Äî couldn‚Äôt refresh)';
   return s;
 }
@@ -556,6 +572,41 @@ async function loadTeamOffense(){
         for(var i=1;i<lines.length;i++){var f=parseCSVLine(lines[i]);var ab=(f[idx['team_id']]||'').trim(),xw=parseFloat(f[idx['est_woba']]);if(ab&&!isNaN(xw))map[ab]=xw;}}}}catch(e){} // keyed by team ABBR (== TEAM_ABBR)
   if(Object.keys(map).length)ss(ck,map);
   return map;
+}
+// ‚ïê‚ïê K-PROJECTION CALIBRATION TRACKER (instrument, don't tune ‚Äî per the 8/22 results report) ‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê
+// Logs each night's pitcher K projections, then settles them against real box-score Ks (free statsapi)
+// and accumulates (projection ‚àí actual). Answers "is the model running hot/cold?" at real sample size
+// instead of guessing at n=2. All browser-side; localStorage per device. NEVER touches the model.
+function logKProjections(pitchers){
+  var recs=(pitchers||[]).filter(function(p){return p.proj&&p.proj.ok&&p.proj.line!=null&&p.proj.mu!=null&&p.P&&p.P.id;})
+    .map(function(p){return {id:p.P.id,name:p.name,mu:p.proj.mu,line:p.proj.line,side:p.proj.side,flagged:!!p.proj.marketFlag};});
+  if(recs.length)ss('kproj_'+todayStr(),recs);
+}
+async function settleKProjections(){
+  var today=todayStr(),pre=K+'kproj_',dates=[];
+  for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(k&&k.indexOf(pre)===0){var d=k.slice(pre.length);if(d<today)dates.push(d);}}
+  if(!dates.length)return sg('kcalib',null);
+  var cal=sg('kcalib',{n:0,sumDiff:0,sumAbs:0,fN:0,fSumDiff:0,recent:[]});
+  for(var di=0;di<dates.length;di++){
+    var date=dates[di],proj=sg('kproj_'+date,null);if(!proj||!proj.length){localStorage.removeItem(K+'kproj_'+date);continue;}
+    await pool(proj,async function(pr){
+      if(pr._done)return;
+      var gl=await apiFetch(MLB+'/people/'+pr.id+'/stats?stats=gameLog&group=pitching&season='+SEASON+'&sportId=1');
+      var gls=gl&&gl.stats&&gl.stats[0]&&gl.stats[0].splits||[];
+      var g=gls.filter(function(x){return x.date===date;});
+      if(g.length){var act=g.reduce(function(a,x){return a+(parseInt(x.stat.strikeOuts)||0);},0);var diff=Math.round((pr.mu-act)*10)/10;
+        cal.n++;cal.sumDiff+=diff;cal.sumAbs+=Math.abs(diff);
+        if(pr.flagged){cal.fN++;cal.fSumDiff+=diff;}
+        cal.recent.unshift({name:pr.name,date:date,mu:pr.mu,act:act,diff:diff,flagged:pr.flagged});
+        if(cal.recent.length>50)cal.recent.pop();
+        pr._done=true;
+      }
+    },CONC);
+    var allDone=proj.every(function(p){return p._done;});
+    if(allDone||date<new Date(Date.now()-5*864e5).toISOString().slice(0,10))localStorage.removeItem(K+'kproj_'+date);
+    else ss('kproj_'+date,proj); // keep partially-settled (game not final yet) for next load
+  }
+  ss('kcalib',cal);return cal;
 }
 // Log5 / odds-ratio: combine pitcher K% and opponent K% against the league baseline.
 function log5K(pit,opp,lg){var num=pit*opp/lg,den=num+((1-pit)*(1-opp)/(1-lg));return den>0?num/den:pit;}
@@ -939,7 +990,9 @@ async function loadAll(){
     var ae=(a.proj&&a.proj.edge!=null)?a.proj.edge:-1,be=(b.proj&&b.proj.edge!=null)?b.proj.edge:-1;
     return be-ae;
   });
-  D={hitters:hitters,games:games,pitchers:pitchers,generatedAt:new Date(),loadSec:Math.round((Date.now()-t0)/1000),propsAt:propRes.at,serverDown:propRes.serverDown};
+  logKProjections(pitchers);                              // instrument: record tonight's K projections
+  var kcal=null;try{kcal=await settleKProjections();}catch(e){} // settle prior nights vs real box-score Ks
+  D={hitters:hitters,games:games,pitchers:pitchers,kcalib:kcal,generatedAt:new Date(),loadSec:Math.round((Date.now()-t0)/1000),propsAt:propRes.at,serverDown:propRes.serverDown};
   render();
   setS(hitters.length+' matchup cards ‚Ä¢ '+games.length+' games ‚Ä¢ built in '+D.loadSec+'s');
   freshLine();
@@ -1055,8 +1108,8 @@ function mcard(h,ix){
   // BvP ‚Äî NOISE footnote (spec 4.1)
   b+='<div class="sect"><div class="sh">HEAD-TO-HEAD (BvP) ‚Äî <span style="color:var(--amb)">NOISE, does not move the grade</span></div>'
     +(h.bvp?(h.bvp.h+'-for-'+h.bvp.ab+' ('+f3(h.bvp.avg)+', '+h.bvp.hr+' HR) ‚Äî '+(h.bvp.ab<30?'<b>sample far too small to mean anything</b>':'still treat with caution')):'<span class="mut">none on file (or C/D card ‚Äî not fetched)</span>')+'</div>';
-  // best fit
-  b+='<div class="sect" style="border-top:2px solid var(--bord)"><div class="sh" style="color:var(--gld)">BEST-FIT STAT TO BACK</div><b>'+esc(h.bestFit)+'</b>';
+  // best prop ‚Äî chosen by VALUE across all open markets (no HRR default)
+  b+='<div class="sect" style="border-top:2px solid var(--bord)"><div class="sh" style="color:var(--gld)">BEST PROP TO BACK <span class="mut" style="font-weight:400">‚Äî picked by value across all markets</span></div><span class="mut" style="font-size:10px">profile read: '+esc(h.bestFit)+'</span>';
   if(h.bestProp){
     var okPrice=h.bestProp.hr>=-140&&h.bestProp.hr<200;
     var pAge=D&&D.propsAt?Math.round((Date.now()-D.propsAt)/60000):null;
@@ -1067,7 +1120,13 @@ function mcard(h,ix){
     var np=noPropMsg(h);
     b+='<div style="font-size:10px;margin-top:4px;color:'+(np.amber?'var(--amb)':'var(--mut)')+'">&#127921; '+esc(np.txt)+'</div>';
   }
-  if(h.props){
+  if(h.bestProp&&h.bestProp.ranked&&h.bestProp.ranked.length>1){
+    var alts=h.bestProp.ranked.filter(function(r){return r.mkt!==h.bestProp.mkt;});
+    b+='<div style="font-size:10px;margin-top:4px" class="mut">Other markets (why they lost the pick): '+alts.map(function(r){
+      var vtxt=r.value!=null?(r.value>=0.005?'+'+(r.value*100).toFixed(1)+'pp':r.value<=-0.005?(r.value*100).toFixed(1)+'pp':'fair'):'no fair';
+      return (r.label)+' O'+r.line+' '+(r.hr>0?'+':'')+r.hr+' ('+vtxt+', '+Math.round(r.likely*100)+'%)';
+    }).join(' ¬∑ ')+'</div>';
+  }else if(h.props){
     var others=Object.keys(h.props).filter(function(mk){return !h.bestProp||mk!==h.bestProp.mkt;});
     if(others.length)b+='<div style="font-size:10px;margin-top:4px" class="mut">Also on HR: '+others.map(function(mk){var p=h.props[mk];return (MKT_LABEL[mk]||mk)+' O'+p.line+' '+(p.hr>0?'+':'')+p.hr;}).join(' ¬∑ ')+'</div>';
   }
@@ -1169,7 +1228,12 @@ function render(){
     var miscal=withLine.length>=4&&(flaggedCt/withLine.length)>K_SLATE_FLAG_MAX;
     h+='<div class="card" style="border-color:'+(miscal?'var(--red)':'var(--pur)')+'"><b style="color:'+(miscal?'var(--red)':'var(--pur)')+';font-size:13px">&#9918; PITCHER STRIKEOUT PROPS ('+withBet.length+' recommended ¬∑ '+held+' held)</b>';
     if(miscal)h+='<div style="color:var(--red);font-weight:800;font-size:11px;margin-top:4px">‚ö† MODEL LIKELY MISCALIBRATED FOR THIS SLATE ‚Äî '+flaggedCt+'/'+withLine.length+' props diverge from the market. Treat all K props as low-confidence tonight; the sharp market is probably right.</div>';
-    h+='<div style="font-size:10px;margin-top:2px" class="mut">Expected Ks = Log5 (pitcher K% √ó opp K% vs hand) ‚Üí times-through-order decay ‚Üí Poisson, edge MARKET-ANCHORED to the de-vig fair. Guardrails hold back below-average-K arms, openers, injury/trajectory flags, oversized edges, and unconfirmed lines. Ranked by edge. Projection, not a lock.</div></div>';
+    h+='<div style="font-size:10px;margin-top:2px" class="mut">Expected Ks = Log5 (pitcher K% √ó opp lineup contact) ‚Üí times-through-order decay ‚Üí Poisson, edge MARKET-ANCHORED to the de-vig fair. Guardrails hold back below-average-K arms, openers, injury/trajectory flags, oversized edges, and unconfirmed lines. Ranked by edge. Projection, not a lock.</div>';
+    // rolling calibration (instrument, don't tune) ‚Äî is the model running hot/cold vs real box-score Ks?
+    var kc=D.kcalib;
+    if(kc&&kc.n>0){var ad=kc.sumDiff/kc.n,aa=kc.sumAbs/kc.n,fa=kc.fN?kc.fSumDiff/kc.fN:null;
+      h+='<div style="font-size:10px;margin-top:5px;padding:5px 7px;border-radius:7px;background:rgba(59,130,246,.10)"><b>&#128207; K MODEL CALIBRATION</b> ‚Äî rolling '+kc.n+' settled pitcher'+(kc.n===1?'':'s')+': <b style="color:'+(Math.abs(ad)<=0.4?'var(--grn)':'var(--amb)')+'">avg projection ‚àí actual = '+(ad>=0?'+':'')+ad.toFixed(2)+' K</b> '+(ad>0.5?'(running HOT ‚Äî over-projecting)':ad<-0.5?'(running COLD ‚Äî under-projecting)':'(well-centered)')+' ¬∑ avg miss '+aa.toFixed(2)+' K'+(fa!=null?' ¬∑ flagged subset '+(fa>=0?'+':'')+fa.toFixed(2)+' K':'')+(kc.n<30?' <span class="mut">(small sample ‚Äî watch, don‚Äôt tune)</span>':'')+'</div>';}
+    h+='</div>';
     D.pitchers.forEach(function(p,ix){h+=pcard(p,ix);});
   }
   D.hitters.slice(0,120).forEach(function(x,ix){h+=mcard(x,ix);});
