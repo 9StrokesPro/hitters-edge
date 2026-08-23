@@ -264,10 +264,12 @@ async function getBatter(id){
   var l7=tAB>0?Math.round(tH/tAB*1000)/1000:0,diff=tAB>=10?l7-avg:0;
   var hotCold=diff>=0.050?'HOT':diff>=0.020?'Warming':diff<=-0.050?'COLD':diff<=-0.020?'Cooling':'Neutral';
   var lastGame=gls.length?gls[gls.length-1].date:null;
+  var singles=Math.max(hits-hrs-dbl-tri,0);
   return{playerId:id,batSide:batSide,games:g,avg:avg,obp:obp,slg:slg,
     iso:Math.round(Math.max(slg-avg,0)*1000)/1000,
     bbRate:Math.round(Math.max(obp-avg,0)*1000)/1000,
     hpg:Math.round(hits/g*100)/100,tbpg:Math.round(tb/g*100)/100,runspg:Math.round(runs/g*100)/100,rbipg:Math.round(rbi/g*100)/100,
+    hrpg:Math.round(hrs/g*1000)/1000,dblpg:Math.round(dbl/g*1000)/1000,tripg:Math.round(tri/g*1000)/1000,onepg:Math.round(singles/g*1000)/1000, // per-game rates for per-prop selection
     splitVsL:splitVsL,splitVsR:splitVsR,roll10avg:roll10avg,roll10slg:roll10slg,hotCold:hotCold,lastGame:lastGame};
 }
 async function getPitcher(id){
@@ -458,22 +460,79 @@ var PROP_FIT={
   CONTACT:{batter_hits:1.0,batter_singles:1.0,batter_total_bases:0.7,batter_runs_scored:0.6,batter_hits_runs_rbis:0.5,batter_doubles:0.4,batter_rbis:0.4,batter_home_runs:0.2},
   HYBRID:{batter_total_bases:0.8,batter_hits:0.7,batter_singles:0.6,batter_hits_runs_rbis:0.6,batter_doubles:0.6,batter_rbis:0.6,batter_home_runs:0.5,batter_runs_scored:0.6}
 };
-// Pick the BEST prop across EVERY open market for this hitter ‚Äî by VALUE (Hard Rock price vs the de-vig
-// fair) first, then hit-LIKELIHOOD (the fair prob), then a light profile-fit tiebreak. There is NO
-// default to H+R+RBI anymore (it was the biggest loser ‚Äî it needs the whole lineup to produce, and it
-// was force-picked regardless of price). Every market competes on its own merits.
-function pickBestProp(pm,h){
+// League-typical per-game rates ‚Äî the yardstick for "what this player does MORE of than a normal bat".
+var LG_RATE={batter_hits:0.90,batter_total_bases:1.55,batter_home_runs:0.13,batter_doubles:0.18,batter_singles:0.58,batter_runs_scored:0.50,batter_rbis:0.50,batter_hits_runs_rbis:1.90};
+// This player's own per-game rate for a given prop market (the basis of "what is HE good at").
+function hitterLambda(b,mkt){
+  if(!b)return null;
+  if(mkt==='batter_hits')return b.hpg;
+  if(mkt==='batter_total_bases')return b.tbpg;
+  if(mkt==='batter_home_runs')return b.hrpg;
+  if(mkt==='batter_doubles')return b.dblpg;
+  if(mkt==='batter_singles')return b.onepg;
+  if(mkt==='batter_runs_scored')return b.runspg;
+  if(mkt==='batter_rbis')return b.rbipg;
+  if(mkt==='batter_hits_runs_rbis')return (b.hpg||0)+(b.runspg||0)+(b.rbipg||0);
+  return null;
+}
+// CONTEXTUAL EDGE ‚Äî the heart of "where we beat them." Hits/Singles are priced to the penny (no edge).
+// But Runs/RBI/HR depend on context the generic market price underweights ‚Äî lineup traffic, game total,
+// park, a barrel-prone pitcher. This returns our TILT vs the market fair (+ = our read favors the over)
+// and the reason. Positive tilt = an edge play; ~0 = trust the market, fall back to the safe prop.
+function contextTilt(h,mkt){
+  var t=0,why=[];
+  var lineup=(h.teamXwoba!=null)?(h.teamXwoba-LG_TEAM_XWOBA):0,total=(h.total!=null)?h.total:8.5,slot=h.spot||9,pow=(h.bt&&h.bt.key==='POWER');
+  if(mkt==='batter_runs_scored'){
+    if(lineup>0.012){t+=0.028;why.push('strong lineup drives him in');}else if(lineup<-0.012){t-=0.022;}
+    if(total>=9.5){t+=0.022;why.push('high total '+total);}else if(total<=7.5){t-=0.02;}
+    if(slot<=2){t+=0.02;why.push('top of order ‚Äî extra PAs');}
+  }else if(mkt==='batter_rbis'){
+    if(lineup>0.012){t+=0.028;why.push('traffic on base ahead of him');}else if(lineup<-0.012){t-=0.022;}
+    if(total>=9.5){t+=0.022;why.push('high total '+total);}else if(total<=7.5){t-=0.02;}
+    if(slot>=3&&slot<=5){t+=0.022;why.push('RBI slot');}
+    if(pow){t+=0.015;why.push('power');}
+  }else if(mkt==='batter_home_runs'){
+    if(h.park>=110){t+=0.03;why.push('HR park ('+h.park+')');}else if(h.park>=106){t+=0.018;why.push('hitter park');}else if(h.park<=94){t-=0.025;why.push('pitcher park');}
+    if(h.wx&&!h.wx.neutral&&h.wx.temp!=null&&h.wx.temp>=88){t+=0.015;why.push(h.wx.temp+'¬∞F, ball carries');}
+    if(pow){t+=0.02;why.push('power bat');}
+    if(h.pSav&&h.pSav.barrel_batted_rate!=null&&h.pSav.barrel_batted_rate>9){t+=0.02;why.push('pitcher yields barrels');}
+    else if(h.pSav&&h.pSav.barrel_batted_rate!=null&&h.pSav.barrel_batted_rate<6){t-=0.015;}
+  }else{ // hits/singles/TB/HRR ‚Äî efficiently priced; only a small tilt from the pitcher contact/K read
+    var kl=h.pit&&h.pit.kLayer;
+    if(kl&&kl.blended_kpct!=null){var kd=kl.blended_kpct-LG_K_PCT;t+=-kd*0.30;if(kd<-0.03)why.push('contact pitcher');else if(kd>0.04)why.push('high-K pitcher');}
+  }
+  return{tilt:Math.round(t*1000)/1000,why:why};
+}
+// Pick the BEST prop across EVERY open market for this hitter ‚Äî driven by the PLAYER'S OWN production:
+// his per-game rate ‚Üí P(clear the line) vs the market's fair. The prop where HIS rate most exceeds the
+// market wins ‚Üí a HR hitter surfaces HR, a doubles bat surfaces doubles, a slap hitter surfaces singles.
+// NO default to any one market (TB/H+R+RBI no longer win by fiat). Value + a light fit break ties.
+var EDGE_MKTS=['batter_runs_scored','batter_rbis','batter_home_runs'];              // where we hunt to beat the book
+var CONTACT_MKTS=['batter_hits','batter_singles','batter_total_bases','batter_hits_runs_rbis','batter_doubles']; // safer, high-hit-rate
+function pickBestProp(pm,h,allowed){
   if(!pm)return null;
   var fit=PROP_FIT[h.bt?h.bt.key:'HYBRID']||PROP_FIT.HYBRID;
   var best=null,bs=-1e9,ranked=[];
   Object.keys(pm).forEach(function(mkt){
+    if(allowed&&allowed.indexOf(mkt)<0)return;                                     // restrict to a market group
     var p=pm[mkt];if(!p||p.hr==null)return;
     var imp=impliedP(p.hr);
-    var value=(p.fair!=null&&imp!=null)?Math.round((p.fair-imp)*1000)/1000:null; // + = HR beats fair
-    var likely=p.fair!=null?p.fair:(imp!=null?imp:0.5);                          // de-vig hit likelihood
+    var lam=hitterLambda(h.b,mkt);
+    var modelP=(lam!=null)?poissonOver(lam,p.line):null;                          // HIS rate ‚Üí P(clear line)
+    var value=(p.fair!=null&&imp!=null)?Math.round((p.fair-imp)*1000)/1000:null;  // + = HR price beats fair
+    var likely=p.fair!=null?p.fair:(imp!=null?imp:0.5);
+    var affinity=(lam!=null&&LG_RATE[mkt])?Math.max(0.3,Math.min(2.5,lam/LG_RATE[mkt])):1;
+    var ct=contextTilt(h,mkt),tilt=ct.tilt;                                        // OUR contextual edge vs the market
+    var edgeP=(p.fair!=null)?Math.max(0.03,Math.min(0.97,p.fair+tilt)):null;       // context-adjusted probability
     var fitB=fit[mkt]!=null?fit[mkt]:0.5;
-    var score=(value!=null?value*100:-3)+likely*10+fitB*5; // VALUE primary ¬∑ LIKELIHOOD secondary ¬∑ FIT tiebreak
-    var rec={mkt:mkt,label:MKT_LABEL[mkt]||mkt,line:p.line,hr:p.hr,fair:p.fair,nBooks:p.nBooks,at:p.at,stale:p.stale,value:value,likely:Math.round(likely*1000)/1000,score:score};
+    // WHERE WE BEAT THEM: TILT (our contextual edge) is the primary driver ‚Äî it leans onto Runs/RBI/HR
+    // when the spot creates real edge. Affinity/likelihood are the FALLBACK when there's no edge (‚Üí the
+    // safe hit/single). Longshot penalty only bites when there's NO edge, so an "HR that makes sense" wins.
+    var longshotPen=(likely<0.40&&tilt<0.035)?(0.40-likely)*70:0;
+    var score=tilt*130+affinity*9+likely*7+(value!=null?value*40:0)+fitB*2-longshotPen;
+    var rec={mkt:mkt,label:MKT_LABEL[mkt]||mkt,line:p.line,hr:p.hr,fair:p.fair,nBooks:p.nBooks,at:p.at,stale:p.stale,
+      value:value,likely:Math.round(likely*1000)/1000,modelP:modelP!=null?Math.round(modelP*1000)/1000:null,affinity:Math.round(affinity*100)/100,
+      tilt:tilt,edgeP:edgeP!=null?Math.round(edgeP*1000)/1000:null,edgeWhy:ct.why,score:score};
     ranked.push(rec);
     if(score>bs){bs=score;best=rec;}
   });
@@ -485,7 +544,10 @@ function attachProps(hitters,res){
   hitters.forEach(function(h){
     var pm=props[h.name];h.props=pm||null;
     h.propFetch=status[h.game]||(pm?'ok':'no_event'); // ok | stale | failed | no_event
-    h.bestProp=pickBestProp(pm,h);
+    h.edgeProp=pickBestProp(pm,h,EDGE_MKTS);        // best of Runs/RBI/HR (the beat-the-book group)
+    h.contactProp=pickBestProp(pm,h,CONTACT_MKTS);  // best of Hits/Singles/TB/HRR (safer group)
+    // overall "THE BET" on the card: the edge play if it carries a real tilt, else the safe play
+    h.bestProp=(h.edgeProp&&h.edgeProp.tilt>=0.035)?h.edgeProp:(h.contactProp||h.edgeProp);
   });
 }
 function hhmm(ts){return ts?new Date(ts).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}):'';}
@@ -1236,6 +1298,23 @@ function render(){
     h+='</div>';
     D.pitchers.forEach(function(p,ix){h+=pcard(p,ix);});
   }
+  // ‚îÄ‚îÄ EDGE PLAYS ‚Äî Runs / RBI / HR (where context can beat the generic market price) ‚îÄ‚îÄ
+  var edgeList=D.hitters.filter(function(x){return x.edgeProp&&x.edgeProp.tilt>=0.035&&x.spot&&x.grade!=='D';}).sort(function(a,b){return b.edgeProp.tilt-a.edgeProp.tilt;}).slice(0,15);
+  h+='<div class="card" style="border-color:var(--grn)"><b style="color:var(--grn);font-size:13px">&#127919; EDGE PLAYS ‚Äî Runs / RBI / HR ('+edgeList.length+')</b>';
+  h+='<div style="font-size:10px;margin-top:2px" class="mut">The derivative props where context (lineup traffic, game total, park, barrel-prone arm) can beat the generic market price ‚Äî this is where we try to win. Ranked by our tilt. Our read, unproven ‚Äî the market may already price some of it, so treat as leans.</div>';
+  edgeList.forEach(function(x){var bp=x.edgeProp;
+    h+='<div style="font-size:12px;margin-top:6px"><b>'+esc(x.name)+'</b> <span class="mut">('+esc(TEAM_ABBR[x.team]||x.team)+' vs '+esc(x.oppPitName||'TBD')+')</span> ‚Äî <b style="color:var(--grn)">'+bp.label+' O'+bp.line+' '+(bp.hr>0?'+':'')+bp.hr+'</b> <span class="mut">'+Math.round((bp.edgeP||bp.likely)*100)+'%</span> ¬∑ <b style="color:var(--grn)">+'+(bp.tilt*100).toFixed(1)+'pp</b><br><span style="font-size:10px" class="mut">'+esc((bp.edgeWhy||[]).join(' ¬∑ '))+'</span></div>';
+  });
+  if(!edgeList.length)h+='<div style="font-size:11px;margin-top:5px" class="mut">No clear edge spots right now ‚Äî they show once lineups, totals, and pitchers post.</div>';
+  h+='</div>';
+  // ‚îÄ‚îÄ CONTACT PLAYS ‚Äî Hits / Singles / TB / HRR (safer, high-hit-rate; efficiently priced) ‚îÄ‚îÄ
+  var contactList=D.hitters.filter(function(x){return x.contactProp&&x.spot&&x.grade!=='D';}).sort(function(a,b){return b.contactProp.likely-a.contactProp.likely;}).slice(0,15);
+  h+='<div class="card"><b style="color:var(--blu);font-size:13px">&#128994; CONTACT PLAYS ‚Äî Hits / Singles / TB / HRR ('+contactList.length+')</b>';
+  h+='<div style="font-size:10px;margin-top:2px" class="mut">The safer, high-hit-rate props ‚Äî most likely to cash, but tightly priced (slim value). Ranked by hit likelihood.</div>';
+  contactList.forEach(function(x){var bp=x.contactProp;
+    h+='<div style="font-size:12px;margin-top:6px"><b>'+esc(x.name)+'</b> <span class="mut">('+esc(TEAM_ABBR[x.team]||x.team)+')</span> ‚Äî <b>'+bp.label+' O'+bp.line+' '+(bp.hr>0?'+':'')+bp.hr+'</b> <span class="mut">'+Math.round(bp.likely*100)+'% likely'+(bp.value!=null?' ¬∑ '+(bp.value>=0?'+':'')+(bp.value*100).toFixed(1)+'pp':'')+'</span></div>';
+  });
+  h+='</div>';
   D.hitters.slice(0,120).forEach(function(x,ix){h+=mcard(x,ix);});
   if(D.hitters.length>120)h+='<div class="card mut" style="font-size:11px">'+(D.hitters.length-120)+' lower-graded cards not shown.</div>';
   document.getElementById('main').innerHTML=h;
