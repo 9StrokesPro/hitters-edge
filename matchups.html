@@ -1428,11 +1428,20 @@ function boardData(){
   var contact=D.hitters.filter(function(x){return x.contactProp&&x.spot&&x.grade!=='D';}).sort(function(a,b){return b.contactProp.likely-a.contactProp.likely;});
   var pitcher=(D.pitchers||[]).filter(function(p){return p.proj&&p.proj.ok&&p.proj.recommend;}).sort(function(a,b){return (b.proj.edge||0)-(a.proj.edge||0);});
   var top=[];
-  // rank = the play's REAL edge (positive for tilt/K edges, negative for the vig-juiced contact plays),
-  // so genuine-edge plays lead and safe contact plays trail ‚Äî honestly "edge plays first," not phantom.
-  edge.slice(0,5).forEach(function(x){var bp=x.edgeProp;top.push({kind:'EDGE',light:pickLight(x),name:x.name,sub:(TEAM_ABBR[x.team]||x.team)+' vs '+(x.oppPitName||'TBD'),bet:bp.label+' O'+bp.line+' '+(bp.hr>0?'+':'')+bp.hr,metric:'+'+(bp.tilt*100).toFixed(1)+'pp edge',conf:x.confidence,flag:pickWhy(x),reason:(bp.edgeWhy||[]).join(' ¬∑ '),rank:bp.tilt});});
-  pitcher.slice(0,5).forEach(function(p){var pr=p.proj;top.push({kind:'K',light:pr.confidence==='HIGH'?'green':pr.confidence==='MEDIUM'?'yellow':'red',name:p.name,sub:(TEAM_ABBR[p.team]||p.team)+' '+p.throws+'HP vs '+p.opp,bet:'Ks '+(pr.side==='Over'?'O':'U')+pr.line+(pr.hrPrice!=null?' '+(pr.hrPrice>0?'+':'')+pr.hrPrice:''),metric:pr.edge!=null?(pr.edge*100).toFixed(1)+'pp edge':'Œº '+pr.mu+' Ks',conf:pr.confidence,flag:pr.marketFlag,reason:'model '+pr.mu+' Ks',rank:(pr.edge!=null?pr.edge:0)});});
-  contact.slice(0,4).forEach(function(x){var bp=x.contactProp;top.push({kind:'CONTACT',light:pickLight(x),name:x.name,sub:(TEAM_ABBR[x.team]||x.team),bet:bp.label+' O'+bp.line+' '+(bp.hr>0?'+':'')+bp.hr,metric:Math.round(bp.likely*100)+'% likely'+(bp.value!=null?' ¬∑ '+(bp.value>=0?'+':'')+(bp.value*100).toFixed(1)+'pp':''),conf:x.confidence,flag:pickWhy(x),reason:'safe / high-hit-rate (no price edge)',rank:(bp.value!=null?bp.value:-0.05)});});
+  // TOP PICKS rank by HITTABLE-PITCHER √ó PROBABILITY (not by edge%). Sound contact props in soft-arm
+  // spots lead; Runs (our weakest prop) is downgraded; oversized/flagged edges and thin-data/unconfirmed
+  // players are demoted to the bottom (red) ‚Äî never #1.
+  function hittability(h){var KL=h.pit&&h.pit.kLayer,b=0;if(!KL||KL.hitsPerStart==null)return 0;if(KL.hitsPerStart>=7)b+=0.06;else if(KL.hitsPerStart>=6)b+=0.03;if(h.pSav&&h.pSav.xslg!=null&&h.pSav.xslg>=0.44)b+=0.03;if(KL.hitsTrend==='worsening')b+=0.02;return b;}
+  function propWt(mkt){return mkt==='batter_hits'?0.05:mkt==='batter_hits_runs_rbis'?0.045:mkt==='batter_total_bases'?0.03:mkt==='batter_singles'?0.03:mkt==='batter_runs_scored'?-0.05:0;} // lead Hits/TB/HRR, downgrade Runs
+  function hitReason(h){var KL=h.pit&&h.pit.kLayer,p=[];if(KL&&KL.hitsPerStart!=null)p.push(KL.hitsPerStart+' H/start arm');if(h.pSav&&h.pSav.xslg!=null&&h.pSav.xslg>=0.44)p.push('gets squared up');if(h.b&&(h.b.hotCold==='HOT'||h.b.hotCold==='Warming'))p.push(h.b.hotCold.toLowerCase());if(h.lg&&h.lg.sum>=0.03)p.push('under-rewarded');return p.join(' ¬∑ ')||'solid matchup';}
+  // HITTER picks ‚Äî sound prop (ladder primary) in a hittable spot; SCREEN OUT thin-data/LOW-confidence.
+  D.hitters.filter(function(h){return h.bestProp&&h.spot&&h.grade!=='D'&&h.confidence!=='LOW';}).forEach(function(h){var bp=h.bestProp,flagged=!!pickWhy(h);
+    var q=(bp.prob!=null?bp.prob:(bp.likely||0.5))+hittability(h)+propWt(bp.mkt)-(flagged?0.30:0)-(h.confirmed?0:0.04);
+    top.push({kind:'HIT',light:flagged?'yellow':pickLight(h),name:h.name,sub:(TEAM_ABBR[h.team]||h.team)+' vs '+(h.oppPitName||'TBD'),bet:bp.label+' O'+bp.line+' '+(bp.hr>0?'+':'')+bp.hr,metric:Math.round((bp.prob!=null?bp.prob:bp.likely)*100)+'% to cash',conf:h.confidence,flag:pickWhy(h),reason:hitReason(h),rank:q});});
+  // K picks ‚Äî flagged / oversized-edge / LOW get DEMOTED to the bottom and shown red (never #1).
+  pitcher.forEach(function(p){var pr=p.proj,flagged=!!pr.marketFlag||pr.confidence==='LOW';
+    var q=0.45+(pr.confidence==='HIGH'?0.12:pr.confidence==='MEDIUM'?0.05:0)-(flagged?0.45:0);
+    top.push({kind:'K',light:flagged?'red':pr.confidence==='HIGH'?'green':'yellow',name:p.name,sub:(TEAM_ABBR[p.team]||p.team)+' '+p.throws+'HP vs '+p.opp,bet:'Ks '+(pr.side==='Over'?'O':'U')+pr.line+(pr.hrPrice!=null?' '+(pr.hrPrice>0?'+':'')+pr.hrPrice:''),metric:pr.edge!=null?(pr.edge*100).toFixed(1)+'pp edge':'Œº '+pr.mu+' Ks',conf:pr.confidence,flag:pr.marketFlag,reason:'model '+pr.mu+' Ks',rank:q});});
   top.sort(function(a,b){return b.rank-a.rank;});
   return{edge:edge,contact:contact,pitcher:pitcher,top:top.slice(0,14)};
 }
@@ -1451,7 +1460,7 @@ function render(){
   // ‚îÄ‚îÄ üèÜ TOP PICKS ‚Äî the highest play from each board, one ranked action list (auditable) ‚îÄ‚îÄ
   if(BD.top.length){
     h+='<div class="card" style="border-color:var(--gld);background:rgba(234,179,8,.06)"><b style="color:var(--gld);font-size:14px">&#127942; TOP PICKS ‚Äî best of every board</b>';
-    h+='<div style="font-size:10px;margin-top:2px" class="mut">Best of every board ‚Äî genuine-edge plays (Edge + Pitcher Ks) lead; safe Contact plays trail (high hit-rate, no price edge). Full boards below.</div>';
+    h+='<div style="font-size:10px;margin-top:2px" class="mut">Ranked by hittable-pitcher √ó prop probability ‚Äî sound contact plays (Hits/TB/HRR) in soft-arm spots lead. Oversized/flagged edges and unconfirmed lineups are demoted to the bottom (red). Read the Pitcher Targets first.</div>';
     BD.top.forEach(function(pk){
       h+='<div style="font-size:12px;margin-top:6px;border-top:1px solid var(--bord);padding-top:5px">'+lightDot(pk.light)+' <span class="tag" style="background:rgba(167,139,250,.12);color:var(--pur);font-size:9px">'+pk.kind+'</span> <b>'+esc(pk.name)+'</b> <span class="mut">('+esc(pk.sub)+')</span><br><b style="color:var(--gld)">'+esc(pk.bet)+'</b> ¬∑ <b>'+esc(pk.metric)+'</b> ¬∑ '+esc(pk.conf)+(pk.flag?' ¬∑ <span style="color:var(--amb)">‚ö† '+esc((''+pk.flag).replace(/<[^>]+>/g,''))+'</span>':'')+(pk.reason?'<br><span style="font-size:10px" class="mut">'+esc(pk.reason)+'</span>':'')+'</div>';
     });
@@ -1526,10 +1535,17 @@ function copyTop(){
   if(!D){toast('Still loading');return;}
   var BD=boardData();
   var t='MATCHUP ENGINE v15 ‚Äî '+new Date().toLocaleString()+' (data '+D.generatedAt.toLocaleTimeString()+')\n';
-  t+='Full board export ¬∑ props chosen per player ¬∑ edge plays are leans (our read, unproven) ¬∑ price-check before betting.\n';
+  t+='Read the TARGET LIST first (which pitchers are hittable), then the plays built off it.\n';
+  // ‚îÄ‚îÄ üéØ PITCHER TARGETS ‚Äî the front door (sorted by recent hits allowed) ‚îÄ‚îÄ
+  if(D.targets&&D.targets.length){
+    t+='\nüéØ PITCHER TARGETS ‚Äî Is He Hittable? (sorted by recent hits allowed)\n';
+    D.targets.forEach(function(tg,i){
+      t+=(i+1)+'. '+tg.name+' ('+(tg.throws||'?')+'HP) vs '+tg.opp+' ‚Äî '+tg.hitsPS+' H/start (L3) ['+(tg.arr||[]).join(',')+'] ¬∑ '+tg.cls+(tg.hw&&tg.hw!=='even'?' ¬∑ weak vs '+tg.hw:'')+(tg.xba!=null?' ¬∑ xBA-agst '+tg.xba:'')+(tg.hitsTrend==='worsening'?' ¬∑ worsening':'')+'\n';
+    });
+  }
   // ‚îÄ‚îÄ üèÜ TOP PICKS ‚Äî best of every board, ranked, auditable ‚îÄ‚îÄ
   if(BD.top.length){
-    t+='\nüèÜ TOP PICKS ‚Äî best of every board (ranked by our edge)\n';
+    t+='\nüèÜ TOP PICKS ‚Äî ranked by hittable-pitcher √ó probability (flagged/unconfirmed demoted to bottom)\n';
     BD.top.forEach(function(pk){
       t+=dotTxt(pk.light)+' ['+pk.kind+'] '+pk.name+' ('+pk.sub+') ‚Äî '+pk.bet+' | '+pk.metric+' ¬∑ '+pk.conf+'\n';
       if(pk.flag)t+='     ‚ö† '+stripTags(pk.flag)+'\n';
