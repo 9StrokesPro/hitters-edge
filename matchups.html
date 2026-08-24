@@ -537,7 +537,7 @@ function contextTilt(h,mkt){
 // his per-game rate ‚Üí P(clear the line) vs the market's fair. The prop where HIS rate most exceeds the
 // market wins ‚Üí a HR hitter surfaces HR, a doubles bat surfaces doubles, a slap hitter surfaces singles.
 // NO default to any one market (TB/H+R+RBI no longer win by fiat). Value + a light fit break ties.
-var EDGE_MKTS=['batter_runs_scored','batter_rbis','batter_home_runs'];              // where we hunt to beat the book
+var EDGE_MKTS=['batter_runs_scored','batter_rbis'];                                 // where we hunt value ‚Äî HR is a DART only, never headlines a board
 var CONTACT_MKTS=['batter_hits','batter_singles','batter_total_bases','batter_hits_runs_rbis','batter_doubles']; // safer, high-hit-rate
 function pickBestProp(pm,h,allowed){
   if(!pm)return null;
@@ -569,15 +569,45 @@ function pickBestProp(pm,h,allowed){
   if(best)best.ranked=ranked.sort(function(a,b){return b.score-a.score;});
   return best;
 }
+// ‚ïê‚ïê PROP LADDER ‚Äî the picker's decision menu. Every prop with model prob + price, ranked by the
+// SOUNDEST play (probability-for-price), not the flashiest. HR is a labeled DART, never the headline.
+// Rules: (a) HRR ranks ABOVE TB (more paths to cash ‚Äî hit/run/RBI each count vs needing bases);
+// (b) SINGLES matched to profile ‚Äî good value for slap hitters (hits are mostly singles, better price),
+// a TRAP for power bats (throws away extra-base hits); (c) HR never primary. ‚ïê‚ïê
+function propLadder(pm,h){
+  if(!pm)return null;
+  var iso=(h.b&&h.b.iso!=null)?h.b.iso:0.150;
+  var isSlap=(h.bt&&h.bt.key==='CONTACT')||iso<0.140,isPower=(h.bt&&h.bt.key==='POWER')||iso>0.200;
+  var rows=[];
+  Object.keys(pm).forEach(function(mkt){
+    var p=pm[mkt];if(!p||p.hr==null)return;
+    var lam=hitterLambda(h.b,mkt),modelP=lam!=null?poissonOver(lam,p.line):(p.fair!=null?p.fair:null);
+    var imp=impliedP(p.hr),value=(p.fair!=null&&imp!=null)?Math.round((p.fair-imp)*1000)/1000:null;
+    var payout=p.hr>0?p.hr/100:100/(-p.hr),ev=modelP!=null?Math.round((modelP*payout-(1-modelP))*1000)/1000:null;
+    var tier=mkt==='batter_home_runs'?'dart':'main',note='';
+    if(mkt==='batter_singles'){if(isPower){tier='trap';note='power bat ‚Äî singles throws away his XBH';}else if(isSlap)note='slap hitter ‚Äî his hits are mostly singles, usually a better price than Hits';}
+    // ranking prob: anchor model to market fair (reduces model bias); soundness leads, price nudges
+    var rankP=(p.fair!=null&&modelP!=null)?0.5*modelP+0.5*p.fair:(modelP!=null?modelP:(p.fair!=null?p.fair:0.5));
+    var score=rankP+(value!=null?value*0.5:0);
+    if(mkt==='batter_hits_runs_rbis')score+=0.03;   // HRR: more paths ‚Üí prefer over TB
+    if(mkt==='batter_total_bases')score-=0.02;       // TB: fewer paths ‚Üí demote vs HRR
+    if(tier==='trap')score-=0.15;
+    rows.push({mkt:mkt,label:MKT_LABEL[mkt]||mkt,line:p.line,hr:p.hr,fair:p.fair,nBooks:p.nBooks,at:p.at,stale:p.stale,
+      modelP:modelP!=null?Math.round(modelP*1000)/1000:null,prob:Math.round(rankP*1000)/1000,likely:p.fair!=null?p.fair:modelP,value:value,ev:ev,tier:tier,note:note,score:score});
+  });
+  var main=rows.filter(function(r){return r.tier!=='dart';}).sort(function(a,b){return b.score-a.score;});
+  var dart=rows.filter(function(r){return r.tier==='dart';});
+  return{primary:main[0]||null,main:main,dart:dart,all:rows.slice().sort(function(a,b){return b.score-a.score;})};
+}
 function attachProps(hitters,res){
   var props=res&&res.props||{},status=res&&res.status||{};
   hitters.forEach(function(h){
     var pm=props[h.name];h.props=pm||null;
     h.propFetch=status[h.game]||(pm?'ok':'no_event'); // ok | stale | failed | no_event
-    h.edgeProp=pickBestProp(pm,h,EDGE_MKTS);        // best of Runs/RBI/HR (the beat-the-book group)
-    h.contactProp=pickBestProp(pm,h,CONTACT_MKTS);  // best of Hits/Singles/TB/HRR (safer group)
-    // overall "THE BET" on the card: the edge play if it carries a real tilt, else the safe play
-    h.bestProp=(h.edgeProp&&h.edgeProp.tilt>=0.035)?h.edgeProp:(h.contactProp||h.edgeProp);
+    h.ladder=propLadder(pm,h);                       // the picker's decision menu
+    h.bestProp=h.ladder?h.ladder.primary:null;       // PRIMARY = soundest contact prop (never HR)
+    h.edgeProp=pickBestProp(pm,h,EDGE_MKTS);         // value-hunt view (Runs/RBI/HR)
+    h.contactProp=pickBestProp(pm,h,CONTACT_MKTS);
   });
 }
 function hhmm(ts){return ts?new Date(ts).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}):'';}
@@ -1281,28 +1311,18 @@ function mcard(h,ix){
   b+='<div class="sect"><div class="sh">HEAD-TO-HEAD (BvP) ‚Äî <span style="color:var(--amb)">NOISE, does not move the grade</span></div>'
     +(h.bvp?(h.bvp.h+'-for-'+h.bvp.ab+' ('+f3(h.bvp.avg)+', '+h.bvp.hr+' HR) ‚Äî '+(h.bvp.ab<30?'<b>sample far too small to mean anything</b>':'still treat with caution')):'<span class="mut">none on file (or C/D card ‚Äî not fetched)</span>')+'</div>';
   // best prop ‚Äî chosen by VALUE across all open markets (no HRR default)
-  b+='<div class="sect" style="border-top:2px solid var(--bord)"><div class="sh" style="color:var(--gld)">BEST PROP TO BACK <span class="mut" style="font-weight:400">‚Äî picked by value across all markets</span></div><span class="mut" style="font-size:10px">profile read: '+esc(h.bestFit)+'</span>';
-  if(h.bestProp){
-    var okPrice=h.bestProp.hr>=-140&&h.bestProp.hr<200;
-    var pAge=D&&D.propsAt?Math.round((Date.now()-D.propsAt)/60000):null;
-    b+='<div style="margin-top:5px;padding:6px 8px;border-radius:8px;background:rgba(234,179,8,.10)">&#127921; <b>THE BET: '+esc(propLine(h.bestProp))+'</b>'
-      +(okPrice?'':' <span style="color:var(--amb)">(outside your -140..+200 range)</span>')
-      +(pAge!=null?'<div style="font-size:9px;color:'+(pAge>40?'var(--amb)':'var(--mut)')+';margin-top:2px">price as of '+new Date(D.propsAt).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})+' ('+pAge+'m ago'+(pAge>40?' ‚Äî confirm on Hard Rock before betting':'')+')</div>':'')+'</div>';
-  }else{
-    var np=noPropMsg(h);
-    b+='<div style="font-size:10px;margin-top:4px;color:'+(np.amber?'var(--amb)':'var(--mut)')+'">&#127921; '+esc(np.txt)+'</div>';
-  }
-  if(h.bestProp&&h.bestProp.ranked&&h.bestProp.ranked.length>1){
-    var alts=h.bestProp.ranked.filter(function(r){return r.mkt!==h.bestProp.mkt;});
-    b+='<div style="font-size:10px;margin-top:4px" class="mut">Other markets (why they lost the pick): '+alts.map(function(r){
-      var vtxt=r.value!=null?(r.value>=0.005?'+'+(r.value*100).toFixed(1)+'pp':r.value<=-0.005?(r.value*100).toFixed(1)+'pp':'fair'):'no fair';
-      return (r.label)+' O'+r.line+' '+(r.hr>0?'+':'')+r.hr+' ('+vtxt+', '+Math.round(r.likely*100)+'%)';
-    }).join(' ¬∑ ')+'</div>';
-  }else if(h.props){
-    var others=Object.keys(h.props).filter(function(mk){return !h.bestProp||mk!==h.bestProp.mkt;});
-    if(others.length)b+='<div style="font-size:10px;margin-top:4px" class="mut">Also on HR: '+others.map(function(mk){var p=h.props[mk];return (MKT_LABEL[mk]||mk)+' O'+p.line+' '+(p.hr>0?'+':'')+p.hr;}).join(' ¬∑ ')+'</div>';
-  }
-  b+='<div style="font-size:10px;margin-top:4px" class="mut">The GRADE ranks this card (the matchup read). The price is information ‚Äî a great matchup at a terrible number is still a bad bet.</div></div>';
+  // ‚îÄ‚îÄ DECISION MENU ‚Äî the engine computes the ladder; the human picks. HR is a dart, not the default. ‚îÄ‚îÄ
+  b+='<div class="sect" style="border-top:2px solid var(--bord)"><div class="sh" style="color:var(--gld)">DECISION MENU ‚Äî pick your prop</div>';
+  if(h.pit&&h.pit.kLayer&&h.pit.kLayer.hitsPerStart!=null){var HKL=h.pit.kLayer;
+    b+='<div style="font-size:10px" class="mut">Why it‚Äôs a spot ‚Äî '+esc(h.oppPitName||'pitcher')+': <b>'+HKL.hitsPerStart+' H/start</b> (L3)'+(h.pSav?' ¬∑ xSLG-agst '+f3(h.pSav.xslg)+' ¬∑ HardHit '+h.pSav.hard_hit_percent+'%':'')+(HKL.hitsTrend==='worsening'?' ¬∑ <span style="color:var(--grn)">getting hit MORE lately</span>':'')+'</div>';}
+  if(h.ladder&&h.ladder.primary){var lad=h.ladder,pr0=lad.primary,okPrice=pr0.hr>=-140&&pr0.hr<200;
+    b+='<div style="margin-top:5px;padding:6px 8px;border-radius:8px;background:rgba(234,179,8,.10)">&#127921; <b>PRIMARY: '+esc(propLine(pr0))+'</b>'+(okPrice?'':' <span style="color:var(--amb)">(outside -140..+200)</span>')+(pr0.prob!=null?'<div style="font-size:10px;margin-top:1px" class="mut">our est '+Math.round(pr0.prob*100)+'% to cash ¬∑ market '+(pr0.fair!=null?Math.round(pr0.fair*100)+'%':'--')+'</div>':'')+'</div>';
+    b+='<div style="font-size:10px;margin-top:5px"><b>Full ladder</b> <span class="mut">(our% ¬∑ market% ¬∑ price)</span><br>'+lad.main.map(function(r){var isP=r.mkt===pr0.mkt;
+      return '<span style="color:'+(isP?'var(--gld)':r.tier==='trap'?'var(--red)':'var(--txt)')+'">'+(isP?'‚ñ∂ ':'&nbsp;&nbsp;&nbsp;')+esc(r.label)+' O'+r.line+': <b>'+(r.prob!=null?Math.round(r.prob*100)+'%':'--')+'</b> ¬∑ '+(r.fair!=null?Math.round(r.fair*100)+'%':'--')+' ¬∑ '+(r.hr>0?'+':'')+r.hr+(r.note?' <span class="mut">‚Äî '+esc(r.note)+'</span>':'')+'</span>';
+    }).join('<br>')+'</div>';
+    if(lad.dart.length)b+='<div style="font-size:10px;margin-top:4px" class="mut">&#127922; Upside dart (not the play): '+lad.dart.map(function(r){return esc(r.label)+' O'+r.line+' '+(r.hr>0?'+':'')+r.hr+' ('+(r.prob!=null?Math.round(r.prob*100)+'%':'--')+')';}).join(' ¬∑ ')+'</div>';
+  }else{var np=noPropMsg(h);b+='<div style="font-size:10px;margin-top:4px;color:'+(np.amber?'var(--amb)':'var(--mut)')+'">'+esc(np.txt)+'</div>';}
+  b+='<div style="font-size:10px;margin-top:4px" class="mut">The engine did the Statcast + probability + price math. You make the call. HR is a dart, not the default; H+R+RBI beats Total Bases (more paths to cash).</div></div>';
   b+='</div>';
   return '<div class="mcard" id="mc'+ix+'">'+head+b+'</div>';
 }
