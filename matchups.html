@@ -153,7 +153,19 @@ function buildKLayer(gls,season){
     flags.push({rule:'R3',msg:trajMsg});
   }
   var confidence=r1?'LOW':(r3?'MEDIUM':'HIGH');
+  // ‚îÄ‚îÄ HITS-ALLOWED (Layer 1 of the pitcher-target engine ‚Äî THE simple "is he hittable" read) ‚îÄ‚îÄ
+  var starts=games.filter(function(x){return x.started;});
+  var recentStarts=starts.slice(-5);
+  var lastN=recentStarts.slice(-3);
+  var hitsL3=lastN.reduce(function(a,x){return a+x.h;},0);
+  var hitsL5=recentStarts.reduce(function(a,x){return a+x.h;},0);
+  var hitsArr=recentStarts.map(function(x){return x.h;});
+  var hitsPerStart=lastN.length?Math.round(hitsL3/lastN.length*10)/10:null;
+  var seasonHitsPerStart=starts.length?Math.round(starts.reduce(function(a,x){return a+x.h;},0)/starts.length*10)/10:null;
+  var hitsTrend='flat';
+  if(recentStarts.length>=4){var r2h=(recentStarts[recentStarts.length-1].h+recentStarts[recentStarts.length-2].h)/2,pri=recentStarts.slice(0,-2).reduce(function(a,x){return a+x.h;},0)/(recentStarts.length-2);if(r2h>=pri+1.5)hitsTrend='worsening';else if(r2h<=pri-1.5)hitsTrend='improving';}
   return{kGames:games.slice(-5),qStarts:qual.length,
+    hitsL3:hitsL3,hitsL5:hitsL5,hitsArr:hitsArr,hitsPerStart:hitsPerStart,seasonHitsPerStart:seasonHitsPerStart,hitsTrend:hitsTrend,nStarts:recentStarts.length,
     k_per_game_L3:k_per_game_L3,k9_L3:k9_L3,avg_ip_L3:avg_ip_L3,whip_L7:whip_L7,recent_kpct:recent_kpct,
     season_kpct:season.kpct,season_era:season.era,season_whip:season.whip,season_k9:season.k9,
     blended_kpct:(recent_kpct!=null&&season.kpct!=null)?0.70*season.kpct+0.30*recent_kpct:(season.kpct!=null?season.kpct:recent_kpct), // SINGLE SOURCE of pitcher K% ‚Äî both boards read this
@@ -312,10 +324,14 @@ async function getPitcher(id){
   var seasonKpct=bf>0?(parseInt(s.strikeOuts)||0)/bf:null;                 // K per batter faced (¬ß5 uses K%, not K/9)
   var seasonK9=parseFloat(s.strikeoutsPer9Inn);if(isNaN(seasonK9))seasonK9=Math.round((parseInt(s.strikeOuts)||0)/ipDiv*9*10)/10;
   var kLayer=buildKLayer(gls,{era:(eraField!=null&&!isNaN(eraField))?eraField:era,whip:parseFloat(s.whip)||null,k9:seasonK9,kpct:seasonKpct,gs:gs,g:g,ip:ipTrue});
+  // handedness weakness (Layer 3) ‚Äî which side he's weak to, so we aim the right hitters at him
+  var handSplit={vL:null,vR:null};
+  var hsD=await apiFetch(MLB+'/people/'+id+'/stats?stats=statSplits&group=pitching&season='+SEASON+'&sitCodes=vl,vr');
+  (hsD&&hsD.stats&&hsD.stats[0]&&hsD.stats[0].splits||[]).forEach(function(x){var st=x.stat,o={avg:parseFloat(st.avg)||0,ops:parseFloat(st.ops)||0,hits:parseInt(st.hits)||0};if(x.split.code==='vl')handSplit.vL=o;else if(x.split.code==='vr')handSplit.vR=o;});
   return{id:id,name:pe.fullName,pos:pos,isPitcher:isPitcher,throws:throws,
     era:era!=null?capEra(era):null,eraRaw:era,whip:parseFloat(s.whip)||0,gs:gs,ip:Math.round(ipTrue*10)/10,reliable:reliable,
     k9:Math.round((parseInt(s.strikeOuts)||0)/ipDiv*9*10)/10,bb9:Math.round((parseInt(s.baseOnBalls)||0)/ipDiv*9*10)/10,
-    seasonKpct:seasonKpct,pitchesPerPA:pitchesPerPA,finish:null,kLayer:kLayer,l3:l3,arsenal:ars};
+    seasonKpct:seasonKpct,pitchesPerPA:pitchesPerPA,finish:null,handSplit:handSplit,kLayer:kLayer,l3:l3,arsenal:ars};
 }
 async function getBvP(batterId,pitcherId){
   if(!batterId||!pitcherId)return null;
@@ -344,7 +360,7 @@ async function loadStatcast(){
   var base='https://baseballsavant.mlb.com/leaderboard/custom?year='+SEASON+'&filter=&min=1&sort=4&sortDir=desc&csv=true&type=';
   var bat={},pit={};
   try{var br=await fetch(base+'batter&selections=xba,xslg,xwoba,woba');if(br.ok)bat=parseSavant(await br.text());}catch(e){}
-  try{var pr=await fetch(base+'pitcher&selections=whiff_percent,barrel_batted_rate,hard_hit_percent,k_percent,bb_percent,xslg');if(pr.ok)pit=parseSavant(await pr.text());}catch(e){}
+  try{var pr=await fetch(base+'pitcher&selections=whiff_percent,barrel_batted_rate,hard_hit_percent,k_percent,bb_percent,xslg,xba,exit_velocity_avg');if(pr.ok)pit=parseSavant(await pr.text());}catch(e){}
   var out={bat:bat,pit:pit};
   if(Object.keys(bat).length)ss(ck,out);
   return out;
@@ -837,6 +853,30 @@ function projectK(P,oppSplit,kprop,ctx){
   return out;
 }
 
+// ‚ïê‚ïê PITCHER TARGETING ‚Äî "Is he hittable?" ‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê
+// Layer 1 (recent HITS allowed) is the headline & the sort. Layer 2 (Statcast xBA/xSLG/hard-hit/
+// barrel/exit-velo against) confirms whether the hittability is REAL ‚Äî downgrades a soft-contact
+// MIRAGE, surfaces a barreled-but-unlucky DUE arm. Layer 3 (whiff/K trend, recent-vs-season "line
+// lags", handedness weakness) sharpens and says who to aim. Metrics refine, never hide, the hits.
+function buildTarget(P,ps){
+  var KL=P&&P.kLayer;if(!KL||P.isPitcher===false)return null;
+  var hitsPS=KL.hitsPerStart,arr=KL.hitsArr||[],trend=KL.hitsTrend,seasonHPS=KL.seasonHitsPerStart;
+  if(hitsPS==null)return null;
+  var xba=ps?ps.xba:null,xslg=ps?ps.xslg:null,hh=ps?ps.hard_hit_percent:null,br=ps?ps.barrel_batted_rate:null,ev=ps?ps.exit_velocity_avg:null;
+  var hardContact=(hh!=null&&hh>=42)||(xba!=null&&xba>=0.260)||(br!=null&&br>=8.5);
+  var softContact=(hh!=null&&hh<36)&&(xba==null||xba<=0.235);
+  var manyHits=hitsPS>=7,fewHits=hitsPS<=5;
+  var cls=manyHits&&softContact?'MIRAGE':fewHits&&hardContact?'DUE':(manyHits||hardContact)?'TARGET':'NEUTRAL';
+  var lineLags=(KL.whipDelta!=null&&KL.whipDelta>=0.15)||(seasonHPS!=null&&hitsPS>=seasonHPS+1.5);
+  var whiffDrop=KL.k9Delta!=null&&KL.k9Delta<=-1.0;
+  var hw=null,hwGap=0;
+  if(P.handSplit&&P.handSplit.vL&&P.handSplit.vR){var d=P.handSplit.vL.ops-P.handSplit.vR.ops;hwGap=Math.round(Math.abs(d)*1000)/1000;hw=d>=0.030?'LHB':d<=-0.030?'RHB':'even';}
+  var sortKey=hitsPS;
+  if(cls==='MIRAGE')sortKey-=1.5;if(cls==='DUE')sortKey+=1.2;if(hardContact&&cls!=='DUE')sortKey+=0.4;if(lineLags)sortKey+=0.3;
+  return{name:P.name,throws:P.throws,reliable:P.reliable,hitsPS:hitsPS,hitsL3:KL.hitsL3,arr:arr,trend:trend,seasonHPS:seasonHPS,nStarts:KL.nStarts,
+    cls:cls,hardContact:hardContact,softContact:softContact,xba:xba,xslg:xslg,hh:hh,br:br,ev:ev,
+    lineLags:lineLags,whiffDrop:whiffDrop,k9Delta:KL.k9Delta,whipDelta:KL.whipDelta,hw:hw,hwGap:hwGap,handSplit:P.handSplit,sortKey:sortKey};
+}
 // ‚îÄ‚îÄ PITCH-MIX FIT (spec 3.6 ‚Äî wired) ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
 // Weighted hitter xSLG across the pitcher's arsenal (usage-weighted, only pitch
 // types where the hitter has seen >= PITCH_MIN_SEEN pitches). Returns null if
@@ -1041,6 +1081,16 @@ async function loadAll(){
   var pitArr=await pool(pitIds,function(id){return getPitcher(id);},CONC);
   var pitMap={};pitIds.forEach(function(id,ix){pitMap[id]=pitArr[ix];});
   for(var pk in pitMap){var PP=pitMap[pk];if(PP&&PP.finish==null&&sc.pit[PP.id]&&sc.pit[PP.id].whiff_percent!=null)PP.finish=sc.pit[PP.id].whiff_percent;} // attach whiff/finish BEFORE grading
+  // PITCHER TARGET LIST ‚Äî ranked by recent hits allowed (the "is he hittable" front door)
+  var targets=[];
+  games.forEach(function(g){
+    [[g.awayPit,g.homeTeam,g.homeId],[g.homePit,g.awayTeam,g.awayId]].forEach(function(x){
+      var pp=x[0];if(!pp)return;var P=pitMap[pp.id];if(!P)return;
+      var t=buildTarget(P,sc.pit[P.id]||null);
+      if(t){t.opp=x[1];t.oppId=x[2];t.game=g.awayTeam+' @ '+g.homeTeam;t.start=g.start;targets.push(t);}
+    });
+  });
+  targets.sort(function(a,b){return b.sortKey-a.sortKey;});
   // hitters
   var jobs=[];
   games.forEach(function(g){
@@ -1114,7 +1164,7 @@ async function loadAll(){
   logKProjections(pitchers);logEdgePlays(hitters);        // instrument: record tonight's K + edge plays (tagged)
   var kcal=null;try{kcal=await settleKProjections();}catch(e){} // settle prior nights vs real box-score Ks
   var ecal=null;try{ecal=await settleEdgePlays();}catch(e){}     // settle prior edge plays, grouped by signal
-  D={hitters:hitters,games:games,pitchers:pitchers,kcalib:kcal,ecalib:ecal,generatedAt:new Date(),loadSec:Math.round((Date.now()-t0)/1000),propsAt:propRes.at,serverDown:propRes.serverDown};
+  D={hitters:hitters,games:games,pitchers:pitchers,targets:targets,kcalib:kcal,ecalib:ecal,generatedAt:new Date(),loadSec:Math.round((Date.now()-t0)/1000),propsAt:propRes.at,serverDown:propRes.serverDown};
   render();
   setS(hitters.length+' matchup cards ‚Ä¢ '+games.length+' games ‚Ä¢ built in '+D.loadSec+'s');
   freshLine();
@@ -1326,6 +1376,32 @@ function pcard(p,ix){
 function tgp(ix){var el=document.getElementById('pc'+ix);if(el)el.classList.toggle('open');}
 // Shared data for BOTH the on-page boards and the Copy export ‚Äî so the copy can never drift from what
 // renders. Returns the ranked Edge / Contact / Pitcher lists + a combined TOP PICKS list (top of each).
+// ‚îÄ‚îÄ PITCHER TARGET CARD ‚Äî hits number up top (headline), metrics on expand ‚îÄ‚îÄ
+function tcard(t,ix){
+  var col=t.cls==='TARGET'?'var(--grn)':t.cls==='DUE'?'var(--amb)':t.cls==='MIRAGE'?'var(--red)':'var(--mut)';
+  var rgb=t.cls==='TARGET'?'34,197,94':t.cls==='DUE'?'245,158,11':t.cls==='MIRAGE'?'239,68,68':'139,148,167';
+  var when=new Date(t.start).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});
+  var trendTxt=t.trend==='worsening'?'‚Üë worsening':t.trend==='improving'?'‚Üì improving':'flat';
+  var head='<div class="mhead" onclick="tgt('+ix+')"><div>'
+    +'<div style="font-weight:800;font-size:14px">'+esc(t.name)+' <small>('+(t.throws||'?')+'HP)</small> <span class="tag" style="background:rgba('+rgb+',.15);color:'+col+'">'+t.cls+'</span></div>'
+    +'<div style="font-size:10px" class="mut">vs '+esc(t.opp)+' ¬∑ '+when+(t.hw&&t.hw!=='even'?' ¬∑ weak vs '+t.hw:'')+'</div></div>'
+    +'<div style="text-align:right"><div style="font-size:22px;font-weight:900;color:'+col+'">'+t.hitsPS+'</div><div style="font-size:9px" class="mut">H/start (L3) ¬∑ '+trendTxt+'</div></div></div>';
+  var b='<div class="mbody">';
+  b+='<div class="sect" style="border-top:none"><div class="sh">LAYER 1 ‚Äî HITS ALLOWED (the read)</div>'
+    +'Last '+t.nStarts+' starts: <b>'+(t.arr.join(' ¬∑ ')||'‚Äî')+'</b> H ¬∑ <b>'+t.hitsPS+'/start</b> (L3)'+(t.seasonHPS!=null?' vs '+t.seasonHPS+' season':'')+' ¬∑ trend '+trendTxt+'</div>';
+  b+='<div class="sect"><div class="sh">LAYER 2 ‚Äî IS IT REAL? (contact quality allowed)</div>'
+    +(t.xba!=null?'xBA-against <b>'+f3(t.xba)+'</b> ¬∑ xSLG-against <b>'+f3(t.xslg)+'</b><br>':'<span class="mut">no Statcast row yet</span><br>')
+    +(t.hh!=null?'Hard-Hit '+t.hh+'% ¬∑ Barrel '+t.br+'% ¬∑ Exit velo '+t.ev+' mph':'')
+    +'<br>'+(t.cls==='MIRAGE'?'<b style="color:var(--red)">MIRAGE ‚Äî hits are on SOFT contact (bloops/luck); downgraded.</b>':t.cls==='DUE'?'<b style="color:var(--amb)">DUE ‚Äî getting BARRELED but few hits so far; unlucky, about to break.</b>':t.hardContact?'<b style="color:var(--grn)">Hard contact confirms it ‚Äî the hittability is real.</b>':'contact quality ~average')+'</div>';
+  b+='<div class="sect"><div class="sh">LAYER 3 ‚Äî THE EDGE & THE AIM</div>'
+    +(t.whiffDrop?'<b>Losing swing-and-miss</b> (K/9 '+(t.k9Delta>0?'+':'')+t.k9Delta+' vs season) ‚Äî more balls in play<br>':'')
+    +(t.lineLags?'<b style="color:var(--grn)">Worse LATELY than his season line ‚Äî the market line hasn‚Äôt caught up (the edge)</b><br>':'')
+    +(t.handSplit&&t.handSplit.vL&&t.handSplit.vR?'Splits: vs LHB '+f3(t.handSplit.vL.avg)+' / '+f3(t.handSplit.vL.ops)+' OPS ¬∑ vs RHB '+f3(t.handSplit.vR.avg)+' / '+f3(t.handSplit.vR.ops)+' OPS':'<span class="mut">no split data</span>')
+    +(t.hw&&t.hw!=='even'?'<br><b style="color:var(--gld)">üéØ AIM: '+esc(t.opp)+'‚Äôs '+(t.hw==='LHB'?'LEFT':'RIGHT')+'-handed hitters (he‚Äôs weak vs '+t.hw+')</b>':'')+'</div>';
+  b+='<div style="font-size:10px;margin-top:4px" class="mut">Then pull '+esc(t.opp)+' hitters vs his weak side from the Contact / Edge boards ‚Üí contact prop ladder.</div></div>';
+  return '<div class="mcard" id="tc'+ix+'">'+head+b+'</div>';
+}
+function tgt(ix){var el=document.getElementById('tc'+ix);if(el)el.classList.toggle('open');}
 function boardData(){
   if(!D)return{edge:[],contact:[],pitcher:[],top:[]};
   var edge=D.hitters.filter(function(x){return x.edgeProp&&x.edgeProp.tilt>=0.035&&x.spot&&x.grade!=='D';}).sort(function(a,b){return b.edgeProp.tilt-a.edgeProp.tilt;});
@@ -1346,6 +1422,12 @@ function render(){
   var BD=boardData();
   var A=D.hitters.filter(function(x){return x.grade==='A';});
   var conf=D.games.filter(function(g){return g.posted;}).length;
+  // ‚îÄ‚îÄ üéØ PITCHER TARGETS ‚Äî "Is He Hittable?" (THE FRONT DOOR ‚Äî sorted by recent hits allowed) ‚îÄ‚îÄ
+  if(D.targets&&D.targets.length){
+    h+='<div class="card" style="border-color:var(--red)"><b style="color:var(--red);font-size:14px">&#127919; PITCHER TARGETS ‚Äî Is He Hittable? ('+D.targets.length+')</b>';
+    h+='<div style="font-size:10px;margin-top:2px" class="mut">Sorted by recent HITS ALLOWED (last 3 starts) ‚Äî the simple read leads, most hittable on top. Expand any arm for the Statcast confirmation (real vs mirage), the line-lags edge, and his weak side to aim at.</div></div>';
+    D.targets.forEach(function(t,ix){h+=tcard(t,ix);});
+  }
   // ‚îÄ‚îÄ üèÜ TOP PICKS ‚Äî the highest play from each board, one ranked action list (auditable) ‚îÄ‚îÄ
   if(BD.top.length){
     h+='<div class="card" style="border-color:var(--gld);background:rgba(234,179,8,.06)"><b style="color:var(--gld);font-size:14px">&#127942; TOP PICKS ‚Äî best of every board</b>';
