@@ -67,6 +67,13 @@ var K='me15_';
 // PRICE_MAX at GENERATION (before it reaches a board), not as a display toggle.
 var PRICE_MIN=-140, PRICE_MAX=150;
 function priceInBand(hr){return hr!=null&&hr>=PRICE_MIN&&hr<=PRICE_MAX;}
+// ME-19 ‚Äî ONE probability everywhere = a blend of the player-rate model and the market fair, weight in
+// ONE place. modelP is matchup-BLIND (season rate only; see ME-28), so the market half is load-bearing ‚Äî
+// it is the only place matchup info (starter, park, slot) currently enters. Do NOT ship BLEND_W=1.0.
+// ME-20 ‚Äî a play must clear EDGE_GATE of edge_vs_price to render in ANY recommending section.
+var BLEND_W=0.5, EDGE_GATE=0.02;
+function modelBlend(m,f){return (m==null&&f==null)?null:m==null?f:f==null?m:BLEND_W*m+(1-BLEND_W)*f;}
+function edgeVsPrice(pP,hr){var be=impliedP(hr);return (pP==null||be==null)?null:Math.round((pP-be)*1000)/1000;} // vs the price you PAY (implied, with vig) ‚Äî not the de-vig fair
 var STALE_MIN=30;          // auto re-pull grades + prices every 30m (matches the server cron)
 var PITCH_MIN_SEEN=50;     // hitter needs >=N pitches seen vs a type to trust his xSLG vs it
 var CONC=10;               // statsapi concurrency
@@ -548,6 +555,21 @@ function contextTilt(h,mkt){
   Object.keys(byTag).forEach(function(k){if(byTag[k]>0){tags.push(k);if(!primary||byTag[k]>byTag[primary])primary=k;}});
   return{tilt:Math.round(t*1000)/1000,why:why,tags:tags,primary:primary};
 }
+// ME-19 ‚Äî THE single probability function. Every section derives its number here, so the same
+// (player, market, line, price) can never show two different probabilities. Also emits ME-26's three
+// candidate edges (blend / pure-model / tilt-only), each vs the price you PAY (breakeven = implied).
+function propProb(p,h,mkt){
+  if(!p||p.hr==null)return null;
+  var lam=hitterLambda(h.b,mkt);
+  var modelP=(lam!=null)?poissonOver(lam,p.line):null;                  // player season-rate Poisson ‚Äî matchup-BLIND (ME-28)
+  var fair=(p.fair!=null)?p.fair:null;                                  // de-vig market fair
+  var blend=modelBlend(modelP,fair);                                   // BLEND_W¬∑model + (1‚àíBLEND_W)¬∑fair
+  var ct=contextTilt(h,mkt),tilt=ct.tilt;
+  var tiltP=(fair!=null)?Math.max(0.03,Math.min(0.97,fair+tilt)):null; // fair nudged by the orthogonal tilt
+  return {modelP:modelP!=null?Math.round(modelP*1000)/1000:null, fair:fair, blend:blend!=null?Math.round(blend*1000)/1000:null,
+    tilt:tilt, tiltP:tiltP!=null?Math.round(tiltP*1000)/1000:null, tiltTags:ct.tags, tiltWhy:ct.why, tiltPrimary:ct.primary,
+    edge_blend:edgeVsPrice(blend,p.hr), edge_pure:edgeVsPrice(modelP,p.hr), edge_tilt_only:edgeVsPrice(tiltP,p.hr)};
+}
 // Pick the BEST prop across EVERY open market for this hitter ‚Äî driven by the PLAYER'S OWN production:
 // his per-game rate ‚Üí P(clear the line) vs the market's fair. The prop where HIS rate most exceeds the
 // market wins ‚Üí a HR hitter surfaces HR, a doubles bat surfaces doubles, a slap hitter surfaces singles.
@@ -564,12 +586,12 @@ function pickBestProp(pm,h,allowed){
     if(!priceInBand(p.hr))return;                                                 // ME-16 ‚Äî out-of-band never a play
     var imp=impliedP(p.hr);
     var lam=hitterLambda(h.b,mkt);
-    var modelP=(lam!=null)?poissonOver(lam,p.line):null;                          // HIS rate ‚Üí P(clear line)
-    var value=(p.fair!=null&&imp!=null)?Math.round((p.fair-imp)*1000)/1000:null;  // + = HR price beats fair
+    var pp=propProb(p,h,mkt);                                                      // ME-19 ‚Äî THE single probability source
+    var modelP=pp.modelP,tilt=pp.tilt,edgeP=pp.tiltP;
+    var ct={why:pp.tiltWhy,tags:pp.tiltTags,primary:pp.tiltPrimary};
+    var value=(p.fair!=null&&imp!=null)?Math.round((p.fair-imp)*1000)/1000:null;  // legacy: fair‚àíimplied = the VIG (no longer displayed ‚Äî ME-19)
     var likely=p.fair!=null?p.fair:(imp!=null?imp:0.5);
     var affinity=(lam!=null&&LG_RATE[mkt])?Math.max(0.3,Math.min(2.5,lam/LG_RATE[mkt])):1;
-    var ct=contextTilt(h,mkt),tilt=ct.tilt;                                        // OUR contextual edge vs the market
-    var edgeP=(p.fair!=null)?Math.max(0.03,Math.min(0.97,p.fair+tilt)):null;       // context-adjusted probability
     var fitB=fit[mkt]!=null?fit[mkt]:0.5;
     // WHERE WE BEAT THEM: TILT (our contextual edge) is the primary driver ‚Äî it leans onto Runs/RBI/HR
     // when the spot creates real edge. Affinity/likelihood are the FALLBACK when there's no edge (‚Üí the
@@ -577,7 +599,8 @@ function pickBestProp(pm,h,allowed){
     var longshotPen=(likely<0.40&&tilt<0.035)?(0.40-likely)*70:0;
     var score=tilt*130+affinity*9+likely*7+(value!=null?value*40:0)+fitB*2-longshotPen;
     var rec={mkt:mkt,label:MKT_LABEL[mkt]||mkt,line:p.line,hr:p.hr,fair:p.fair,nBooks:p.nBooks,at:p.at,stale:p.stale,
-      value:value,likely:Math.round(likely*1000)/1000,modelP:modelP!=null?Math.round(modelP*1000)/1000:null,affinity:Math.round(affinity*100)/100,
+      value:value,likely:Math.round(likely*1000)/1000,modelP:pp.modelP,affinity:Math.round(affinity*100)/100,
+      blend:pp.blend,edgeBlend:pp.edge_blend,edgePure:pp.edge_pure,edgeTiltOnly:pp.edge_tilt_only,          // ME-19/ME-26
       tilt:tilt,edgeP:edgeP!=null?Math.round(edgeP*1000)/1000:null,edgeWhy:ct.why,edgeTags:ct.tags,edgePrimary:ct.primary,score:score};
     ranked.push(rec);
     if(score>bs){bs=score;best=rec;}
@@ -597,19 +620,21 @@ function propLadder(pm,h){
   var rows=[];
   Object.keys(pm).forEach(function(mkt){
     var p=pm[mkt];if(!p||p.hr==null)return;
-    var lam=hitterLambda(h.b,mkt),modelP=lam!=null?poissonOver(lam,p.line):(p.fair!=null?p.fair:null);
+    var pp=propProb(p,h,mkt);                                                     // ME-19 ‚Äî same single source as pickBestProp
+    var modelP=pp.modelP!=null?pp.modelP:(p.fair!=null?p.fair:null);
     var imp=impliedP(p.hr),value=(p.fair!=null&&imp!=null)?Math.round((p.fair-imp)*1000)/1000:null;
     var payout=p.hr>0?p.hr/100:100/(-p.hr),ev=modelP!=null?Math.round((modelP*payout-(1-modelP))*1000)/1000:null;
     var tier=mkt==='batter_home_runs'?'dart':'main',note='';
     if(mkt==='batter_singles'){if(isPower){tier='trap';note='power bat ‚Äî singles throws away his XBH';}else if(isSlap)note='slap hitter ‚Äî his hits are mostly singles, usually a better price than Hits';}
-    // ranking prob: anchor model to market fair (reduces model bias); soundness leads, price nudges
-    var rankP=(p.fair!=null&&modelP!=null)?0.5*modelP+0.5*p.fair:(modelP!=null?modelP:(p.fair!=null?p.fair:0.5));
+    // ranking prob: THE blend (ME-19) ‚Äî soundness leads, price nudges
+    var rankP=(pp.blend!=null)?pp.blend:(pp.fair!=null?pp.fair:(modelP!=null?modelP:0.5));
     var score=rankP+(value!=null?value*0.5:0);
     if(mkt==='batter_hits_runs_rbis')score+=0.03;   // HRR: more paths ‚Üí prefer over TB
     if(mkt==='batter_total_bases')score-=0.02;       // TB: fewer paths ‚Üí demote vs HRR
     if(tier==='trap')score-=0.15;
     rows.push({mkt:mkt,label:MKT_LABEL[mkt]||mkt,line:p.line,hr:p.hr,fair:p.fair,nBooks:p.nBooks,at:p.at,stale:p.stale,inBand:priceInBand(p.hr),
-      modelP:modelP!=null?Math.round(modelP*1000)/1000:null,prob:Math.round(rankP*1000)/1000,likely:p.fair!=null?p.fair:modelP,value:value,ev:ev,tier:tier,note:note,score:score});
+      modelP:pp.modelP,prob:Math.round(rankP*1000)/1000,blend:pp.blend,edgeBlend:pp.edge_blend,edgePure:pp.edge_pure,edgeTiltOnly:pp.edge_tilt_only, // ME-19/ME-26
+      likely:p.fair!=null?p.fair:modelP,value:value,ev:ev,tier:tier,note:note,score:score});
   });
   var main=rows.filter(function(r){return r.tier!=='dart';}).sort(function(a,b){return b.score-a.score;});
   var dart=rows.filter(function(r){return r.tier==='dart';});
@@ -634,12 +659,12 @@ function attachProps(hitters,res){
   });
 }
 function hhmm(ts){return ts?new Date(ts).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}):'';}
-function propLine(bp){ // "TB O1.5 ‚àí120 on Hard Rock ‚Äî +2.1pp value (as of 1:01)"
+function propLine(bp){ // "TB O1.5 ‚àí120 on Hard Rock ‚Äî +2.1pp edge (as of 1:01)"
   if(!bp)return null;
   var s=bp.label+' O'+bp.line+' '+(bp.hr>0?'+':'')+bp.hr+' on Hard Rock';
-  var v=bp.value!=null?bp.value:(bp.fair!=null?bp.fair-impliedP(bp.hr):null);
-  if(v!=null)s+=v>=0.005?' ‚Äî +'+(v*100).toFixed(1)+'pp value':v>=-0.005?' ‚Äî fair price ‚úì':' ‚Äî paying '+Math.abs(v*100).toFixed(1)+'pp over fair';
-  if(bp.likely!=null)s+=' ('+Math.round(bp.likely*100)+'% to hit)';
+  var e=bp.edgeBlend!=null?bp.edgeBlend:(bp.blend!=null?edgeVsPrice(bp.blend,bp.hr):null); // ME-19 ‚Äî real edge vs price, NOT the vig
+  if(e!=null)s+=e>=0.005?' ‚Äî +'+(e*100).toFixed(1)+'pp edge vs price':e>=-0.005?' ‚Äî priced at fair':' ‚Äî '+Math.abs(e*100).toFixed(1)+'pp short of the price';
+  if(bp.blend!=null)s+=' ('+Math.round(bp.blend*100)+'% to cash)';
   if(bp.stale)s+=' (price as of '+hhmm(bp.at)+' ‚Äî couldn‚Äôt refresh)';
   return s;
 }
@@ -759,6 +784,51 @@ function logEdgePlays(hitters){
   var recs=(hitters||[]).filter(function(h){return h.edgeProp&&h.edgeProp.tilt>=0.035&&h.spot&&h.grade!=='D'&&h.edgeProp.line!=null&&h.edgeProp.mkt;})
     .map(function(h){var bp=h.edgeProp;return{id:h.id,name:h.name,mkt:bp.mkt,line:bp.line,hr:bp.hr,tilt:bp.tilt,light:pickLight(h),tags:bp.edgeTags||[],primary:bp.edgePrimary||'none',opp:h.oppPitName||''};});
   if(recs.length)ss('eproj_'+todayStr(),recs);
+}
+// ME-26 ‚Äî log all THREE candidate edges on every surfaced row (blend / pure-model / tilt-only), across
+// all three market-views, for every hitter ‚Äî gated or not. Free at write time; in a month it lets us
+// pick the weight on evidence (CLV/results) instead of argument. One record per slate.
+function logPlayEdges(hitters){
+  var rows=[];
+  (hitters||[]).forEach(function(h){
+    if(!h.spot||h.grade==='D')return;
+    [['top',h.bestProp],['edge',h.edgeProp],['contact',h.contactProp]].forEach(function(pr){
+      var sec=pr[0],bp=pr[1];if(!bp||bp.line==null||!bp.mkt)return;
+      rows.push({sec:sec,id:h.id,name:h.name,team:h.team,mkt:bp.mkt,line:bp.line,hr:bp.hr,
+        model:bp.modelP,fair:bp.fair,blend:bp.blend,tilt:bp.tilt,
+        edge_blend:bp.edgeBlend,edge_pure:bp.edgePure,edge_tilt_only:bp.edgeTiltOnly,
+        gated:bp.edgeBlend!=null&&bp.edgeBlend>=EDGE_GATE});
+    });
+  });
+  if(rows.length)ss('playedges_'+todayStr(),{at:Date.now(),blend_w:BLEND_W,gate:EDGE_GATE,rows:rows});
+  assertOneProb(rows); // ME-19 acceptance ‚Äî no (player,mkt,line) may carry two different probabilities
+}
+// ME-19 test ‚Äî one probability function everywhere. Scans every surfaced row; if the same
+// (player, market, line) shows two different blended probabilities, that's two code paths ‚Äî fail loudly.
+function assertOneProb(rows){
+  var seen={},bad=[];
+  (rows||[]).forEach(function(r){
+    var k=r.name+'|'+r.mkt+'|'+r.line;
+    if(seen[k]!=null){if(Math.abs((seen[k]||0)-(r.blend||0))>0.0005)bad.push(k+' ‚Üí '+seen[k]+' vs '+r.blend);}
+    else seen[k]=r.blend;
+  });
+  if(bad.length){try{console.error('[ME-19 FAIL] duplicate probability for: '+bad.join('; '));}catch(e){}}
+  return bad.length===0;
+}
+// Blend-vs-pure DIVERGENCE sizer ‚Äî how much does the weight choice matter, over the slates we've logged?
+// SIZING ONLY: there are no outcomes in this, so it cannot say which weight is RIGHT ‚Äî CLV/results do that
+// (ME-02). It answers "are we arguing over 2 plays a night or 40?" Run blendVsPure() in the console.
+function blendVsPure(){
+  var dates=[],pre=K+'playedges_';
+  for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(k&&k.indexOf(pre)===0)dates.push(k.slice(pre.length));}
+  if(!dates.length){console.log('[blendVsPure] no slates logged yet ‚Äî the ME-26 log starts tonight. Re-run after a few slates.');return;}
+  var nBlend=0,nPure=0,both=0,rows=0;
+  dates.forEach(function(d){var rec=sg('playedges_'+d,null);if(!rec||!rec.rows)return;
+    rec.rows.forEach(function(r){if(r.sec!=='top')return;rows++;var b=r.edge_blend>=EDGE_GATE,p=r.edge_pure>=EDGE_GATE;if(b)nBlend++;if(p)nPure++;if(b&&p)both++;});});
+  console.log('[blendVsPure] SIZING ONLY (no outcomes ‚Äî CLV decides the weight, not this).');
+  console.log('  slates:'+dates.length+'  top-rows:'+rows+'  clear +'+(EDGE_GATE*100).toFixed(1)+'pp gate ‚Üí blend:'+nBlend+'  pure:'+nPure+'  agree:'+both);
+  console.log('  divergence: '+(nBlend+nPure-2*both)+' plays flip on the weight choice ('+(rows?Math.round((nBlend+nPure-2*both)/rows*100):0)+'% of rows).');
+  return{slates:dates.length,rows:rows,blend:nBlend,pure:nPure,agree:both};
 }
 function edgeStat(gls,date,mkt){ // sum the settled stat over that date's game(s)
   var f=mkt==='batter_runs_scored'?'runs':mkt==='batter_rbis'?'rbi':mkt==='batter_home_runs'?'homeRuns':mkt==='batter_total_bases'?'totalBases':mkt==='batter_hits'?'hits':null;
@@ -1215,7 +1285,7 @@ async function loadAll(){
     var ae=(a.proj&&a.proj.edge!=null)?a.proj.edge:-1,be=(b.proj&&b.proj.edge!=null)?b.proj.edge:-1;
     return be-ae;
   });
-  logKProjections(pitchers);logEdgePlays(hitters);        // instrument: record tonight's K + edge plays (tagged)
+  logKProjections(pitchers);logEdgePlays(hitters);logPlayEdges(hitters); // instrument: K + edge plays (tagged) + ME-26 three-edge log on every row
   var kcal=null;try{kcal=await settleKProjections();}catch(e){} // settle prior nights vs real box-score Ks
   var ecal=null;try{ecal=await settleEdgePlays();}catch(e){}     // settle prior edge plays, grouped by signal
   D={hitters:hitters,games:games,pitchers:pitchers,targets:targets,kcalib:kcal,ecalib:ecal,generatedAt:new Date(),loadSec:Math.round((Date.now()-t0)/1000),propsAt:propRes.at,serverDown:propRes.serverDown};
@@ -1447,10 +1517,17 @@ function tcard(t,ix){
 }
 function tgt(ix){var el=document.getElementById('tc'+ix);if(el)el.classList.toggle('open');}
 function boardData(){
-  if(!D)return{edge:[],contact:[],pitcher:[],top:[]};
-  var edge=D.hitters.filter(function(x){return x.edgeProp&&x.edgeProp.tilt>=0.035&&x.spot&&x.grade!=='D';}).sort(function(a,b){return b.edgeProp.tilt-a.edgeProp.tilt;});
-  var contact=D.hitters.filter(function(x){return x.contactProp&&x.spot&&x.grade!=='D';}).sort(function(a,b){return b.contactProp.likely-a.contactProp.likely;});
+  if(!D)return{edge:[],contact:[],pitcher:[],top:[],dropped:{edge:0,contact:0,top:0}};
+  // ME-20 ‚Äî GATE every recommending section on edge_vs_price (the blend vs the price you pay). No play
+  // below EDGE_GATE renders anywhere. Count what each section suppresses.
+  function passes(bp){return bp&&bp.edgeBlend!=null&&bp.edgeBlend>=EDGE_GATE;}
+  var edgePool=D.hitters.filter(function(x){return x.edgeProp&&x.spot&&x.grade!=='D';});
+  var contactPool=D.hitters.filter(function(x){return x.contactProp&&x.spot&&x.grade!=='D';});
+  var topPool=D.hitters.filter(function(x){return x.bestProp&&x.spot&&x.grade!=='D'&&x.confidence!=='LOW';});
+  var edge=edgePool.filter(function(x){return passes(x.edgeProp);}).sort(function(a,b){return b.edgeProp.edgeBlend-a.edgeProp.edgeBlend;});
+  var contact=contactPool.filter(function(x){return passes(x.contactProp);}).sort(function(a,b){return b.contactProp.edgeBlend-a.contactProp.edgeBlend;});
   var pitcher=(D.pitchers||[]).filter(function(p){return p.proj&&p.proj.ok&&p.proj.recommend;}).sort(function(a,b){return (b.proj.edge||0)-(a.proj.edge||0);});
+  var dropped={edge:edgePool.length-edge.length,contact:contactPool.length-contact.length,top:0};
   var top=[];
   // TOP PICKS rank by HITTABLE-PITCHER √ó PROBABILITY (not by edge%). Sound contact props in soft-arm
   // spots lead; Runs (our weakest prop) is downgraded; oversized/flagged edges and thin-data/unconfirmed
@@ -1459,15 +1536,18 @@ function boardData(){
   function propWt(mkt){return mkt==='batter_hits'?0.05:mkt==='batter_hits_runs_rbis'?0.045:mkt==='batter_total_bases'?0.03:mkt==='batter_singles'?0.03:mkt==='batter_runs_scored'?-0.05:0;} // lead Hits/TB/HRR, downgrade Runs
   function hitReason(h){var KL=h.pit&&h.pit.kLayer,p=[];if(KL&&KL.hitsPerStart!=null)p.push(KL.hitsPerStart+' H/start arm');if(h.pSav&&h.pSav.xslg!=null&&h.pSav.xslg>=0.44)p.push('gets squared up');if(h.b&&(h.b.hotCold==='HOT'||h.b.hotCold==='Warming'))p.push(h.b.hotCold.toLowerCase());if(h.lg&&h.lg.sum>=0.03)p.push('under-rewarded');return p.join(' ¬∑ ')||'solid matchup';}
   // HITTER picks ‚Äî sound prop (ladder primary) in a hittable spot; SCREEN OUT thin-data/LOW-confidence.
-  D.hitters.filter(function(h){return h.bestProp&&h.spot&&h.grade!=='D'&&h.confidence!=='LOW';}).forEach(function(h){var bp=h.bestProp,flagged=!!pickWhy(h);
-    var q=(bp.prob!=null?bp.prob:(bp.likely||0.5))+hittability(h)+propWt(bp.mkt)-(flagged?0.30:0)-(h.confirmed?0:0.04);
-    top.push({kind:'HIT',light:flagged?'yellow':pickLight(h),name:h.name,sub:(TEAM_ABBR[h.team]||h.team)+' vs '+(h.oppPitName||'TBD'),bet:bp.label+' O'+bp.line+' '+(bp.hr>0?'+':'')+bp.hr,metric:Math.round((bp.prob!=null?bp.prob:bp.likely)*100)+'% to cash',conf:h.confidence,flag:pickWhy(h),reason:hitReason(h),rank:q});});
+  var topHit=topPool.filter(function(h){return passes(h.bestProp);});
+  dropped.top=topPool.length-topHit.length;                                        // ME-20 ‚Äî negative/thin-edge picks suppressed
+  topHit.forEach(function(h){var bp=h.bestProp,flagged=!!pickWhy(h);
+    var q=(bp.blend!=null?bp.blend:(bp.likely||0.5))+hittability(h)+propWt(bp.mkt)-(flagged?0.30:0)-(h.confirmed?0:0.04);
+    top.push({kind:'HIT',light:flagged?'yellow':pickLight(h),name:h.name,sub:(TEAM_ABBR[h.team]||h.team)+' vs '+(h.oppPitName||'TBD'),bet:bp.label+' O'+bp.line+' '+(bp.hr>0?'+':'')+bp.hr,metric:Math.round(bp.blend*100)+'% ¬∑ '+(bp.edgeBlend>=0?'+':'')+(bp.edgeBlend*100).toFixed(1)+'pp',conf:h.confidence,flag:pickWhy(h),reason:hitReason(h),rank:q});});
   // K picks ‚Äî flagged / oversized-edge / LOW get DEMOTED to the bottom and shown red (never #1).
   pitcher.forEach(function(p){var pr=p.proj,flagged=!!pr.marketFlag||pr.confidence==='LOW';
     var q=0.45+(pr.confidence==='HIGH'?0.12:pr.confidence==='MEDIUM'?0.05:0)-(flagged?0.45:0);
     top.push({kind:'K',light:flagged?'red':pr.confidence==='HIGH'?'green':'yellow',name:p.name,sub:(TEAM_ABBR[p.team]||p.team)+' '+p.throws+'HP vs '+p.opp,bet:'Ks '+(pr.side==='Over'?'O':'U')+pr.line+(pr.hrPrice!=null?' '+(pr.hrPrice>0?'+':'')+pr.hrPrice:''),metric:pr.edge!=null?(pr.edge*100).toFixed(1)+'pp edge':'Œº '+pr.mu+' Ks',conf:pr.confidence,flag:pr.marketFlag,reason:'model '+pr.mu+' Ks',rank:q});});
   top.sort(function(a,b){return b.rank-a.rank;});
-  return{edge:edge,contact:contact,pitcher:pitcher,top:top.slice(0,14)};
+  try{console.log('[ME-20 gate +'+(EDGE_GATE*100).toFixed(1)+'pp edge_vs_price] suppressed ‚Äî edge:'+dropped.edge+' contact:'+dropped.contact+' top:'+dropped.top);}catch(e){}
+  return{edge:edge,contact:contact,pitcher:pitcher,top:top.slice(0,14),dropped:dropped};
 }
 function render(){
   if(!D)return;
@@ -1482,13 +1562,17 @@ function render(){
     D.targets.forEach(function(t,ix){h+=tcard(t,ix);});
   }
   // ‚îÄ‚îÄ üèÜ TOP PICKS ‚Äî the highest play from each board, one ranked action list (auditable) ‚îÄ‚îÄ
+  var supp=BD.dropped||{edge:0,contact:0,top:0};
+  var suppNote='<div style="font-size:10px;margin-top:3px" class="mut">Gate: only plays clearing <b>+'+(EDGE_GATE*100).toFixed(1)+'pp edge vs the price you pay</b> (blend model+market) show. Suppressed tonight ‚Äî top '+supp.top+' ¬∑ edge '+supp.edge+' ¬∑ contact '+supp.contact+'.</div>';
   if(BD.top.length){
     h+='<div class="card" style="border-color:var(--gld);background:rgba(234,179,8,.06)"><b style="color:var(--gld);font-size:14px">&#127942; TOP PICKS ‚Äî best of every board</b>';
-    h+='<div style="font-size:10px;margin-top:2px" class="mut">Ranked by hittable-pitcher √ó prop probability ‚Äî sound contact plays (Hits/TB/HRR) in soft-arm spots lead. Oversized/flagged edges and unconfirmed lineups are demoted to the bottom (red). Read the Pitcher Targets first.</div>';
+    h+='<div style="font-size:10px;margin-top:2px" class="mut">Ranked by hittable-pitcher √ó prop probability ‚Äî sound contact plays (Hits/TB/HRR) in soft-arm spots lead. Oversized/flagged edges and unconfirmed lineups are demoted to the bottom (red). Read the Pitcher Targets first.</div>'+suppNote;
     BD.top.forEach(function(pk){
       h+='<div style="font-size:12px;margin-top:6px;border-top:1px solid var(--bord);padding-top:5px">'+lightDot(pk.light)+' <span class="tag" style="background:rgba(167,139,250,.12);color:var(--pur);font-size:9px">'+pk.kind+'</span> <b>'+esc(pk.name)+'</b> <span class="mut">('+esc(pk.sub)+')</span><br><b style="color:var(--gld)">'+esc(pk.bet)+'</b> ¬∑ <b>'+esc(pk.metric)+'</b> ¬∑ '+esc(pk.conf)+(pk.flag?' ¬∑ <span style="color:var(--amb)">‚ö† '+esc((''+pk.flag).replace(/<[^>]+>/g,''))+'</span>':'')+(pk.reason?'<br><span style="font-size:10px" class="mut">'+esc(pk.reason)+'</span>':'')+'</div>';
     });
     h+='</div>';
+  }else{
+    h+='<div class="card" style="border-color:var(--gld);background:rgba(234,179,8,.06)"><b style="color:var(--gld);font-size:14px">&#127942; TOP PICKS</b><div style="font-size:11px;margin-top:4px" class="mut">No play clears the gate right now ‚Äî every candidate priced below the edge bar. That is the honest read, not an error.</div>'+suppNote+'</div>';
   }
   // ‚îÄ‚îÄ EDGE PLAYS ‚Äî Runs / RBI / HR (top of page so all boards are visible together) ‚îÄ‚îÄ
   var edgeList=BD.edge.slice(0,15);
@@ -1503,7 +1587,7 @@ function render(){
     h+='<br><b>by type:</b> '+Object.keys(ec.byType).map(function(ty){var s=ec.byType[ty];return ty+' '+s.w+'‚Äì'+s.l+' ('+(s.u>=0?'+':'')+s.u.toFixed(1)+'u)';}).join(' ¬∑ ')+' ¬∑ <b>by dot:</b> '+['green','yellow','red'].filter(function(l){return ec.byLight[l];}).map(function(l){var s=ec.byLight[l];return (l==='green'?'üü¢':l==='yellow'?'üü°':'üî¥')+s.w+'‚Äì'+s.l;}).join(' ')+'</div>';
   }
   edgeList.forEach(function(x){var bp=x.edgeProp;
-    h+='<div style="font-size:12px;margin-top:6px"><b>'+esc(x.name)+'</b> <span class="mut">('+esc(TEAM_ABBR[x.team]||x.team)+' vs '+esc(x.oppPitName||'TBD')+')</span> ‚Äî <b style="color:var(--grn)">'+bp.label+' O'+bp.line+' '+(bp.hr>0?'+':'')+bp.hr+'</b> <span class="mut">'+Math.round((bp.edgeP||bp.likely)*100)+'%</span> ¬∑ <b style="color:var(--grn)">+'+(bp.tilt*100).toFixed(1)+'pp</b><br><span style="font-size:10px" class="mut">'+esc((bp.edgeWhy||[]).join(' ¬∑ '))+'</span></div>';
+    h+='<div style="font-size:12px;margin-top:6px"><b>'+esc(x.name)+'</b> <span class="mut">('+esc(TEAM_ABBR[x.team]||x.team)+' vs '+esc(x.oppPitName||'TBD')+')</span> ‚Äî <b style="color:var(--grn)">'+bp.label+' O'+bp.line+' '+(bp.hr>0?'+':'')+bp.hr+'</b> <span class="mut">'+Math.round(bp.blend*100)+'%</span> ¬∑ <b style="color:'+(bp.edgeBlend>=0?'var(--grn)':'var(--red)')+'">'+(bp.edgeBlend>=0?'+':'')+(bp.edgeBlend*100).toFixed(1)+'pp</b><br><span style="font-size:10px" class="mut">'+esc((bp.edgeWhy||[]).join(' ¬∑ '))+'</span></div>';
   });
   if(!edgeList.length)h+='<div style="font-size:11px;margin-top:5px" class="mut">No clear edge spots right now ‚Äî they show once lineups, totals, and pitchers post.</div>';
   h+='</div>';
@@ -1512,7 +1596,7 @@ function render(){
   h+='<div class="card"><b style="color:var(--blu);font-size:13px">&#128994; CONTACT PLAYS ‚Äî Hits / Singles / TB / HRR ('+contactList.length+')</b>';
   h+='<div style="font-size:10px;margin-top:2px" class="mut">The safer, high-hit-rate props ‚Äî most likely to cash, but tightly priced (slim value). Ranked by hit likelihood.</div>';
   contactList.forEach(function(x){var bp=x.contactProp;
-    h+='<div style="font-size:12px;margin-top:6px"><b>'+esc(x.name)+'</b> <span class="mut">('+esc(TEAM_ABBR[x.team]||x.team)+')</span> ‚Äî <b>'+bp.label+' O'+bp.line+' '+(bp.hr>0?'+':'')+bp.hr+'</b> <span class="mut">'+Math.round(bp.likely*100)+'% likely'+(bp.value!=null?' ¬∑ '+(bp.value>=0?'+':'')+(bp.value*100).toFixed(1)+'pp':'')+'</span></div>';
+    h+='<div style="font-size:12px;margin-top:6px"><b>'+esc(x.name)+'</b> <span class="mut">('+esc(TEAM_ABBR[x.team]||x.team)+')</span> ‚Äî <b>'+bp.label+' O'+bp.line+' '+(bp.hr>0?'+':'')+bp.hr+'</b> <span class="mut">'+Math.round(bp.blend*100)+'% to cash'+(bp.edgeBlend!=null?' ¬∑ <b style="color:'+(bp.edgeBlend>=0?'var(--grn)':'var(--red)')+'">'+(bp.edgeBlend>=0?'+':'')+(bp.edgeBlend*100).toFixed(1)+'pp</b>':'')+'</span></div>';
   });
   h+='</div>';
   h+='<div class="card" style="border-color:var(--gld)"><b style="color:var(--gld);font-size:13px">&#11088; TOP MATCHUPS TONIGHT ('+A.length+' A-grades)</b>';
@@ -1579,7 +1663,7 @@ function copyTop(){
   // ‚îÄ‚îÄ üéØ EDGE PLAYS ‚Äî Runs / RBI / HR ‚îÄ‚îÄ
   t+='\nüéØ EDGE PLAYS ‚Äî Runs / RBI / HR ('+BD.edge.length+') ¬∑ context that can beat the generic price\n';
   BD.edge.slice(0,20).forEach(function(x){var bp=x.edgeProp,why=pickWhy(x);
-    t+=dotTxt(pickLight(x))+' '+x.name+' ('+(TEAM_ABBR[x.team]||x.team)+' vs '+(x.oppPitName||'TBD')+') ‚Äî '+bp.label+' O'+bp.line+' '+(bp.hr>0?'+':'')+bp.hr+' | +'+(bp.tilt*100).toFixed(1)+'pp edge, '+Math.round((bp.edgeP||bp.likely)*100)+'% ¬∑ '+x.confidence+'\n';
+    t+=dotTxt(pickLight(x))+' '+x.name+' ('+(TEAM_ABBR[x.team]||x.team)+' vs '+(x.oppPitName||'TBD')+') ‚Äî '+bp.label+' O'+bp.line+' '+(bp.hr>0?'+':'')+bp.hr+' | '+(bp.edgeBlend>=0?'+':'')+(bp.edgeBlend*100).toFixed(1)+'pp edge, '+Math.round(bp.blend*100)+'% ¬∑ '+x.confidence+'\n';
     t+='     why: '+((bp.edgeWhy||[]).join(' ¬∑ ')||'context lean')+'\n';
     if(why)t+='     ‚ö† '+stripTags(why)+'\n';
   });
@@ -1595,7 +1679,7 @@ function copyTop(){
   // ‚îÄ‚îÄ üü¢ CONTACT PLAYS ‚Äî Hits / Singles / TB / HRR ‚îÄ‚îÄ
   t+='\nüü¢ CONTACT PLAYS ‚Äî Hits / Singles / TB / HRR ('+BD.contact.length+') ¬∑ safer, high-hit-rate, tightly priced\n';
   BD.contact.slice(0,20).forEach(function(x){var bp=x.contactProp;
-    t+=dotTxt(pickLight(x))+' '+x.name+' ('+(TEAM_ABBR[x.team]||x.team)+') ‚Äî '+bp.label+' O'+bp.line+' '+(bp.hr>0?'+':'')+bp.hr+' | '+Math.round(bp.likely*100)+'% likely'+(bp.value!=null?', '+(bp.value>=0?'+':'')+(bp.value*100).toFixed(1)+'pp':'')+' ¬∑ '+x.confidence+'\n';
+    t+=dotTxt(pickLight(x))+' '+x.name+' ('+(TEAM_ABBR[x.team]||x.team)+') ‚Äî '+bp.label+' O'+bp.line+' '+(bp.hr>0?'+':'')+bp.hr+' | '+Math.round(bp.blend*100)+'% to cash'+(bp.edgeBlend!=null?', '+(bp.edgeBlend>=0?'+':'')+(bp.edgeBlend*100).toFixed(1)+'pp':'')+' ¬∑ '+x.confidence+'\n';
   });
   navigator.clipboard.writeText(t).then(function(){toast('Copied ALL boards (Top Picks + Edge + Ks + Contact)');}).catch(function(){toast('Copy failed');});
 }
