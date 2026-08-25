@@ -808,7 +808,7 @@ function logPlayEdges(hitters){
     if(!h.spot||h.grade==='D')return;
     [['top',h.bestProp],['edge',h.edgeProp],['contact',h.contactProp]].forEach(function(pr){
       var sec=pr[0],bp=pr[1];if(!bp||bp.line==null||!bp.mkt)return;
-      rows.push({sec:sec,id:h.id,name:h.name,team:h.team,mkt:bp.mkt,line:bp.line,hr:bp.hr,grade:h.grade,score:h.score, // ME-04/15 ‚Äî grade on every EVALUATED row (population, not just bet)
+      rows.push({sec:sec,id:h.id,name:h.name,team:h.team,mkt:bp.mkt,line:bp.line,hr:bp.hr,grade:h.grade,score:h.score,park:h.park,spot:h.spot, // ME-04/15/38 ‚Äî grade + park + slot on every EVALUATED row
         model:bp.modelP,fair:bp.fair,blend:bp.blend,blend_notilt:bp.blendNoTilt,tilt:bp.tilt,tilt_preclip:bp.tiltPreClip,tilt_null:bp.tiltNull,hold:bp.hold, // ME-26/27/30
         edge_blend:bp.edgeBlend,edge_pure:bp.edgePure,edge_tilt_only:bp.edgeTiltOnly,edge_fair:bp.edgeFair,
         gated:bp.edgeBlend!=null&&bp.edgeBlend>=EDGE_GATE});
@@ -822,6 +822,12 @@ function logPlayEdges(hitters){
   // ME-30 ‚Äî hold (vig) per market: the price band constrains price, not vig. A max-hold filter may do more work.
   var holdTxt=Object.keys(holdByMkt).map(function(m){return m.replace('batter_','')+' '+(holdByMkt[m].sum/holdByMkt[m].n*100).toFixed(1)+'pp';}).join(' ¬∑ ');
   try{console.log('[ME-30 avg hold/market] '+(holdTxt||'‚Äî')+' ¬∑ [ME-27 tilt collapsed on null Statcast] '+nullTilt+' plays');}catch(e){}
+  // ME-38 ‚Äî is the edge an artifact of matchup-blind modelP? Bucket THIS slate's edges by slot & park.
+  // If edge climbs as the SPOT worsens / the PARK gets more pitcher-friendly, the season-rate model is
+  // reading "market underrates him" in exactly the spots it can't see. Slope here = artifact confirmed.
+  var tops=rows.filter(function(r){return r.sec==='top'&&r.edge_blend!=null;});
+  function em(f){var g={};tops.forEach(function(r){var k=f(r);if(k==null)return;if(!g[k])g[k]={s:0,n:0};g[k].s+=r.edge_blend;g[k].n++;});return Object.keys(g).map(function(k){return k+' '+(g[k].s/g[k].n*100).toFixed(1)+'pp(n'+g[k].n+')';}).join(' ¬∑ ');}
+  try{console.log('[ME-38 edge by SLOT] '+em(function(r){return r.spot==null?null:r.spot<=3?'1-3':r.spot<=6?'4-6':'7-9';})+' ¬∑ [by PARK] '+em(function(r){return r.park==null?null:r.park>=104?'hitter':r.park<=96?'pitcher':'neutral';}));}catch(e){}
   assertOneProb(rows); // ME-19 acceptance ‚Äî no (player,mkt,line) may carry two different probabilities
 }
 // ME-19 test ‚Äî one probability function everywhere. Scans every surfaced row; if the same
@@ -850,6 +856,17 @@ function blendVsPure(){
   console.log('  slates:'+dates.length+'  top-rows:'+rows+'  clear +'+(EDGE_GATE*100).toFixed(1)+'pp gate ‚Üí blend:'+nBlend+'  pure:'+nPure+'  agree:'+both);
   console.log('  divergence: '+(nBlend+nPure-2*both)+' plays flip on the weight choice ('+(rows?Math.round((nBlend+nPure-2*both)/rows*100):0)+'% of rows).');
   return{slates:dates.length,rows:rows,blend:nBlend,pure:nPure,agree:both};
+}
+// ME-41 ‚Äî sweep the gate. Board size at edge‚â•0/+1/+2/+3pp, with the ME-36 no-tilt floor on and off. Four
+// stacked thresholds, zero graded results behind any of them yet ‚Äî this sizes the cost of each, nothing more.
+// Run gateSweep() in the console against tonight's board.
+function gateSweep(){
+  if(!D||!D.hitters){console.log('[gateSweep] no board loaded yet');return;}
+  var cand=D.hitters.filter(function(h){return h.bestProp&&h.spot&&h.grade!=='D'&&h.confidence!=='LOW'&&h.bestProp.edgeBlend!=null;});
+  function count(thr,floor){return cand.filter(function(h){var b=h.bestProp;return b.edgeBlend>=thr&&(!floor||b.edgeNoTilt==null||b.edgeNoTilt>=0);}).length;}
+  var lines=[0,0.01,0.02,0.03].map(function(t){return 'edge‚â•+'+(t*100).toFixed(0)+'pp: '+count(t,false)+' plays  (with no-tilt floor: '+count(t,true)+')';});
+  console.log('[ME-41 gate sweep] from '+cand.length+' candidates:\n  '+lines.join('\n  '));
+  return lines;
 }
 function edgeStat(gls,date,mkt){ // sum the settled stat over that date's game(s)
   var f=mkt==='batter_runs_scored'?'runs':mkt==='batter_rbis'?'rbi':mkt==='batter_home_runs'?'homeRuns':mkt==='batter_total_bases'?'totalBases':mkt==='batter_hits'?'hits':null;
@@ -913,7 +930,7 @@ async function settlePlayEdges(){
   var today=todayStr(),pre=K+'playedges_',dates=[];
   for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(k&&k.indexOf(pre)===0){var d=k.slice(pre.length);if(d<today)dates.push(d);}}
   if(!dates.length)return sg('gcalib',null);
-  var cal=sg('gcalib',{byGrade:{},n:0,w:0,l:0});if(!cal.byGrade)cal.byGrade={};
+  var cal=sg('gcalib',{byGrade:{},byTilt:{},n:0,w:0,l:0});if(!cal.byGrade)cal.byGrade={};if(!cal.byTilt)cal.byTilt={}; // ME-40 ‚Äî tilt control group
   var fetched=0,MAX=25; // cap fetches per load; drain the backlog across loads
   for(var di=0;di<dates.length&&fetched<MAX;di++){
     var date=dates[di],rec=sg('playedges_'+date,null);
@@ -925,7 +942,10 @@ async function settlePlayEdges(){
       var gls=gl&&gl.stats&&gl.stats[0]&&gl.stats[0].splits||[];
       var stat=statForMkt(gls,date,r.mkt);
       if(stat!=null){var win=stat>r.line;cal.n++;win?cal.w++:cal.l++;
-        var g=r.grade||'?';if(!cal.byGrade[g])cal.byGrade[g]={w:0,l:0};win?cal.byGrade[g].w++:cal.byGrade[g].l++;r._done=true;}
+        var g=r.grade||'?';if(!cal.byGrade[g])cal.byGrade[g]={w:0,l:0};win?cal.byGrade[g].w++:cal.byGrade[g].l++;
+        var tb=(r.tilt==null||r.tilt<=0)?'none':(r.tilt<0.03?'low(+)':'high(++)'); // ME-40 ‚Äî every row, incl. tilt=0 control
+        if(!cal.byTilt[tb])cal.byTilt[tb]={w:0,l:0};win?cal.byTilt[tb].w++:cal.byTilt[tb].l++;
+        r._done=true;}
     }
     var allDone=tops.every(function(r){return r._done||r.id==null;});
     if(allDone||date<new Date(Date.now()-7*864e5).toISOString().slice(0,10))localStorage.removeItem(K+'playedges_'+date);
@@ -951,8 +971,15 @@ function poissonOver(mu,line){
 // is calibrated separately (kcalib) and must not take this correction.
 var ME29_BIAS_C={batter_hits:-0.034,batter_singles:-0.0229,batter_doubles:-0.0026,batter_runs_scored:-0.0106};
 var ME29_BIAS_L={batter_total_bases:[-0.2092,0.171],batter_hits_runs_rbis:[-0.1353,0.1069],batter_rbis:[-0.0287,0.1819]};
+// ME-39 ‚Äî the bias was measured at ONE line per market (the standard prop line). It is a P(over)-at-that-line
+// number, NOT a per-Œª curve valid at any line. Applying the O1.5 bias at O3.5 (raw 9%) over-corrects past 0 and
+// flips the sign. So apply the correction ONLY at the fitted line; at any other line, use the raw Poisson
+// (uncorrected ‚Äî imperfect for composites, but far better than a sign-flipped over-correction). Proper
+// per-line composite modelling is ME-33/34/35.
+var ME29_LINE={batter_total_bases:1.5,batter_hits_runs_rbis:1.5,batter_rbis:0.5,batter_hits:0.5,batter_singles:0.5,batter_doubles:0.5,batter_runs_scored:0.5};
 function poissonCorr(mkt,lam,line){
   var raw=poissonOver(lam,line),b=0;
+  if(ME29_LINE[mkt]!=null&&line!==ME29_LINE[mkt])return Math.max(0.01,Math.min(0.99,raw)); // ME-39 ‚Äî off the fitted line: no correction
   if(ME29_BIAS_L[mkt])b=Math.max(0,ME29_BIAS_L[mkt][0]+ME29_BIAS_L[mkt][1]*lam);   // clumped: linear, never below 0
   else if(ME29_BIAS_C[mkt]!=null)b=ME29_BIAS_C[mkt];                                 // clean: constant (negative ‚Üí adds back)
   return Math.max(0.01,Math.min(0.99,raw-b));
@@ -1707,6 +1734,12 @@ function render(){
     ['A','B','C','D'].forEach(function(g){if(!gc.byGrade[g])return;var s=gc.byGrade[g],n=s.w+s.l,ci=wilson(s.w,n);
       var thin=n<20;
       h+='<br>&nbsp;&nbsp;<b>'+GB2[g]+'</b> '+(ci.p*100).toFixed(0)+'% hit <span class="mut">[95% CI '+(ci.lo*100).toFixed(0)+'‚Äì'+(ci.hi*100).toFixed(0)+'] ¬∑ n='+n+'</span>'+(thin?' <span style="color:var(--amb)">insufficient sample</span>':'');});
+    // ME-40 ‚Äî does the tilt (the one orthogonal signal) actually predict? tilt=0 is the control group.
+    if(gc.byTilt&&Object.keys(gc.byTilt).length){
+      h+='<br><b>&#127919; BY TILT</b> <span class="mut">(does the orthogonal signal earn its keep? tilt=0 is the control)</span>';
+      ['none','low(+)','high(++)'].forEach(function(t){if(!gc.byTilt[t])return;var s=gc.byTilt[t],n=s.w+s.l,ci=wilson(s.w,n);
+        h+='<br>&nbsp;&nbsp;tilt '+t+': '+(ci.p*100).toFixed(0)+'% <span class="mut">[CI '+(ci.lo*100).toFixed(0)+'‚Äì'+(ci.hi*100).toFixed(0)+'] ¬∑ n='+n+'</span>'+(n<20?' <span style="color:var(--amb)">insufficient sample</span>':'');});
+    }
     h+='</div>';
   }else{
     h+='<div style="font-size:10px;margin-top:5px" class="mut">&#127891; Grade-vs-outcome (full population) fills as the evaluated set settles ‚Äî collider-free, unlike the gated table above.</div>';
