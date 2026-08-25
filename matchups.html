@@ -67,6 +67,11 @@ var K='me15_';
 // PRICE_MAX at GENERATION (before it reaches a board), not as a display toggle.
 var PRICE_MIN=-140, PRICE_MAX=150;
 function priceInBand(hr){return hr!=null&&hr>=PRICE_MIN&&hr<=PRICE_MAX;}
+// ME-45 ‚Äî ACE EXCLUSION. A hitter facing a season ace (opposing starter's SEASON xBA-against ‚â§ ACE_XBA_MAX,
+// with ‚â•ACE_MIN_STARTS) has ALL of his props rejected before any board ‚Äî the market knows most exactly there.
+// SEASON, never L3 (recent form must never unlock an ace). HITTER props only; pitcher K props are unaffected.
+var ACE_XBA_MAX=0.240, ACE_MIN_STARTS=5;
+function aceOut(h){var xba=h&&h.pSav&&h.pSav.xba,ss=h&&h.pit&&h.pit.kLayer&&h.pit.kLayer.seasonStarts;return xba!=null&&ss!=null&&ss>=ACE_MIN_STARTS&&xba<=ACE_XBA_MAX;}
 // ME-19 ‚Äî ONE probability everywhere = a blend of the player-rate model and the market fair, weight in
 // ONE place. modelP is matchup-BLIND (season rate only; see ME-28), so the market half is load-bearing ‚Äî
 // it is the only place matchup info (starter, park, slot) currently enters. Do NOT ship BLEND_W=1.0.
@@ -810,6 +815,7 @@ function logPlayEdges(hitters){
       var sec=pr[0],bp=pr[1];if(!bp||bp.line==null||!bp.mkt)return;
       rows.push({sec:sec,id:h.id,name:h.name,team:h.team,mkt:bp.mkt,line:bp.line,hr:bp.hr,grade:h.grade,score:h.score,park:h.park,spot:h.spot, // ME-04/15/38 ‚Äî grade + park + slot on every EVALUATED row
         model:bp.modelP,fair:bp.fair,blend:bp.blend,blend_notilt:bp.blendNoTilt,tilt:bp.tilt,tilt_preclip:bp.tiltPreClip,tilt_null:bp.tiltNull,hold:bp.hold, // ME-26/27/30
+        engine_lambda:hitterLambda(h.b,bp.mkt),market_lambda:marketLambda(bp.fair,bp.line),hand_lambda_l7:null, // ME-43 ‚Äî hand filled by operator
         edge_blend:bp.edgeBlend,edge_pure:bp.edgePure,edge_tilt_only:bp.edgeTiltOnly,edge_fair:bp.edgeFair,
         gated:bp.edgeBlend!=null&&bp.edgeBlend>=EDGE_GATE});
       if(sec==='top'){ // summarise once per player (the primary prop)
@@ -867,6 +873,38 @@ function gateSweep(){
   var lines=[0,0.01,0.02,0.03].map(function(t){return 'edge‚â•+'+(t*100).toFixed(0)+'pp: '+count(t,false)+' plays  (with no-tilt floor: '+count(t,true)+')';});
   console.log('[ME-41 gate sweep] from '+cand.length+' candidates:\n  '+lines.join('\n  '));
   return lines;
+}
+// ME-43 ‚Äî the operator fills hand_lambda_l7 on logged rows (his own L7 read). Once ‚â•10 are filled, this
+// prints mean(hand‚àímarket) and mean(hand‚àíengine) with n and SE. If hand sits on the market and consistently
+// BELOW the engine, ME-38 is real and the blend is inverting the edge; if both go to zero, ME-38 is noise.
+function lambdaReport(){
+  var pre=K+'playedges_',hm=[],he=[];
+  for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(k&&k.indexOf(pre)===0){var rec=sg(k.slice(K.length),null);
+    (rec&&rec.rows||[]).forEach(function(r){if(r.sec==='top'&&r.hand_lambda_l7!=null){if(r.market_lambda!=null)hm.push(r.hand_lambda_l7-r.market_lambda);if(r.engine_lambda!=null)he.push(r.hand_lambda_l7-r.engine_lambda);}});}}
+  if(hm.length<10){console.log('[ME-43] only '+hm.length+' hand Œª entered ‚Äî need ‚â•10 (ME-15 suppression). Fill hand_lambda_l7 on top rows.');return;}
+  function ms(a){var m=a.reduce(function(s,x){return s+x;},0)/a.length,sd=Math.sqrt(a.reduce(function(s,x){return s+(x-m)*(x-m);},0)/a.length);return{m:m,se:sd/Math.sqrt(a.length)};}
+  var a=ms(hm),b=ms(he);
+  console.log('[ME-43 Œª report, n='+hm.length+'] hand‚àímarket = '+(a.m>=0?'+':'')+a.m.toFixed(3)+' ¬± '+a.se.toFixed(3)+' ¬∑ hand‚àíengine = '+(b.m>=0?'+':'')+b.m.toFixed(3)+' ¬± '+b.se.toFixed(3));
+  return{n:hm.length,handMinusMarket:a,handMinusEngine:b};
+}
+// ME-44 ‚Äî "why isn't player X on the board?" as a lookup. FIRST gate failed, in order, with the number.
+function traceExclusions(name){
+  if(!D||!D.hitters){console.log('[traceExclusions] no board loaded');return;}
+  var rows=D.hitters.filter(function(h){return !name||(h.name||'').toLowerCase().indexOf((''+name).toLowerCase())>=0;}).map(function(h){
+    var bp=h.bestProp,gate,val='';
+    if(!h.props||!h.ladder||!h.ladder.all||!h.ladder.all.length){gate='NO_ODDS';}
+    else if(!bp){gate='PRICE_OUT_OF_BAND';val=(h.ladder.all[0]&&h.ladder.all[0].hr);}
+    else if(!h.spot){gate='NO_LINEUP_SPOT';}
+    else if(aceOut(h)){gate='ACE_OPPONENT';val=h.pSav&&h.pSav.xba;}
+    else if(h.grade==='D'){gate='GRADE_D';val=h.grade;}
+    else if(bp.edgeBlend==null||bp.edgeBlend<EDGE_GATE){gate='EDGE_BELOW_GATE';val=bp.edgeBlend;}
+    else if(bp.edgeNoTilt!=null&&bp.edgeNoTilt<0){gate='TILT_NEGATIVE';val=bp.edgeNoTilt;}
+    else if(pickLight(h)==='red'){gate='RED_LIGHT';val=h.confidence;}
+    else{gate='PASSED';}
+    return{player:h.name,opp:h.oppPitName||'',gate:gate,value:val};
+  });
+  if(console.table)console.table(rows);else console.log(JSON.stringify(rows,null,2));
+  return rows;
 }
 function edgeStat(gls,date,mkt){ // sum the settled stat over that date's game(s)
   var f=mkt==='batter_runs_scored'?'runs':mkt==='batter_rbis'?'rbi':mkt==='batter_home_runs'?'homeRuns':mkt==='batter_total_bases'?'totalBases':mkt==='batter_hits'?'hits':null;
@@ -960,6 +998,14 @@ function poissonOver(mu,line){
   if(mu<=0)return 0;var thresh=Math.floor(line)+1,cdf=0,term=Math.exp(-mu);
   for(var k=0;k<thresh;k++){cdf+=term;term*=mu/(k+1);}
   return Math.max(0,Math.min(1,1-cdf));
+}
+// ME-43 ‚Äî invert the de-vig fair probability through the Poisson: solve for the Œª the MARKET implies at this
+// line. poissonOver is monotonic in Œª, so a bisection converges. Lets the operator compare his own L7 Œª to
+// what the market and the engine each think, after ~30 plays instead of the ~380 a win-rate needs.
+function marketLambda(fair,line){
+  if(fair==null||fair<=0.01||fair>=0.99)return null;
+  var lo=0,hi=20;for(var i=0;i<44;i++){var mid=(lo+hi)/2;if(poissonOver(mid,line)<fair)lo=mid;else hi=mid;}
+  return Math.round((lo+hi)/2*1000)/1000;
 }
 // ME-29 ‚Äî a season-rate Poisson assumes events arrive one at a time, independently. CLUMPED markets break
 // that: a HR books a hit+run+RBI in the same instant, a double books 2 total bases at once. Measured on
@@ -1101,16 +1147,18 @@ function buildTarget(P,ps){
   var xba=ps?ps.xba:null,xslg=ps?ps.xslg:null,hh=ps?ps.hard_hit_percent:null,br=ps?ps.barrel_batted_rate:null,ev=ps?ps.exit_velocity_avg:null;
   var hardContact=(hh!=null&&hh>=42)||(xba!=null&&xba>=0.260)||(br!=null&&br>=8.5);
   var softContact=(hh!=null&&hh<36)&&(xba==null||xba<=0.235);
-  var manyHits=hitsPS>=7,fewHits=hitsPS<=5;
-  var cls=manyHits&&softContact?'MIRAGE':fewHits&&hardContact?'DUE':(manyHits||hardContact)?'TARGET':'NEUTRAL';
   var lineLags=(KL.whipDelta!=null&&KL.whipDelta>=0.15)||(seasonHPS!=null&&hitsPS>=seasonHPS+1.5);
   var whiffDrop=KL.k9Delta!=null&&KL.k9Delta<=-1.0;
   var hw=null,hwGap=0;
   if(P.handSplit&&P.handSplit.vL&&P.handSplit.vR){var d=P.handSplit.vL.ops-P.handSplit.vR.ops;hwGap=Math.round(Math.abs(d)*1000)/1000;hw=d>=0.030?'LHB':d<=-0.030?'RHB':'even';}
-  var sortKey=hitsPS;
-  if(cls==='MIRAGE')sortKey-=1.5;if(cls==='DUE')sortKey+=1.2;if(hardContact&&cls!=='DUE')sortKey+=0.4;if(lineLags)sortKey+=0.3;
+  // ME-46 ‚Äî ONE number: projected hits allowed = recent form REGRESSED toward the season baseline (L3-led,
+  // season anchor). This IS the sort. No +DUE / ‚àíMIRAGE / +hardContact / +lineLags add-ons ‚Äî those were a
+  // within-pitcher signal (DUE) being used as a between-pitcher rank, which made "few hits lately" (an ACE
+  // property) a rank BOOST. hardContact/softContact/lineLags stay as DISPLAY tags only. Labels come FROM projHits.
+  var projHits=Math.round((0.7*hitsPS+0.3*(seasonHPS!=null?seasonHPS:hitsPS))*100)/100;
+  var sortKey=projHits; // cls assigned in a post-pass once the slate median of projHits is known
   return{name:P.name,throws:P.throws,reliable:P.reliable,hitsPS:hitsPS,hitsL3:KL.hitsL3,arr:arr,trend:trend,seasonHPS:seasonHPS,nStarts:KL.nStarts,
-    cls:cls,hardContact:hardContact,softContact:softContact,xba:xba,xslg:xslg,hh:hh,br:br,ev:ev,
+    projHits:projHits,cls:'NEUTRAL',hardContact:hardContact,softContact:softContact,xba:xba,xslg:xslg,hh:hh,br:br,ev:ev,
     lineLags:lineLags,whiffDrop:whiffDrop,k9Delta:KL.k9Delta,whipDelta:KL.whipDelta,hw:hw,hwGap:hwGap,handSplit:P.handSplit,sortKey:sortKey};
 }
 // ‚îÄ‚îÄ PITCH-MIX FIT (spec 3.6 ‚Äî wired) ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
@@ -1326,7 +1374,13 @@ async function loadAll(){
       if(t){t.opp=x[1];t.oppId=x[2];t.game=g.awayTeam+' @ '+g.homeTeam;t.start=g.start;targets.push(t);}
     });
   });
-  targets.sort(function(a,b){return b.sortKey-a.sortKey;});
+  // ME-46 ‚Äî labels DERIVED from projHits (descriptions, not rank adjustments). TARGET = hittable vs
+  // tonight's field (projHits above the slate median); DUE/MIRAGE = which way his recent form regresses.
+  (function(){var ph=targets.map(function(t){return t.projHits;}).sort(function(a,b){return a-b;});
+    var med=ph.length?ph[Math.floor(ph.length/2)]:0;
+    targets.forEach(function(t){var L3=t.hitsPS;
+      t.cls=(t.projHits>=med&&ph.length>=3)?'TARGET':(t.projHits>L3+0.1?'DUE':t.projHits<L3-0.1?'MIRAGE':'NEUTRAL');});})();
+  targets.sort(function(a,b){return b.sortKey-a.sortKey;}); // sortKey = projHits, nothing added
   // hitters
   var jobs=[];
   games.forEach(function(g){
@@ -1645,9 +1699,13 @@ function boardData(){
   function endorsed(h){return pickLight(h)!=='red';}                               // ME-32 ‚Äî red = inputs we won't stand behind
   var held=[];
   function holdHit(h,bp){held.push({kind:'HIT',name:h.name,sub:(TEAM_ABBR[h.team]||h.team)+' vs '+(h.oppPitName||'TBD'),mkt:bp.label,edge:bp.edgeBlend,reason:pickWhy(h)||'thin or conflicting data'});}
-  var edgePool=D.hitters.filter(function(x){return x.edgeProp&&x.spot&&x.grade!=='D'&&passes(x.edgeProp);});
-  var contactPool=D.hitters.filter(function(x){return x.contactProp&&x.spot&&x.grade!=='D'&&passes(x.contactProp);});
-  var topPool=D.hitters.filter(function(x){return x.bestProp&&x.spot&&x.grade!=='D'&&passes(x.bestProp);}); // ME-32 ‚Äî keep LOW here so endorsed() can route it to HELD, not silently drop it
+  // ME-45 ‚Äî ace exclusion is a HARD filter at the pool: an ace-opposed hitter reaches no board section, and
+  // is not a HELD item either. Count what was removed, by pitcher. K props (below) are untouched.
+  var aceRem={};D.hitters.forEach(function(x){if(x.spot&&x.grade!=='D'&&aceOut(x)){var p=x.oppPitName||'?';aceRem[p]=(aceRem[p]||0)+1;}});
+  try{var at=Object.keys(aceRem);console.log('[ME-45 ace filter xBA‚â§'+ACE_XBA_MAX+'] removed '+at.reduce(function(a,p){return a+aceRem[p];},0)+' hitter'+(at.length?': '+at.map(function(p){return p+' √ó'+aceRem[p];}).join(', '):'s'));}catch(e){}
+  var edgePool=D.hitters.filter(function(x){return x.edgeProp&&x.spot&&x.grade!=='D'&&!aceOut(x)&&passes(x.edgeProp);});
+  var contactPool=D.hitters.filter(function(x){return x.contactProp&&x.spot&&x.grade!=='D'&&!aceOut(x)&&passes(x.contactProp);});
+  var topPool=D.hitters.filter(function(x){return x.bestProp&&x.spot&&x.grade!=='D'&&!aceOut(x)&&passes(x.bestProp);}); // ME-45 ace + ME-32 keep LOW for HELD routing
   var edge=edgePool.filter(endorsed).sort(function(a,b){return b.edgeProp.edgeBlend-a.edgeProp.edgeBlend;});
   var contact=contactPool.filter(endorsed).sort(function(a,b){return b.contactProp.edgeBlend-a.contactProp.edgeBlend;});
   var pitcher=(D.pitchers||[]).filter(function(p){return p.proj&&p.proj.ok&&p.proj.recommend&&!p.proj.marketFlag&&p.proj.confidence!=='LOW';}).sort(function(a,b){return (b.proj.edgePrice||0)-(a.proj.edgePrice||0);}); // ME-22/32
@@ -1664,7 +1722,7 @@ function boardData(){
   dropped.top=topPool.length-topHit.length;
   topHit.forEach(function(h){var bp=h.bestProp;
     var q=bp.edgeBlend!=null?bp.edgeBlend:-1;                                       // ME-21 ‚Äî rank on edge vs price, not likelihood
-    top.push({kind:'HIT',light:pickLight(h),name:h.name,sub:(TEAM_ABBR[h.team]||h.team)+' vs '+(h.oppPitName||'TBD'),game:h.game,bet:bp.label+' O'+bp.line+' '+(bp.hr>0?'+':'')+bp.hr,pct:Math.round(bp.blend*100),vp:bp.edgeBlend,vf:bp.edgeFair,metric:Math.round(bp.blend*100)+'% ¬∑ '+edgePair(bp.edgeBlend,bp.edgeFair),conf:h.confidence,flag:pickWhy(h),reason:hitReason(h),rank:q});});
+    top.push({kind:'HIT',light:pickLight(h),name:h.name,sub:(TEAM_ABBR[h.team]||h.team)+' vs '+(h.oppPitName||'TBD'),game:h.game,bet:bp.label+' O'+bp.line+' '+(bp.hr>0?'+':'')+bp.hr,pct:Math.round(bp.blend*100),vp:bp.edgeBlend,vf:bp.edgeFair,el:hitterLambda(h.b,bp.mkt),ml:marketLambda(bp.fair,bp.line),metric:Math.round(bp.blend*100)+'% ¬∑ '+edgePair(bp.edgeBlend,bp.edgeFair),conf:h.confidence,flag:pickWhy(h),reason:hitReason(h),rank:q});});
   pitcher.forEach(function(p){var pr=p.proj;
     var q=pr.edgePrice!=null?pr.edgePrice:-1;                                       // ME-21 ‚Äî same ruler, same sort
     top.push({kind:'K',light:pr.confidence==='HIGH'?'green':'yellow',name:p.name,sub:(TEAM_ABBR[p.team]||p.team)+' '+p.throws+'HP vs '+p.opp,game:p.game,bet:'Ks '+(pr.side==='Over'?'O':'U')+pr.line+(pr.hrPrice!=null?' '+(pr.hrPrice>0?'+':'')+pr.hrPrice:''),pct:null,vp:pr.edgePrice,vf:pr.edgeFair,metric:pr.edgePrice!=null?edgePair(pr.edgePrice,pr.edgeFair):'Œº '+pr.mu+' Ks',conf:pr.confidence,flag:pr.marketFlag,reason:'model '+pr.mu+' Ks',rank:q});});
@@ -1682,7 +1740,7 @@ function render(){
   // ‚îÄ‚îÄ üéØ PITCHER TARGETS ‚Äî "Is He Hittable?" (THE FRONT DOOR ‚Äî sorted by recent hits allowed) ‚îÄ‚îÄ
   if(D.targets&&D.targets.length){
     h+='<details class="card" style="border-color:var(--red)"><summary style="cursor:pointer;color:var(--red);font-size:13px;font-weight:800">&#127919; PITCHER TARGETS ‚Äî Is He Hittable? ('+D.targets.length+') <span class="mut" style="font-weight:400">‚Äî research input, not a decision list (tap to expand)</span></summary>';
-    h+='<div style="font-size:10px;margin-top:2px" class="mut">An INPUT, not a decision ‚Äî and sorted by recent HITS ALLOWED, the noisiest stat in the system (ME-08). Use it to understand WHY a hitter is on the decision list, not to pick from. Expand any arm for the Statcast confirmation (real vs mirage) and his weak side.</div>';
+    h+='<div style="font-size:10px;margin-top:2px" class="mut">An INPUT, not a decision ‚Äî sorted by <b>projected hits allowed</b> (recent form regressed toward the season baseline; ME-46). TARGET/DUE/MIRAGE are descriptions of that number, not rank boosts. Use it to understand WHY a hitter is on the decision list, not to pick from. Expand any arm for the Statcast confirmation and his weak side.</div>';
     D.targets.forEach(function(t,ix){h+=tcard(t,ix);});
     h+='</details>';
   }
@@ -1821,7 +1879,7 @@ function copyTop(){
   if(BD.top.length){
     t+='\nüèÜ TOP PICKS ‚Äî ranked by EDGE vs price (highest first) ¬∑ endorsed only (held listed below)\n';
     BD.top.forEach(function(pk){
-      t+=dotTxt(pk.light)+' ['+pk.kind+'] '+pk.name+' ('+pk.sub+') ‚Äî '+pk.bet+' | '+pk.metric+' ¬∑ '+pk.conf+'\n';
+      t+=dotTxt(pk.light)+' ['+pk.kind+'] '+pk.name+' ('+pk.sub+') ‚Äî '+pk.bet+' | '+pk.metric+' ¬∑ '+pk.conf+(pk.el!=null||pk.ml!=null?' | Œª eng '+(pk.el!=null?pk.el:'--')+' ¬∑ mkt '+(pk.ml!=null?pk.ml:'--')+' ¬∑ hand_L7 ____':'')+'\n'; // ME-43 columns
       if(pk.flag)t+='     ‚ö† '+stripTags(pk.flag)+'\n';
       if(pk.reason)t+='     why: '+pk.reason+'\n';
     });
