@@ -63,6 +63,10 @@ var MLB='https://statsapi.mlb.com/api/v1';
 var OWM_KEY='6a060c8de21d6f1a5cd9d6fed2b7a53b';
 var ODDS_KEY='e738de03c4b7e835c52b50e1a0b1c494'; // ONLY for game totals context (~2 credits/load)
 var K='me15_';
+// ME-16 ‚Äî price band, configured in ONE place. Reject anything worse than PRICE_MIN or longer than
+// PRICE_MAX at GENERATION (before it reaches a board), not as a display toggle.
+var PRICE_MIN=-140, PRICE_MAX=150;
+function priceInBand(hr){return hr!=null&&hr>=PRICE_MIN&&hr<=PRICE_MAX;}
 var STALE_MIN=30;          // auto re-pull grades + prices every 30m (matches the server cron)
 var PITCH_MIN_SEEN=50;     // hitter needs >=N pitches seen vs a type to trust his xSLG vs it
 var CONC=10;               // statsapi concurrency
@@ -70,7 +74,18 @@ var CONC=10;               // statsapi concurrency
 // ‚îÄ‚îÄ utils ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
 function sg(k,d){try{var v=localStorage.getItem(K+k);return v?JSON.parse(v):d;}catch(e){return d;}}
 function ss(k,v){try{localStorage.setItem(K+k,JSON.stringify(v));}catch(e){}}
-function todayStr(){return new Date().toISOString().slice(0,10);}
+// ME-17 ‚Äî slate date anchored to EASTERN (not UTC), so a refresh during night games doesn't jump to
+// tomorrow's card (midnight UTC = 8pm ET). Before 6 AM ET we stay on the prior day's slate so late
+// West-coast games settle on the right card. Computed ONCE per session (sticky) ‚Äî a plain refresh
+// reuses it; it only re-derives on a full page reload.
+function todayStr(){
+  if(window.__SLATE)return window.__SLATE;
+  var o={};new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',hour12:false}).formatToParts(new Date()).forEach(function(p){o[p.type]=p.value;});
+  var y=+o.year,m=+o.month,d=+o.day,h=+o.hour;
+  if(h<6){var dt=new Date(Date.UTC(y,m-1,d));dt.setUTCDate(dt.getUTCDate()-1);y=dt.getUTCFullYear();m=dt.getUTCMonth()+1;d=dt.getUTCDate();}
+  window.__SLATE=y+'-'+String(m).padStart(2,'0')+'-'+String(d).padStart(2,'0');
+  return window.__SLATE;
+}
 function slp(ms){return new Promise(function(r){setTimeout(r,ms);});}
 function toast(m){var t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(function(){t.classList.remove('show');},2600);}
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
@@ -546,6 +561,7 @@ function pickBestProp(pm,h,allowed){
   Object.keys(pm).forEach(function(mkt){
     if(allowed&&allowed.indexOf(mkt)<0)return;                                     // restrict to a market group
     var p=pm[mkt];if(!p||p.hr==null)return;
+    if(!priceInBand(p.hr))return;                                                 // ME-16 ‚Äî out-of-band never a play
     var imp=impliedP(p.hr);
     var lam=hitterLambda(h.b,mkt);
     var modelP=(lam!=null)?poissonOver(lam,p.line):null;                          // HIS rate ‚Üí P(clear line)
@@ -592,15 +608,22 @@ function propLadder(pm,h){
     if(mkt==='batter_hits_runs_rbis')score+=0.03;   // HRR: more paths ‚Üí prefer over TB
     if(mkt==='batter_total_bases')score-=0.02;       // TB: fewer paths ‚Üí demote vs HRR
     if(tier==='trap')score-=0.15;
-    rows.push({mkt:mkt,label:MKT_LABEL[mkt]||mkt,line:p.line,hr:p.hr,fair:p.fair,nBooks:p.nBooks,at:p.at,stale:p.stale,
+    rows.push({mkt:mkt,label:MKT_LABEL[mkt]||mkt,line:p.line,hr:p.hr,fair:p.fair,nBooks:p.nBooks,at:p.at,stale:p.stale,inBand:priceInBand(p.hr),
       modelP:modelP!=null?Math.round(modelP*1000)/1000:null,prob:Math.round(rankP*1000)/1000,likely:p.fair!=null?p.fair:modelP,value:value,ev:ev,tier:tier,note:note,score:score});
   });
   var main=rows.filter(function(r){return r.tier!=='dart';}).sort(function(a,b){return b.score-a.score;});
   var dart=rows.filter(function(r){return r.tier==='dart';});
-  return{primary:main[0]||null,main:main,dart:dart,all:rows.slice().sort(function(a,b){return b.score-a.score;})};
+  // ME-16 ‚Äî PRIMARY must be in the price band; out-of-band props still show on the menu, just never as the play.
+  var primary=main.filter(function(r){return r.inBand;})[0]||null;
+  return{primary:primary,main:main,dart:dart,all:rows.slice().sort(function(a,b){return b.score-a.score;})};
 }
 function attachProps(hitters,res){
   var props=res&&res.props||{},status=res&&res.status||{};
+  // ME-16 nightly band-cut log ‚Äî how many candidates each end removed, by market (two counts, separate)
+  var cut={below:{},above:{},belowN:0,aboveN:0};
+  Object.keys(props).forEach(function(nm){var pm=props[nm];Object.keys(pm).forEach(function(mkt){var hr=pm[mkt]&&pm[mkt].hr;if(hr==null)return;if(hr<PRICE_MIN){cut.below[mkt]=(cut.below[mkt]||0)+1;cut.belowN++;}else if(hr>PRICE_MAX){cut.above[mkt]=(cut.above[mkt]||0)+1;cut.aboveN++;}});});
+  try{console.log('[ME-16 price band '+PRICE_MIN+'..+'+PRICE_MAX+'] removed '+cut.belowN+' worse-than-'+PRICE_MIN+' ('+JSON.stringify(cut.below)+') and '+cut.aboveN+' longer-than-+'+PRICE_MAX+' ('+JSON.stringify(cut.above)+')');}catch(e){}
+  window.__bandCut=cut;
   hitters.forEach(function(h){
     var pm=props[h.name];h.props=pm||null;
     h.propFetch=status[h.game]||(pm?'ok':'no_event'); // ok | stale | failed | no_event
@@ -879,6 +902,7 @@ function projectK(P,oppSplit,kprop,ctx){
     else if(out.side==='Over'&&out.divergence>=1.5&&reliableLine){out.recommend=false;out.holdReason='model runs '+out.divergence.toFixed(1)+' K hot vs the line ‚Äî too far above market to trust (this profile lost on 8/21)';}
     else if(out.flagged){out.recommend=false;out.holdReason='recent-form flag ‚Äî low confidence, no auto-bet';}
     else if(out.edge!=null&&out.edge<0.02){out.recommend=false;out.holdReason='edge under 2pp ‚Äî inside the noise, not worth a play';} // min-edge floor
+    else if(out.hrPrice!=null&&!priceInBand(out.hrPrice)){out.recommend=false;out.holdReason='price '+(out.hrPrice>0?'+':'')+out.hrPrice+' outside the '+PRICE_MIN+'..+'+PRICE_MAX+' band';} // ME-16
   }
   return out;
 }
