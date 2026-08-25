@@ -109,6 +109,7 @@ function ipToInn(ip){var s=String(ip==null?'0':ip).split('.');var whole=parseInt
 function capEra(e){if(e==null||isNaN(e))return null;return Math.round(Math.max(0,Math.min(e,9))*100)/100;}
 var MIN_PITCHER_IP=20;  // below this, season ERA is small-sample noise -> anchor on Statcast, not ERA
 var MIN_PITCHER_G=4;    // and this many appearances
+var MIN_PITCHER_STARTS=5; // ME-11 ‚Äî below this many qualifying starts, a K ranking is a small-sample artifact (Jobe on 3) ‚Üí flag ‚Üí HELD
 var LG_K_PCT=0.220;     // MLB league strikeout rate (K per plate appearance) ‚Äî the Log5 baseline
 var K_MKT_WEIGHT=0.5;   // K-prop edge: keep this fraction of the model's disagreement with the sharp
                         // de-vig market (the rest is model noise) ‚Äî centers the board, kills phantom edges
@@ -189,7 +190,7 @@ function buildKLayer(gls,season){
   var seasonHitsPerStart=starts.length?Math.round(starts.reduce(function(a,x){return a+x.h;},0)/starts.length*10)/10:null;
   var hitsTrend='flat';
   if(recentStarts.length>=4){var r2h=(recentStarts[recentStarts.length-1].h+recentStarts[recentStarts.length-2].h)/2,pri=recentStarts.slice(0,-2).reduce(function(a,x){return a+x.h;},0)/(recentStarts.length-2);if(r2h>=pri+1.5)hitsTrend='worsening';else if(r2h<=pri-1.5)hitsTrend='improving';}
-  return{kGames:games.slice(-5),qStarts:qual.length,
+  return{kGames:games.slice(-5),qStarts:qual.length,seasonStarts:starts.length, // ME-11 ‚Äî season starts (qStarts is last-3 only, max 3)
     hitsL3:hitsL3,hitsL5:hitsL5,hitsArr:hitsArr,hitsPerStart:hitsPerStart,seasonHitsPerStart:seasonHitsPerStart,hitsTrend:hitsTrend,nStarts:recentStarts.length,
     k_per_game_L3:k_per_game_L3,k9_L3:k9_L3,avg_ip_L3:avg_ip_L3,whip_L7:whip_L7,recent_kpct:recent_kpct,
     season_kpct:season.kpct,season_era:season.era,season_whip:season.whip,season_k9:season.k9,
@@ -551,12 +552,15 @@ function contextTilt(h,mkt){
     if(kl.status==='returning_from_IL')add('off_il_line_lags',0.012,'pitcher just off IL ‚Äî line lags');
     if(kl.r3&&kl.trajectory_direction==='worse')add('pitcher_trending_worse',0.010,'pitcher trending worse than his season line');
   }
-  var t=Object.keys(byTag).reduce(function(a,k){return a+byTag[k];},0);
-  t=Math.max(-0.045,Math.min(0.05,t)); // orthogonal or not, a model doesn't beat a sharp market by >5pp
-  // tags present (positive contributors) + primary (biggest) ‚Äî persisted with the play for per-signal QA
+  var preClip=Object.keys(byTag).reduce(function(a,k){return a+byTag[k];},0);       // ME-27 ‚Äî log the pre-cap value (the cap is binding; 4 plays sat exactly on it 8/25)
+  var t=Math.max(-0.045,Math.min(0.05,preClip)); // orthogonal or not, a model doesn't beat a sharp market by >5pp
+  // ME-27 ‚Äî null Statcast is a SILENT failure: with no batter luck-gap AND no pitch-mix AND no pitcher Savant,
+  // tilt can only see the IL/trajectory flags. Mark it so the row is flagged/counted, not read as "no edge".
+  var nullStatcast=!(h.lg&&h.lg.sum!=null)&&!(h.mix&&h.mix.fit!=null)&&!h.pSav;
   var tags=[],primary=null;
   Object.keys(byTag).forEach(function(k){if(byTag[k]>0){tags.push(k);if(!primary||byTag[k]>byTag[primary])primary=k;}});
-  return{tilt:Math.round(t*1000)/1000,why:why,tags:tags,primary:primary};
+  if(!why.length)why=[nullStatcast?'no Statcast yet ‚Äî orthogonal signal unavailable':'no orthogonal edge ‚Äî model vs market only']; // ME-27 ‚Äî kill the "context lean" placeholder
+  return{tilt:Math.round(t*1000)/1000,preClip:Math.round(preClip*1000)/1000,nullStatcast:nullStatcast,why:why,tags:tags,primary:primary};
 }
 // ME-19 ‚Äî THE single probability function. Every section derives its number here, so the same
 // (player, market, line, price) can never show two different probabilities. Also emits ME-26's three
@@ -566,12 +570,18 @@ function propProb(p,h,mkt){
   var lam=hitterLambda(h.b,mkt);
   var modelP=(lam!=null)?poissonCorr(mkt,lam,p.line):null;              // ME-29 de-biased Poisson (still matchup-BLIND ‚Äî ME-28)
   var fair=(p.fair!=null)?p.fair:null;                                  // de-vig market fair
-  var blend=modelBlend(modelP,fair);                                   // BLEND_W¬∑model + (1‚àíBLEND_W)¬∑fair
+  var core=modelBlend(modelP,fair);                                    // BLEND_W¬∑model + (1‚àíBLEND_W)¬∑fair (no tilt)
   var ct=contextTilt(h,mkt),tilt=ct.tilt;
-  var tiltP=(fair!=null)?Math.max(0.03,Math.min(0.97,fair+tilt)):null; // fair nudged by the orthogonal tilt
-  return {modelP:modelP!=null?Math.round(modelP*1000)/1000:null, fair:fair, blend:blend!=null?Math.round(blend*1000)/1000:null,
-    tilt:tilt, tiltP:tiltP!=null?Math.round(tiltP*1000)/1000:null, tiltTags:ct.tags, tiltWhy:ct.why, tiltPrimary:ct.primary,
+  // ME-27 ‚Äî the orthogonal tilt is the ONE non-price-derived signal. Fold it INTO the number (ME-32: a value
+  // opinion belongs inside the single number, not as a dot beside it), so it reaches EVERY section, not just Edge.
+  var blend=(core!=null)?Math.max(0.03,Math.min(0.97,core+tilt)):core;
+  var tiltP=(fair!=null)?Math.max(0.03,Math.min(0.97,fair+tilt)):null; // fair nudged by the orthogonal tilt (for edge_tilt_only)
+  var imp=impliedP(p.hr);
+  return {modelP:modelP!=null?Math.round(modelP*1000)/1000:null, fair:fair, blendNoTilt:core!=null?Math.round(core*1000)/1000:null,
+    blend:blend!=null?Math.round(blend*1000)/1000:null, hold:(fair!=null&&imp!=null)?Math.round((imp-fair)*1000)/1000:null, // ME-30 ‚Äî vig on this row
+    tilt:tilt, tiltP:tiltP!=null?Math.round(tiltP*1000)/1000:null, tiltTags:ct.tags, tiltWhy:ct.why, tiltPrimary:ct.primary, tiltPreClip:ct.preClip, tiltNull:ct.nullStatcast,
     edge_blend:edgeVsPrice(blend,p.hr), edge_pure:edgeVsPrice(modelP,p.hr), edge_tilt_only:edgeVsPrice(tiltP,p.hr),
+    edge_notilt:edgeVsPrice(core,p.hr), // ME-36 ‚Äî edge WITHOUT tilt; the gate requires this ‚â•0 so an unmeasured tilt can't qualify a play alone
     edge_fair:(blend!=null&&fair!=null)?Math.round((blend-fair)*1000)/1000:null}; // ME-22 ‚Äî the second ruler (our prob vs de-vig fair)
 }
 // Pick the BEST prop across EVERY open market for this hitter ‚Äî driven by the PLAYER'S OWN production:
@@ -604,7 +614,7 @@ function pickBestProp(pm,h,allowed){
     var score=tilt*130+affinity*9+likely*7+(value!=null?value*40:0)+fitB*2-longshotPen;
     var rec={mkt:mkt,label:MKT_LABEL[mkt]||mkt,line:p.line,hr:p.hr,fair:p.fair,nBooks:p.nBooks,at:p.at,stale:p.stale,
       value:value,likely:Math.round(likely*1000)/1000,modelP:pp.modelP,affinity:Math.round(affinity*100)/100,
-      blend:pp.blend,edgeBlend:pp.edge_blend,edgePure:pp.edge_pure,edgeTiltOnly:pp.edge_tilt_only,edgeFair:pp.edge_fair, // ME-19/ME-26/ME-22
+      blend:pp.blend,blendNoTilt:pp.blendNoTilt,edgeBlend:pp.edge_blend,edgePure:pp.edge_pure,edgeTiltOnly:pp.edge_tilt_only,edgeFair:pp.edge_fair,edgeNoTilt:pp.edge_notilt,hold:pp.hold,tiltPreClip:pp.tiltPreClip,tiltNull:pp.tiltNull, // ME-19/26/22/27/30
       tilt:tilt,edgeP:edgeP!=null?Math.round(edgeP*1000)/1000:null,edgeWhy:ct.why,edgeTags:ct.tags,edgePrimary:ct.primary,score:score};
     ranked.push(rec);
     if(score>bs){bs=score;best=rec;}
@@ -637,7 +647,7 @@ function propLadder(pm,h){
     if(mkt==='batter_total_bases')score-=0.02;       // TB: fewer paths ‚Üí demote vs HRR
     if(tier==='trap')score-=0.15;
     rows.push({mkt:mkt,label:MKT_LABEL[mkt]||mkt,line:p.line,hr:p.hr,fair:p.fair,nBooks:p.nBooks,at:p.at,stale:p.stale,inBand:priceInBand(p.hr),
-      modelP:pp.modelP,prob:Math.round(rankP*1000)/1000,blend:pp.blend,edgeBlend:pp.edge_blend,edgePure:pp.edge_pure,edgeTiltOnly:pp.edge_tilt_only,edgeFair:pp.edge_fair, // ME-19/ME-26/ME-22
+      modelP:pp.modelP,prob:Math.round(rankP*1000)/1000,blend:pp.blend,blendNoTilt:pp.blendNoTilt,edgeBlend:pp.edge_blend,edgePure:pp.edge_pure,edgeTiltOnly:pp.edge_tilt_only,edgeFair:pp.edge_fair,edgeNoTilt:pp.edge_notilt,hold:pp.hold,tiltPreClip:pp.tiltPreClip,tiltNull:pp.tiltNull, // ME-19/26/22/27/30
       likely:p.fair!=null?p.fair:modelP,value:value,ev:ev,tier:tier,note:note,score:score});
   });
   var main=rows.filter(function(r){return r.tier!=='dart';}).sort(function(a,b){return b.score-a.score;});
@@ -786,25 +796,32 @@ async function settleKProjections(){
 var SIGNAL_LABEL={luck_gap:'Luck gap',pitch_mix_fit:'Pitch-mix fit',pitcher_squared_up:'Pitcher squared-up',off_il_line_lags:'Off-IL (line lags)',pitcher_trending_worse:'Pitcher trending worse',none:'(no tag)'};
 function logEdgePlays(hitters){
   var recs=(hitters||[]).filter(function(h){return h.edgeProp&&h.edgeProp.tilt>=0.035&&h.spot&&h.grade!=='D'&&h.edgeProp.line!=null&&h.edgeProp.mkt;})
-    .map(function(h){var bp=h.edgeProp;return{id:h.id,name:h.name,mkt:bp.mkt,line:bp.line,hr:bp.hr,tilt:bp.tilt,light:pickLight(h),tags:bp.edgeTags||[],primary:bp.edgePrimary||'none',opp:h.oppPitName||''};});
+    .map(function(h){var bp=h.edgeProp;return{id:h.id,name:h.name,mkt:bp.mkt,line:bp.line,hr:bp.hr,tilt:bp.tilt,light:pickLight(h),tags:bp.edgeTags||[],primary:bp.edgePrimary||'none',opp:h.oppPitName||'',grade:h.grade,score:h.score,edge:bp.edgeBlend};}); // ME-04 ‚Äî grade + edge on every logged row
   if(recs.length)ss('eproj_'+todayStr(),recs);
 }
 // ME-26 ‚Äî log all THREE candidate edges on every surfaced row (blend / pure-model / tilt-only), across
 // all three market-views, for every hitter ‚Äî gated or not. Free at write time; in a month it lets us
 // pick the weight on evidence (CLV/results) instead of argument. One record per slate.
 function logPlayEdges(hitters){
-  var rows=[];
+  var rows=[],holdByMkt={},nullTilt=0;
   (hitters||[]).forEach(function(h){
     if(!h.spot||h.grade==='D')return;
     [['top',h.bestProp],['edge',h.edgeProp],['contact',h.contactProp]].forEach(function(pr){
       var sec=pr[0],bp=pr[1];if(!bp||bp.line==null||!bp.mkt)return;
-      rows.push({sec:sec,id:h.id,name:h.name,team:h.team,mkt:bp.mkt,line:bp.line,hr:bp.hr,
-        model:bp.modelP,fair:bp.fair,blend:bp.blend,tilt:bp.tilt,
-        edge_blend:bp.edgeBlend,edge_pure:bp.edgePure,edge_tilt_only:bp.edgeTiltOnly,
+      rows.push({sec:sec,id:h.id,name:h.name,team:h.team,mkt:bp.mkt,line:bp.line,hr:bp.hr,grade:h.grade,score:h.score, // ME-04/15 ‚Äî grade on every EVALUATED row (population, not just bet)
+        model:bp.modelP,fair:bp.fair,blend:bp.blend,blend_notilt:bp.blendNoTilt,tilt:bp.tilt,tilt_preclip:bp.tiltPreClip,tilt_null:bp.tiltNull,hold:bp.hold, // ME-26/27/30
+        edge_blend:bp.edgeBlend,edge_pure:bp.edgePure,edge_tilt_only:bp.edgeTiltOnly,edge_fair:bp.edgeFair,
         gated:bp.edgeBlend!=null&&bp.edgeBlend>=EDGE_GATE});
+      if(sec==='top'){ // summarise once per player (the primary prop)
+        if(bp.hold!=null){if(!holdByMkt[bp.mkt])holdByMkt[bp.mkt]={sum:0,n:0};holdByMkt[bp.mkt].sum+=bp.hold;holdByMkt[bp.mkt].n++;}
+        if(bp.tiltNull)nullTilt++;
+      }
     });
   });
   if(rows.length)ss('playedges_'+todayStr(),{at:Date.now(),blend_w:BLEND_W,gate:EDGE_GATE,rows:rows});
+  // ME-30 ‚Äî hold (vig) per market: the price band constrains price, not vig. A max-hold filter may do more work.
+  var holdTxt=Object.keys(holdByMkt).map(function(m){return m.replace('batter_','')+' '+(holdByMkt[m].sum/holdByMkt[m].n*100).toFixed(1)+'pp';}).join(' ¬∑ ');
+  try{console.log('[ME-30 avg hold/market] '+(holdTxt||'‚Äî')+' ¬∑ [ME-27 tilt collapsed on null Statcast] '+nullTilt+' plays');}catch(e){}
   assertOneProb(rows); // ME-19 acceptance ‚Äî no (player,mkt,line) may carry two different probabilities
 }
 // ME-19 test ‚Äî one probability function everywhere. Scans every surfaced row; if the same
@@ -844,7 +861,8 @@ async function settleEdgePlays(){
   var today=todayStr(),pre=K+'eproj_',dates=[];
   for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(k&&k.indexOf(pre)===0){var d=k.slice(pre.length);if(d<today)dates.push(d);}}
   if(!dates.length)return sg('ecalib',null);
-  var cal=sg('ecalib',{bySignal:{},byType:{},byLight:{},n:0,w:0,l:0,u:0,recent:[]});
+  var cal=sg('ecalib',{bySignal:{},byType:{},byLight:{},byGrade:{},n:0,w:0,l:0,u:0,recent:[]}); // ME-04 ‚Äî byGrade bucket
+  if(!cal.byGrade)cal.byGrade={};  // ME-04 ‚Äî backfill for calibrations logged before this ticket
   for(var di=0;di<dates.length;di++){
     var date=dates[di],proj=sg('eproj_'+date,null);if(!proj||!proj.length){localStorage.removeItem(K+'eproj_'+date);continue;}
     await pool(proj,async function(pr){
@@ -860,6 +878,7 @@ async function settleEdgePlays(){
         var typ=pr.mkt==='batter_home_runs'?'HR':pr.mkt==='batter_rbis'?'RBI':pr.mkt==='batter_runs_scored'?'Runs':'Other';
         var b2=ecB(cal.byType,typ);win?b2.w++:b2.l++;b2.u+=units;
         var b3=ecB(cal.byLight,pr.light||'red');win?b3.w++:b3.l++;b3.u+=units;
+        var b4=ecB(cal.byGrade,pr.grade||'?');win?b4.w++:b4.l++;b4.u+=units;         // ME-04 ‚Äî bucket by matchup grade
         cal.recent.unshift({name:pr.name,date:date,type:typ,line:pr.line,act:stat,win:win,primary:pr.primary,tags:pr.tags,light:pr.light,opp:pr.opp,units:Math.round(units*100)/100});
         if(cal.recent.length>80)cal.recent.pop();
         pr._done=true;
@@ -870,6 +889,49 @@ async function settleEdgePlays(){
     else ss('eproj_'+date,proj);
   }
   ss('ecalib',cal);return cal;
+}
+// ME-15 ‚Äî settle ANY market's over from a game log (population settling, not just the edge markets edgeStat covers).
+function statForMkt(gls,date,mkt){
+  var g=gls.filter(function(x){return x.date===date;});if(!g.length)return null;
+  function sum(f){return g.reduce(function(a,x){return a+(parseInt(x.stat[f])||0);},0);}
+  if(mkt==='batter_hits')return sum('hits');
+  if(mkt==='batter_total_bases')return sum('totalBases');
+  if(mkt==='batter_runs_scored')return sum('runs');
+  if(mkt==='batter_rbis')return sum('rbi');
+  if(mkt==='batter_home_runs')return sum('homeRuns');
+  if(mkt==='batter_doubles')return sum('doubles');
+  if(mkt==='batter_singles')return Math.max(0,sum('hits')-sum('doubles')-sum('triples')-sum('homeRuns'));
+  if(mkt==='batter_hits_runs_rbis')return sum('hits')+sum('runs')+sum('rbi');
+  return null;
+}
+// ME-15 ‚Äî Wilson score interval (95%). n + CI on every calibration claim; suppress verdicts below min sample.
+function wilson(w,n){if(!n)return{p:0,lo:0,hi:1,n:0};var z=1.96,p=w/n,d=1+z*z/n,c=p+z*z/(2*n),m=z*Math.sqrt(p*(1-p)/n+z*z/(4*n*n));return{p:p,lo:Math.max(0,(c-m)/d),hi:Math.min(1,(c+m)/d),n:n};}
+// ME-15 ‚Äî GRADE CALIBRATION over the WHOLE EVALUATED POPULATION, not just plays that cleared the gate.
+// ME-04's byGrade table conditions on gate-passing (selected on edge) while measuring grade ‚Äî a collider.
+// This settles every evaluated hitter's primary prop (bet or not) so "does grade order outcomes?" is answerable.
+async function settlePlayEdges(){
+  var today=todayStr(),pre=K+'playedges_',dates=[];
+  for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(k&&k.indexOf(pre)===0){var d=k.slice(pre.length);if(d<today)dates.push(d);}}
+  if(!dates.length)return sg('gcalib',null);
+  var cal=sg('gcalib',{byGrade:{},n:0,w:0,l:0});if(!cal.byGrade)cal.byGrade={};
+  var fetched=0,MAX=25; // cap fetches per load; drain the backlog across loads
+  for(var di=0;di<dates.length&&fetched<MAX;di++){
+    var date=dates[di],rec=sg('playedges_'+date,null);
+    if(!rec||!rec.rows){localStorage.removeItem(K+'playedges_'+date);continue;}
+    var tops=rec.rows.filter(function(r){return r.sec==='top';}); // one primary prop per hitter = the population
+    for(var ri=0;ri<tops.length&&fetched<MAX;ri++){var r=tops[ri];
+      if(r._done||r.line==null||!r.mkt||r.id==null)continue;
+      var gl=await apiFetch(MLB+'/people/'+r.id+'/stats?stats=gameLog&group=hitting&season='+SEASON+'&sportId=1');fetched++;
+      var gls=gl&&gl.stats&&gl.stats[0]&&gl.stats[0].splits||[];
+      var stat=statForMkt(gls,date,r.mkt);
+      if(stat!=null){var win=stat>r.line;cal.n++;win?cal.w++:cal.l++;
+        var g=r.grade||'?';if(!cal.byGrade[g])cal.byGrade[g]={w:0,l:0};win?cal.byGrade[g].w++:cal.byGrade[g].l++;r._done=true;}
+    }
+    var allDone=tops.every(function(r){return r._done||r.id==null;});
+    if(allDone||date<new Date(Date.now()-7*864e5).toISOString().slice(0,10))localStorage.removeItem(K+'playedges_'+date);
+    else ss('playedges_'+date,rec);
+  }
+  ss('gcalib',cal);return cal;
 }
 // Log5 / odds-ratio: combine pitcher K% and opponent K% against the league baseline.
 function log5K(pit,opp,lg){var num=pit*opp/lg,den=num+((1-pit)*(1-opp)/(1-lg));return den>0?num/den:pit;}
@@ -985,6 +1047,7 @@ function projectK(P,oppSplit,kprop,ctx){
     if(out.lineDisagree)flags.push('books disagree on the line (spread '+out.lineSpread+' K) ‚Äî verify');
     // ‚îÄ‚îÄ DIVERGENCE ‚Üí CONFIDENCE (symmetric): oversized edge = likely model/line error, not value ‚îÄ‚îÄ
     if(out.edge!=null&&out.edge>=0.10)flags.push('model runs '+(out.side==='Over'?'HOT':'COLD')+' vs market ('+(out.edge*100).toFixed(0)+'pp) ‚Äî verify');
+    if(L.seasonStarts!=null&&L.seasonStarts<MIN_PITCHER_STARTS)flags.push('thin sample ‚Äî '+L.seasonStarts+' start'+(L.seasonStarts===1?'':'s')+' this season (need '+MIN_PITCHER_STARTS+') ‚Äî ranking is a small-sample artifact'); // ME-11
     out.marketFlag=flags.length?flags.join(' ¬∑ '):null;
     if(flags.length)out.confidence='LOW';
     // ‚îÄ‚îÄ recommendation gates ‚îÄ‚îÄ
@@ -1310,7 +1373,8 @@ async function loadAll(){
   logKProjections(pitchers);logEdgePlays(hitters);logPlayEdges(hitters); // instrument: K + edge plays (tagged) + ME-26 three-edge log on every row
   var kcal=null;try{kcal=await settleKProjections();}catch(e){} // settle prior nights vs real box-score Ks
   var ecal=null;try{ecal=await settleEdgePlays();}catch(e){}     // settle prior edge plays, grouped by signal
-  D={hitters:hitters,games:games,pitchers:pitchers,targets:targets,kcalib:kcal,ecalib:ecal,generatedAt:new Date(),loadSec:Math.round((Date.now()-t0)/1000),propsAt:propRes.at,serverDown:propRes.serverDown};
+  var gcal=null;try{gcal=await settlePlayEdges();}catch(e){}     // ME-15 ‚Äî settle the WHOLE evaluated population, bucketed by grade
+  D={hitters:hitters,games:games,pitchers:pitchers,targets:targets,kcalib:kcal,ecalib:ecal,gcalib:gcal,generatedAt:new Date(),loadSec:Math.round((Date.now()-t0)/1000),propsAt:propRes.at,serverDown:propRes.serverDown};
   render();
   setS(hitters.length+' matchup cards ‚Ä¢ '+games.length+' games ‚Ä¢ built in '+D.loadSec+'s');
   freshLine();
@@ -1337,13 +1401,17 @@ function fRow(f){
 // ‚îÄ‚îÄ PLAIN-ENGLISH TRAFFIC LIGHT ‚Äî replaces the CONFIRM/CONFLICT jargon ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
 // üü¢ top play ¬∑ üü° playable (read the note) ¬∑ üî¥ weak/pass. A pitcher cross-check
 // or thin data knocks a pick down one light and says why in plain words.
+// ME-32 ‚Äî the dot is DATA-CONFIDENCE, not a bet/no-bet verdict. Value lives in the edge number; a colour
+// dot that says "lean pass" next to a positive gated edge is the card disowning its own play. So: red =
+// inputs the system won't stand behind (thin/conflicting/low-confidence) ‚Üí those don't render as picks at
+// all (they move to HELD); yellow = lineup still projected; green = confirmed and clean.
 function pickLight(h){
-  var base=h.grade==='A'?2:h.grade==='B'?1:0;
-  if(h.pitchTag==='CONFLICT'||h.confidence==='LOW')base=Math.max(0,base-1);
-  return base===2?'green':base===1?'yellow':'red';
+  if(h.confidence==='LOW'||h.pitchTag==='CONFLICT')return 'red';
+  if(!h.confirmed)return 'yellow';
+  return 'green';
 }
 function lightDot(l){return l==='green'?'&#128994;':l==='yellow'?'&#128993;':'&#128308;';}
-function lightWord(l){return l==='green'?'TOP PLAY':l==='yellow'?'PLAYABLE':'WEAK ‚Äî LEAN PASS';}
+function lightWord(l){return l==='green'?'CONFIRMED ¬∑ clean data':l==='yellow'?'PROJECTED ¬∑ lineup not posted':'HELD ¬∑ thin or conflicting data';}
 function lightCol(l){return l==='green'?'var(--grn)':l==='yellow'?'var(--amb)':'var(--red)';}
 function pickWhy(h){ // one plain-English sentence, or null when there's nothing to flag
   var pn=esc(h.oppPitName||'the pitcher');
@@ -1539,37 +1607,44 @@ function tcard(t,ix){
 }
 function tgt(ix){var el=document.getElementById('tc'+ix);if(el)el.classList.toggle('open');}
 function boardData(){
-  if(!D)return{edge:[],contact:[],pitcher:[],top:[],dropped:{edge:0,contact:0,top:0}};
-  // ME-20 ‚Äî GATE every recommending section on edge_vs_price (the blend vs the price you pay). No play
-  // below EDGE_GATE renders anywhere. Count what each section suppresses.
-  function passes(bp){return bp&&bp.edgeBlend!=null&&bp.edgeBlend>=EDGE_GATE;}
-  var edgePool=D.hitters.filter(function(x){return x.edgeProp&&x.spot&&x.grade!=='D';});
-  var contactPool=D.hitters.filter(function(x){return x.contactProp&&x.spot&&x.grade!=='D';});
-  var topPool=D.hitters.filter(function(x){return x.bestProp&&x.spot&&x.grade!=='D'&&x.confidence!=='LOW';});
-  var edge=edgePool.filter(function(x){return passes(x.edgeProp);}).sort(function(a,b){return b.edgeProp.edgeBlend-a.edgeProp.edgeBlend;});
-  var contact=contactPool.filter(function(x){return passes(x.contactProp);}).sort(function(a,b){return b.contactProp.edgeBlend-a.contactProp.edgeBlend;});
-  var pitcher=(D.pitchers||[]).filter(function(p){return p.proj&&p.proj.ok&&p.proj.recommend;}).sort(function(a,b){return (b.proj.edgePrice||0)-(a.proj.edgePrice||0);}); // ME-22 ‚Äî rank on edge_vs_price
+  if(!D)return{edge:[],contact:[],pitcher:[],top:[],held:[],dropped:{edge:0,contact:0,top:0}};
+  // ME-20 ‚Äî GATE every recommending section on edge_vs_price. ME-32 ‚Äî a play the system WON'T ENDORSE
+  // (red dot = thin/conflicting inputs) is not a pick either: it moves to HELD with its reason, never
+  // rendering as a positive-edge pick under a do-not-bet dot.
+  // ME-36 ‚Äî tilt is now load-bearing but UNMEASURED. A play must clear the gate AND at least break even
+  // WITHOUT tilt (edgeNoTilt‚â•0), so a maxed tilt can't qualify a play the model+market call ‚àíEV on their own.
+  // Relax this once edge_tilt_only reads positive over 50‚Äì100 graded plays.
+  function passes(bp){return bp&&bp.edgeBlend!=null&&bp.edgeBlend>=EDGE_GATE&&(bp.edgeNoTilt==null||bp.edgeNoTilt>=0);}
+  function endorsed(h){return pickLight(h)!=='red';}                               // ME-32 ‚Äî red = inputs we won't stand behind
+  var held=[];
+  function holdHit(h,bp){held.push({kind:'HIT',name:h.name,sub:(TEAM_ABBR[h.team]||h.team)+' vs '+(h.oppPitName||'TBD'),mkt:bp.label,edge:bp.edgeBlend,reason:pickWhy(h)||'thin or conflicting data'});}
+  var edgePool=D.hitters.filter(function(x){return x.edgeProp&&x.spot&&x.grade!=='D'&&passes(x.edgeProp);});
+  var contactPool=D.hitters.filter(function(x){return x.contactProp&&x.spot&&x.grade!=='D'&&passes(x.contactProp);});
+  var topPool=D.hitters.filter(function(x){return x.bestProp&&x.spot&&x.grade!=='D'&&passes(x.bestProp);}); // ME-32 ‚Äî keep LOW here so endorsed() can route it to HELD, not silently drop it
+  var edge=edgePool.filter(endorsed).sort(function(a,b){return b.edgeProp.edgeBlend-a.edgeProp.edgeBlend;});
+  var contact=contactPool.filter(endorsed).sort(function(a,b){return b.contactProp.edgeBlend-a.contactProp.edgeBlend;});
+  var pitcher=(D.pitchers||[]).filter(function(p){return p.proj&&p.proj.ok&&p.proj.recommend&&!p.proj.marketFlag&&p.proj.confidence!=='LOW';}).sort(function(a,b){return (b.proj.edgePrice||0)-(a.proj.edgePrice||0);}); // ME-22/32
+  var heldK=(D.pitchers||[]).filter(function(p){return p.proj&&p.proj.ok&&p.proj.recommend&&(p.proj.marketFlag||p.proj.confidence==='LOW');});
   var dropped={edge:edgePool.length-edge.length,contact:contactPool.length-contact.length,top:0};
   var top=[];
-  // TOP PICKS rank by HITTABLE-PITCHER √ó PROBABILITY (not by edge%). Sound contact props in soft-arm
-  // spots lead; Runs (our weakest prop) is downgraded; oversized/flagged edges and thin-data/unconfirmed
-  // players are demoted to the bottom (red) ‚Äî never #1.
+  // TOP PICKS rank by HITTABLE-PITCHER √ó PROBABILITY. Sound contact props in soft-arm spots lead; Runs is
+  // downgraded. Endorsed only ‚Äî held plays live in their own section below, not demoted-but-shown here.
   function hittability(h){var KL=h.pit&&h.pit.kLayer,b=0;if(!KL||KL.hitsPerStart==null)return 0;if(KL.hitsPerStart>=7)b+=0.06;else if(KL.hitsPerStart>=6)b+=0.03;if(h.pSav&&h.pSav.xslg!=null&&h.pSav.xslg>=0.44)b+=0.03;if(KL.hitsTrend==='worsening')b+=0.02;return b;}
   function propWt(mkt){return mkt==='batter_hits'?0.05:mkt==='batter_hits_runs_rbis'?0.045:mkt==='batter_total_bases'?0.03:mkt==='batter_singles'?0.03:mkt==='batter_runs_scored'?-0.05:0;} // lead Hits/TB/HRR, downgrade Runs
   function hitReason(h){var KL=h.pit&&h.pit.kLayer,p=[];if(KL&&KL.hitsPerStart!=null)p.push(KL.hitsPerStart+' H/start arm');if(h.pSav&&h.pSav.xslg!=null&&h.pSav.xslg>=0.44)p.push('gets squared up');if(h.b&&(h.b.hotCold==='HOT'||h.b.hotCold==='Warming'))p.push(h.b.hotCold.toLowerCase());if(h.lg&&h.lg.sum>=0.03)p.push('under-rewarded');return p.join(' ¬∑ ')||'solid matchup';}
-  // HITTER picks ‚Äî sound prop (ladder primary) in a hittable spot; SCREEN OUT thin-data/LOW-confidence.
-  var topHit=topPool.filter(function(h){return passes(h.bestProp);});
-  dropped.top=topPool.length-topHit.length;                                        // ME-20 ‚Äî negative/thin-edge picks suppressed
-  topHit.forEach(function(h){var bp=h.bestProp,flagged=!!pickWhy(h);
-    var q=(bp.blend!=null?bp.blend:(bp.likely||0.5))+hittability(h)+propWt(bp.mkt)-(flagged?0.30:0)-(h.confirmed?0:0.04);
-    top.push({kind:'HIT',light:flagged?'yellow':pickLight(h),name:h.name,sub:(TEAM_ABBR[h.team]||h.team)+' vs '+(h.oppPitName||'TBD'),bet:bp.label+' O'+bp.line+' '+(bp.hr>0?'+':'')+bp.hr,metric:Math.round(bp.blend*100)+'% ¬∑ '+edgePair(bp.edgeBlend,bp.edgeFair),conf:h.confidence,flag:pickWhy(h),reason:hitReason(h),rank:q});});
-  // K picks ‚Äî flagged / oversized-edge / LOW get DEMOTED to the bottom and shown red (never #1).
-  pitcher.forEach(function(p){var pr=p.proj,flagged=!!pr.marketFlag||pr.confidence==='LOW';
-    var q=0.45+(pr.confidence==='HIGH'?0.12:pr.confidence==='MEDIUM'?0.05:0)-(flagged?0.45:0);
-    top.push({kind:'K',light:flagged?'red':pr.confidence==='HIGH'?'green':'yellow',name:p.name,sub:(TEAM_ABBR[p.team]||p.team)+' '+p.throws+'HP vs '+p.opp,bet:'Ks '+(pr.side==='Over'?'O':'U')+pr.line+(pr.hrPrice!=null?' '+(pr.hrPrice>0?'+':'')+pr.hrPrice:''),metric:pr.edgePrice!=null?edgePair(pr.edgePrice,pr.edgeFair):'Œº '+pr.mu+' Ks',conf:pr.confidence,flag:pr.marketFlag,reason:'model '+pr.mu+' Ks',rank:q});});
+  topPool.forEach(function(h){if(!endorsed(h))holdHit(h,h.bestProp);});           // ME-32 ‚Äî won't-endorse ‚Üí HELD
+  var topHit=topPool.filter(endorsed);
+  dropped.top=topPool.length-topHit.length;
+  topHit.forEach(function(h){var bp=h.bestProp;
+    var q=bp.edgeBlend!=null?bp.edgeBlend:-1;                                       // ME-21 ‚Äî rank on edge vs price, not likelihood
+    top.push({kind:'HIT',light:pickLight(h),name:h.name,sub:(TEAM_ABBR[h.team]||h.team)+' vs '+(h.oppPitName||'TBD'),bet:bp.label+' O'+bp.line+' '+(bp.hr>0?'+':'')+bp.hr,metric:Math.round(bp.blend*100)+'% ¬∑ '+edgePair(bp.edgeBlend,bp.edgeFair),conf:h.confidence,flag:pickWhy(h),reason:hitReason(h),rank:q});});
+  pitcher.forEach(function(p){var pr=p.proj;
+    var q=pr.edgePrice!=null?pr.edgePrice:-1;                                       // ME-21 ‚Äî same ruler, same sort
+    top.push({kind:'K',light:pr.confidence==='HIGH'?'green':'yellow',name:p.name,sub:(TEAM_ABBR[p.team]||p.team)+' '+p.throws+'HP vs '+p.opp,bet:'Ks '+(pr.side==='Over'?'O':'U')+pr.line+(pr.hrPrice!=null?' '+(pr.hrPrice>0?'+':'')+pr.hrPrice:''),metric:pr.edgePrice!=null?edgePair(pr.edgePrice,pr.edgeFair):'Œº '+pr.mu+' Ks',conf:pr.confidence,flag:pr.marketFlag,reason:'model '+pr.mu+' Ks',rank:q});});
+  heldK.forEach(function(p){var pr=p.proj;held.push({kind:'K',name:p.name,sub:(TEAM_ABBR[p.team]||p.team)+' '+(p.throws||'?')+'HP vs '+p.opp,mkt:'Ks '+(pr.side==='Over'?'O':'U')+pr.line,edge:pr.edgePrice,reason:pr.marketFlag||'low confidence'});});
   top.sort(function(a,b){return b.rank-a.rank;});
-  try{console.log('[ME-20 gate +'+(EDGE_GATE*100).toFixed(1)+'pp edge_vs_price] suppressed ‚Äî edge:'+dropped.edge+' contact:'+dropped.contact+' top:'+dropped.top);}catch(e){}
-  return{edge:edge,contact:contact,pitcher:pitcher,top:top.slice(0,14),dropped:dropped};
+  try{console.log('[ME-20 gate +'+(EDGE_GATE*100).toFixed(1)+'pp] suppressed edge:'+dropped.edge+' contact:'+dropped.contact+' top:'+dropped.top+' ¬∑ [ME-32 held, not endorsed] '+held.length);}catch(e){}
+  return{edge:edge,contact:contact,pitcher:pitcher,top:top.slice(0,14),held:held,dropped:dropped};
 }
 function render(){
   if(!D)return;
@@ -1588,13 +1663,25 @@ function render(){
   var suppNote='<div style="font-size:10px;margin-top:3px" class="mut">Gate: only plays clearing <b>+'+(EDGE_GATE*100).toFixed(1)+'pp edge vs the price you pay</b> (blend model+market) show. Suppressed tonight ‚Äî top '+supp.top+' ¬∑ edge '+supp.edge+' ¬∑ contact '+supp.contact+'.</div>';
   if(BD.top.length){
     h+='<div class="card" style="border-color:var(--gld);background:rgba(234,179,8,.06)"><b style="color:var(--gld);font-size:14px">&#127942; TOP PICKS ‚Äî best of every board</b>';
-    h+='<div style="font-size:10px;margin-top:2px" class="mut">Ranked by hittable-pitcher √ó prop probability ‚Äî sound contact plays (Hits/TB/HRR) in soft-arm spots lead. Oversized/flagged edges and unconfirmed lineups are demoted to the bottom (red). Read the Pitcher Targets first.</div>'+suppNote;
+    h+='<div style="font-size:10px;margin-top:2px" class="mut">Ranked by <b>edge vs price</b> (highest first) ‚Äî one ruler for hitters and Ks. üü¢ confirmed &amp; clean ¬∑ üü° lineup still projected. Plays on thin/conflicting inputs are moved to HELD below, not shown here. Read the Pitcher Targets first.</div>'+suppNote;
     BD.top.forEach(function(pk){
       h+='<div style="font-size:12px;margin-top:6px;border-top:1px solid var(--bord);padding-top:5px">'+lightDot(pk.light)+' <span class="tag" style="background:rgba(167,139,250,.12);color:var(--pur);font-size:9px">'+pk.kind+'</span> <b>'+esc(pk.name)+'</b> <span class="mut">('+esc(pk.sub)+')</span><br><b style="color:var(--gld)">'+esc(pk.bet)+'</b> ¬∑ <b>'+esc(pk.metric)+'</b> ¬∑ '+esc(pk.conf)+(pk.flag?' ¬∑ <span style="color:var(--amb)">‚ö† '+esc((''+pk.flag).replace(/<[^>]+>/g,''))+'</span>':'')+(pk.reason?'<br><span style="font-size:10px" class="mut">'+esc(pk.reason)+'</span>':'')+'</div>';
     });
     h+='</div>';
   }else{
     h+='<div class="card" style="border-color:var(--gld);background:rgba(234,179,8,.06)"><b style="color:var(--gld);font-size:14px">&#127942; TOP PICKS</b><div style="font-size:11px;margin-top:4px" class="mut">No play clears the gate right now ‚Äî every candidate priced below the edge bar. That is the honest read, not an error.</div>'+suppNote+'</div>';
+  }
+  // ‚îÄ‚îÄ ‚ö† HELD ‚Äî cleared the edge gate but the system won't stand behind the inputs (ME-32) ‚îÄ‚îÄ
+  // ME-32/review ‚Äî HELD is a diagnostic RECORD of what the gate caught, not a bet list. Collapsed by
+  // default; each row leads with the REASON, the wager is not rendered as a placeable bet. Edge kept only
+  // so the gate itself can be audited in aggregate (if HELD fills with big edges nightly, the gate is off).
+  if(BD.held&&BD.held.length){
+    h+='<details class="card" style="border-color:var(--red)"><summary style="cursor:pointer;color:var(--red);font-size:13px;font-weight:800">&#9888; HELD ‚Äî '+BD.held.length+' play'+(BD.held.length===1?'':'s')+' the gate caught <span class="mut" style="font-weight:400">(tap to audit the gate ‚Äî not a bet list)</span></summary>';
+    h+='<div style="font-size:10px;margin-top:4px" class="mut">A record of what was filtered and why ‚Äî not money left on the table. If this fills with big edges every night, that means the GATE is miscalibrated (that is what the edge is here to check), not that these are plays. If you find yourself weighing one individually, the gate has stopped working.</div>';
+    BD.held.forEach(function(pk){
+      h+='<div style="font-size:11px;margin-top:6px;border-top:1px solid var(--bord);padding-top:5px"><span style="color:var(--amb)">&#9888; '+esc((''+pk.reason).replace(/<[^>]+>/g,''))+'</span><br><span class="mut">'+esc(pk.name)+' ¬∑ '+esc(pk.sub)+' ¬∑ '+pk.kind+' '+esc(pk.mkt)+(pk.edge!=null?' ¬∑ '+(pk.edge>=0?'+':'')+(pk.edge*100).toFixed(1)+'pp':'')+'</span></div>';
+    });
+    h+='</details>';
   }
   // ‚îÄ‚îÄ EDGE PLAYS ‚Äî Runs / RBI / HR (top of page so all boards are visible together) ‚îÄ‚îÄ
   var edgeList=BD.edge.slice(0,15);
@@ -1606,7 +1693,23 @@ function render(){
     var sigs=Object.keys(ec.bySignal).sort(function(a,b){return (ec.bySignal[b].u)-(ec.bySignal[a].u);});
     h+='<div style="font-size:10px;margin-top:5px;padding:5px 7px;border-radius:7px;background:rgba(34,197,94,.09)"><b>&#128202; EDGE CALIBRATION</b> ‚Äî '+ec.w+'‚Äì'+ec.l+', <b style="color:'+(ec.u>=0?'var(--grn)':'var(--red)')+'">'+(ec.u>=0?'+':'')+ec.u.toFixed(1)+'u</b> over '+ec.n+' settled'+(ec.n<25?' <span class="mut">(small sample ‚Äî watch, don‚Äôt cut yet)</span>':'');
     h+='<br><b>by signal:</b> '+sigs.map(function(sig){var s=ec.bySignal[sig];return (SIGNAL_LABEL[sig]||sig)+' <b>'+s.w+'‚Äì'+s.l+'</b> ('+(s.u>=0?'+':'')+s.u.toFixed(1)+'u)';}).join(' ¬∑ ');
-    h+='<br><b>by type:</b> '+Object.keys(ec.byType).map(function(ty){var s=ec.byType[ty];return ty+' '+s.w+'‚Äì'+s.l+' ('+(s.u>=0?'+':'')+s.u.toFixed(1)+'u)';}).join(' ¬∑ ')+' ¬∑ <b>by dot:</b> '+['green','yellow','red'].filter(function(l){return ec.byLight[l];}).map(function(l){var s=ec.byLight[l];return (l==='green'?'üü¢':l==='yellow'?'üü°':'üî¥')+s.w+'‚Äì'+s.l;}).join(' ')+'</div>';
+    h+='<br><b>by type:</b> '+Object.keys(ec.byType).map(function(ty){var s=ec.byType[ty];return ty+' '+s.w+'‚Äì'+s.l+' ('+(s.u>=0?'+':'')+s.u.toFixed(1)+'u)';}).join(' ¬∑ ')+' ¬∑ <b>by dot:</b> '+['green','yellow','red'].filter(function(l){return ec.byLight[l];}).map(function(l){var s=ec.byLight[l];return (l==='green'?'üü¢':l==='yellow'?'üü°':'üî¥')+s.w+'‚Äì'+s.l;}).join(' ');
+    // ME-04 ‚Äî grade among GATED plays only (kept, but labelled: this conditions on gate-passing = a collider).
+    var GBAND={A:'A (32+)',B:'B (22-31)',C:'C (12-21)',D:'D (<12)'};
+    var gr=['A','B','C','D'].filter(function(g){return ec.byGrade&&ec.byGrade[g];}).map(function(g){var s=ec.byGrade[g],n=s.w+s.l,hit=n?Math.round(s.w/n*100):0,roi=n?(s.u/n*100):0;return '<b>'+(GBAND[g]||g)+'</b> '+hit+'% ¬∑ '+(s.u>=0?'+':'')+s.u.toFixed(1)+'u ¬∑ '+(roi>=0?'+':'')+roi.toFixed(1)+'% ¬∑ n='+n;}).join(' &nbsp; ');
+    h+='<br><b>&#127891; BY GRADE (gated plays only)</b> <span class="mut">‚Äî conditions on the gate, can\'t answer \'does grade predict\'; see population table below</span><br>&nbsp;&nbsp;'+(gr||'<span class="mut">nothing settled yet</span>')+'</div>';
+  }
+  // ME-15 ‚Äî GRADE over the WHOLE evaluated population (the collider-free answer), with n + Wilson 95% CI.
+  var gc=D.gcalib;
+  if(gc&&gc.n>0){
+    h+='<div style="font-size:10px;margin-top:5px;padding:5px 7px;border-radius:7px;background:rgba(59,130,246,.10)"><b>&#127891; GRADE ‚Äî full evaluated population ('+gc.n+' settled)</b> ‚Äî does grade order the hit rate? Every evaluated hitter\'s primary prop, bet or not.';
+    var GB2={A:'A',B:'B',C:'C',D:'D'};
+    ['A','B','C','D'].forEach(function(g){if(!gc.byGrade[g])return;var s=gc.byGrade[g],n=s.w+s.l,ci=wilson(s.w,n);
+      var thin=n<20;
+      h+='<br>&nbsp;&nbsp;<b>'+GB2[g]+'</b> '+(ci.p*100).toFixed(0)+'% hit <span class="mut">[95% CI '+(ci.lo*100).toFixed(0)+'‚Äì'+(ci.hi*100).toFixed(0)+'] ¬∑ n='+n+'</span>'+(thin?' <span style="color:var(--amb)">insufficient sample</span>':'');});
+    h+='</div>';
+  }else{
+    h+='<div style="font-size:10px;margin-top:5px" class="mut">&#127891; Grade-vs-outcome (full population) fills as the evaluated set settles ‚Äî collider-free, unlike the gated table above.</div>';
   }
   edgeList.forEach(function(x){var bp=x.edgeProp;
     h+='<div style="font-size:12px;margin-top:6px"><b>'+esc(x.name)+'</b> <span class="mut">('+esc(TEAM_ABBR[x.team]||x.team)+' vs '+esc(x.oppPitName||'TBD')+')</span> ‚Äî <b style="color:var(--grn)">'+bp.label+' O'+bp.line+' '+(bp.hr>0?'+':'')+bp.hr+'</b> <span class="mut">'+Math.round(bp.blend*100)+'%</span> ¬∑ <b style="color:'+(bp.edgeBlend>=0?'var(--grn)':'var(--red)')+'">'+edgePair(bp.edgeBlend,bp.edgeFair)+'</b><br><span style="font-size:10px" class="mut">'+esc((bp.edgeWhy||[]).join(' ¬∑ '))+'</span></div>';
@@ -1675,12 +1778,17 @@ function copyTop(){
   }
   // ‚îÄ‚îÄ üèÜ TOP PICKS ‚Äî best of every board, ranked, auditable ‚îÄ‚îÄ
   if(BD.top.length){
-    t+='\nüèÜ TOP PICKS ‚Äî ranked by hittable-pitcher √ó probability (flagged/unconfirmed demoted to bottom)\n';
+    t+='\nüèÜ TOP PICKS ‚Äî ranked by EDGE vs price (highest first) ¬∑ endorsed only (held listed below)\n';
     BD.top.forEach(function(pk){
       t+=dotTxt(pk.light)+' ['+pk.kind+'] '+pk.name+' ('+pk.sub+') ‚Äî '+pk.bet+' | '+pk.metric+' ¬∑ '+pk.conf+'\n';
       if(pk.flag)t+='     ‚ö† '+stripTags(pk.flag)+'\n';
       if(pk.reason)t+='     why: '+pk.reason+'\n';
     });
+  }
+  // ‚îÄ‚îÄ ‚ö† HELD ‚Äî cleared the gate but not endorsed (ME-32) ‚îÄ‚îÄ
+  if(BD.held&&BD.held.length){
+    t+='\n‚ö† HELD ‚Äî '+BD.held.length+' caught by the gate (diagnostic, NOT a bet list)\n';
+    BD.held.forEach(function(pk){t+='‚ö† '+stripTags(''+pk.reason)+'\n     '+pk.name+' ¬∑ '+pk.sub+' ¬∑ '+pk.kind+' '+pk.mkt+(pk.edge!=null?' ¬∑ '+(pk.edge>=0?'+':'')+(pk.edge*100).toFixed(1)+'pp':'')+'\n';});
   }
   // ‚îÄ‚îÄ üéØ EDGE PLAYS ‚Äî Runs / RBI / HR ‚îÄ‚îÄ
   t+='\nüéØ EDGE PLAYS ‚Äî Runs / RBI / HR ('+BD.edge.length+') ¬∑ context that can beat the generic price\n';
