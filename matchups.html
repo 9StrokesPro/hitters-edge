@@ -1664,10 +1664,10 @@ function boardData(){
   dropped.top=topPool.length-topHit.length;
   topHit.forEach(function(h){var bp=h.bestProp;
     var q=bp.edgeBlend!=null?bp.edgeBlend:-1;                                       // ME-21 ‚Äî rank on edge vs price, not likelihood
-    top.push({kind:'HIT',light:pickLight(h),name:h.name,sub:(TEAM_ABBR[h.team]||h.team)+' vs '+(h.oppPitName||'TBD'),bet:bp.label+' O'+bp.line+' '+(bp.hr>0?'+':'')+bp.hr,metric:Math.round(bp.blend*100)+'% ¬∑ '+edgePair(bp.edgeBlend,bp.edgeFair),conf:h.confidence,flag:pickWhy(h),reason:hitReason(h),rank:q});});
+    top.push({kind:'HIT',light:pickLight(h),name:h.name,sub:(TEAM_ABBR[h.team]||h.team)+' vs '+(h.oppPitName||'TBD'),game:h.game,bet:bp.label+' O'+bp.line+' '+(bp.hr>0?'+':'')+bp.hr,pct:Math.round(bp.blend*100),vp:bp.edgeBlend,vf:bp.edgeFair,metric:Math.round(bp.blend*100)+'% ¬∑ '+edgePair(bp.edgeBlend,bp.edgeFair),conf:h.confidence,flag:pickWhy(h),reason:hitReason(h),rank:q});});
   pitcher.forEach(function(p){var pr=p.proj;
     var q=pr.edgePrice!=null?pr.edgePrice:-1;                                       // ME-21 ‚Äî same ruler, same sort
-    top.push({kind:'K',light:pr.confidence==='HIGH'?'green':'yellow',name:p.name,sub:(TEAM_ABBR[p.team]||p.team)+' '+p.throws+'HP vs '+p.opp,bet:'Ks '+(pr.side==='Over'?'O':'U')+pr.line+(pr.hrPrice!=null?' '+(pr.hrPrice>0?'+':'')+pr.hrPrice:''),metric:pr.edgePrice!=null?edgePair(pr.edgePrice,pr.edgeFair):'Œº '+pr.mu+' Ks',conf:pr.confidence,flag:pr.marketFlag,reason:'model '+pr.mu+' Ks',rank:q});});
+    top.push({kind:'K',light:pr.confidence==='HIGH'?'green':'yellow',name:p.name,sub:(TEAM_ABBR[p.team]||p.team)+' '+p.throws+'HP vs '+p.opp,game:p.game,bet:'Ks '+(pr.side==='Over'?'O':'U')+pr.line+(pr.hrPrice!=null?' '+(pr.hrPrice>0?'+':'')+pr.hrPrice:''),pct:null,vp:pr.edgePrice,vf:pr.edgeFair,metric:pr.edgePrice!=null?edgePair(pr.edgePrice,pr.edgeFair):'Œº '+pr.mu+' Ks',conf:pr.confidence,flag:pr.marketFlag,reason:'model '+pr.mu+' Ks',rank:q});});
   heldK.forEach(function(p){var pr=p.proj;held.push({kind:'K',name:p.name,sub:(TEAM_ABBR[p.team]||p.team)+' '+(p.throws||'?')+'HP vs '+p.opp,mkt:'Ks '+(pr.side==='Over'?'O':'U')+pr.line,edge:pr.edgePrice,reason:pr.marketFlag||'low confidence'});});
   top.sort(function(a,b){return b.rank-a.rank;});
   try{console.log('[ME-20 gate +'+(EDGE_GATE*100).toFixed(1)+'pp] suppressed edge:'+dropped.edge+' contact:'+dropped.contact+' top:'+dropped.top+' ¬∑ [ME-32 held, not endorsed] '+held.length);}catch(e){}
@@ -1681,22 +1681,30 @@ function render(){
   var conf=D.games.filter(function(g){return g.posted;}).length;
   // ‚îÄ‚îÄ üéØ PITCHER TARGETS ‚Äî "Is He Hittable?" (THE FRONT DOOR ‚Äî sorted by recent hits allowed) ‚îÄ‚îÄ
   if(D.targets&&D.targets.length){
-    h+='<div class="card" style="border-color:var(--red)"><b style="color:var(--red);font-size:14px">&#127919; PITCHER TARGETS ‚Äî Is He Hittable? ('+D.targets.length+')</b>';
-    h+='<div style="font-size:10px;margin-top:2px" class="mut">Sorted by recent HITS ALLOWED (last 3 starts) ‚Äî the simple read leads, most hittable on top. Expand any arm for the Statcast confirmation (real vs mirage), the line-lags edge, and his weak side to aim at.</div></div>';
+    h+='<details class="card" style="border-color:var(--red)"><summary style="cursor:pointer;color:var(--red);font-size:13px;font-weight:800">&#127919; PITCHER TARGETS ‚Äî Is He Hittable? ('+D.targets.length+') <span class="mut" style="font-weight:400">‚Äî research input, not a decision list (tap to expand)</span></summary>';
+    h+='<div style="font-size:10px;margin-top:2px" class="mut">An INPUT, not a decision ‚Äî and sorted by recent HITS ALLOWED, the noisiest stat in the system (ME-08). Use it to understand WHY a hitter is on the decision list, not to pick from. Expand any arm for the Statcast confirmation (real vs mirage) and his weak side.</div>';
     D.targets.forEach(function(t,ix){h+=tcard(t,ix);});
+    h+='</details>';
   }
   // ‚îÄ‚îÄ üèÜ TOP PICKS ‚Äî the highest play from each board, one ranked action list (auditable) ‚îÄ‚îÄ
   var supp=BD.dropped||{edge:0,contact:0,top:0};
   var suppNote='<div style="font-size:10px;margin-top:3px" class="mut">Gate: only plays clearing <b>+'+(EDGE_GATE*100).toFixed(1)+'pp edge vs the price you pay</b> (blend model+market) show. Suppressed tonight ‚Äî top '+supp.top+' ¬∑ edge '+supp.edge+' ¬∑ contact '+supp.contact+'.</div>';
   if(BD.top.length){
-    h+='<div class="card" style="border-color:var(--gld);background:rgba(234,179,8,.06)"><b style="color:var(--gld);font-size:14px">&#127942; TOP PICKS ‚Äî best of every board</b>';
-    h+='<div style="font-size:10px;margin-top:2px" class="mut">Ranked by <b>edge vs price</b> (highest first) ‚Äî one ruler for hitters and Ks. üü¢ confirmed &amp; clean ¬∑ üü° lineup still projected. Plays on thin/conflicting inputs are moved to HELD below, not shown here. Read the Pitcher Targets first.</div>'+suppNote;
+    // ME-42 ‚Äî ONE deduped decision list (one row per player). Correlation banner + model-lift framing.
+    var byGame={};BD.top.forEach(function(pk){var g=pk.game||'?';(byGame[g]=byGame[g]||[]).push(pk);});
+    var corr=Object.keys(byGame).filter(function(g){return byGame[g].length>=2;});
+    var corrPlays=corr.reduce(function(a,g){return a+byGame[g].length;},0),nGames=Object.keys(byGame).length;
+    h+='<div class="card" style="border-color:var(--gld);background:rgba(234,179,8,.06)"><b style="color:var(--gld);font-size:14px">&#127942; TONIGHT&#39;S DECISIONS ('+BD.top.length+' play'+(BD.top.length===1?'':'s')+' ¬∑ '+nGames+' game'+(nGames===1?'':'s')+')</b>';
+    if(corrPlays>=2)h+='<div style="margin-top:4px;padding:5px 7px;border-radius:7px;background:rgba(239,68,68,.12);color:var(--red);font-size:11px"><b>&#9888; CORRELATED:</b> '+corrPlays+' of '+BD.top.length+' plays share '+corr.length+' game'+(corr.length===1?'':'s')+' ('+corr.map(function(g){return esc(g)+' &times;'+byGame[g].length;}).join(', ')+'). Same game &ne; independent bets ‚Äî size accordingly.</div>';
+    h+='<div style="font-size:10px;margin-top:3px" class="mut">One row per player ‚Äî the ONLY decision list (Edge / Contact / K below are the same bets re-cut by market, collapsed). Ranked by <b>edge vs price</b> (your net edge ‚Äî the vig is already in it). <b>Model lift</b> = how far above the sharp de-vig market the model sits; at the same price, prefer the SMALLER lift ‚Äî the model is doing less of the work, and the model is the part with no track record. üü¢ confirmed ¬∑ üü° lineup projected.</div>'+suppNote;
     BD.top.forEach(function(pk){
-      h+='<div style="font-size:12px;margin-top:6px;border-top:1px solid var(--bord);padding-top:5px">'+lightDot(pk.light)+' <span class="tag" style="background:rgba(167,139,250,.12);color:var(--pur);font-size:9px">'+pk.kind+'</span> <b>'+esc(pk.name)+'</b> <span class="mut">('+esc(pk.sub)+')</span><br><b style="color:var(--gld)">'+esc(pk.bet)+'</b> ¬∑ <b>'+esc(pk.metric)+'</b> ¬∑ '+esc(pk.conf)+(pk.flag?' ¬∑ <span style="color:var(--amb)">‚ö† '+esc((''+pk.flag).replace(/<[^>]+>/g,''))+'</span>':'')+(pk.reason?'<br><span style="font-size:10px" class="mut">'+esc(pk.reason)+'</span>':'')+'</div>';
+      var shared=(pk.game&&byGame[pk.game]&&byGame[pk.game].length>=2);
+      var vp=(pk.vp!=null)?((pk.vp>=0?'+':'')+(pk.vp*100).toFixed(1)+'pp'):'--',lift=(pk.vf!=null)?((pk.vf>=0?'+':'')+(pk.vf*100).toFixed(1)+'pp'):'--';
+      h+='<div style="font-size:12px;margin-top:6px;border-top:1px solid var(--bord);padding-top:5px'+(shared?';border-left:3px solid var(--amb);padding-left:6px':'')+'">'+lightDot(pk.light)+' <span class="tag" style="background:rgba(167,139,250,.12);color:var(--pur);font-size:9px">'+pk.kind+'</span> <b>'+esc(pk.name)+'</b> <span class="mut">('+esc(pk.sub)+')</span>'+(shared?' <span style="color:var(--amb);font-size:9px">&#9670; '+esc(pk.game)+'</span>':'')+'<br><b style="color:var(--gld)">'+esc(pk.bet)+'</b>'+(pk.pct!=null?' ¬∑ '+pk.pct+'%':'')+' ¬∑ <b style="color:'+(pk.vp>=0?'var(--grn)':'var(--red)')+'">'+vp+' edge</b> <span class="mut">¬∑ model lift '+lift+'</span> ¬∑ '+esc(pk.conf)+(pk.flag?' ¬∑ <span style="color:var(--amb)">&#9888; '+esc((''+pk.flag).replace(/<[^>]+>/g,''))+'</span>':'')+(pk.reason?'<br><span style="font-size:10px" class="mut">'+esc(pk.reason)+'</span>':'')+'</div>';
     });
     h+='</div>';
   }else{
-    h+='<div class="card" style="border-color:var(--gld);background:rgba(234,179,8,.06)"><b style="color:var(--gld);font-size:14px">&#127942; TOP PICKS</b><div style="font-size:11px;margin-top:4px" class="mut">No play clears the gate right now ‚Äî every candidate priced below the edge bar. That is the honest read, not an error.</div>'+suppNote+'</div>';
+    h+='<div class="card" style="border-color:var(--gld);background:rgba(234,179,8,.06)"><b style="color:var(--gld);font-size:14px">&#127942; TONIGHT&#39;S DECISIONS</b><div style="font-size:11px;margin-top:4px" class="mut">No play clears the gate right now ‚Äî every candidate priced below the edge bar. That is the honest read, not an error.</div>'+suppNote+'</div>';
   }
   // ‚îÄ‚îÄ ‚ö† HELD ‚Äî cleared the edge gate but the system won't stand behind the inputs (ME-32) ‚îÄ‚îÄ
   // ME-32/review ‚Äî HELD is a diagnostic RECORD of what the gate caught, not a bet list. Collapsed by
@@ -1712,7 +1720,7 @@ function render(){
   }
   // ‚îÄ‚îÄ EDGE PLAYS ‚Äî Runs / RBI / HR (top of page so all boards are visible together) ‚îÄ‚îÄ
   var edgeList=BD.edge.slice(0,15);
-  h+='<div class="card" style="border-color:var(--grn)"><b style="color:var(--grn);font-size:13px">&#127919; EDGE PLAYS ‚Äî Runs / RBI / HR ('+edgeList.length+')</b>';
+  h+='<details class="card" style="border-color:var(--grn)"><summary style="cursor:pointer;color:var(--grn);font-size:13px;font-weight:800">&#127919; EDGE re-cut ‚Äî Runs/RBI/HR ('+edgeList.length+') <span class="mut" style="font-weight:400">‚Äî same bets by market, diagnostic (tap)</span></summary>';
   h+='<div style="font-size:10px;margin-top:2px" class="mut">Built on ORTHOGONAL signals the market is slow on (luck gap, pitch-mix fit, this pitcher squared-up, line-lags-form) ‚Äî park/total/slot/power are context only, not edge. Ranked by tilt. Leans, not locks.</div>';
   // per-SIGNAL calibration scoreboard ‚Äî learn WHICH orthogonal signal actually beats its lines
   var ec=D.ecalib;
@@ -1748,16 +1756,16 @@ function render(){
     h+='<div style="font-size:12px;margin-top:6px"><b>'+esc(x.name)+'</b> <span class="mut">('+esc(TEAM_ABBR[x.team]||x.team)+' vs '+esc(x.oppPitName||'TBD')+')</span> ‚Äî <b style="color:var(--grn)">'+bp.label+' O'+bp.line+' '+(bp.hr>0?'+':'')+bp.hr+'</b> <span class="mut">'+Math.round(bp.blend*100)+'%</span> ¬∑ <b style="color:'+(bp.edgeBlend>=0?'var(--grn)':'var(--red)')+'">'+edgePair(bp.edgeBlend,bp.edgeFair)+'</b><br><span style="font-size:10px" class="mut">'+esc((bp.edgeWhy||[]).join(' ¬∑ '))+'</span></div>';
   });
   if(!edgeList.length)h+='<div style="font-size:11px;margin-top:5px" class="mut">No clear edge spots right now ‚Äî they show once lineups, totals, and pitchers post.</div>';
-  h+='</div>';
+  h+='</details>';
   // ‚îÄ‚îÄ CONTACT PLAYS ‚Äî Hits / Singles / TB / HRR ‚îÄ‚îÄ
   var contactList=BD.contact.slice(0,15);
-  h+='<div class="card"><b style="color:var(--blu);font-size:13px">&#128994; CONTACT PLAYS ‚Äî Hits / Singles / TB / HRR ('+contactList.length+')</b>';
+  h+='<details class="card"><summary style="cursor:pointer;color:var(--blu);font-size:13px;font-weight:800">&#128994; CONTACT re-cut ‚Äî Hits/Singles/TB/HRR ('+contactList.length+') <span class="mut" style="font-weight:400">‚Äî same bets by market, diagnostic (tap)</span></summary>';
   h+='<div style="font-size:10px;margin-top:2px" class="mut">The safer, high-hit-rate props ‚Äî most likely to cash, but tightly priced (slim value). Ranked by hit likelihood.</div>';
   contactList.forEach(function(x){var bp=x.contactProp;
     h+='<div style="font-size:12px;margin-top:6px"><b>'+esc(x.name)+'</b> <span class="mut">('+esc(TEAM_ABBR[x.team]||x.team)+')</span> ‚Äî <b>'+bp.label+' O'+bp.line+' '+(bp.hr>0?'+':'')+bp.hr+'</b> <span class="mut">'+Math.round(bp.blend*100)+'% to cash'+(bp.edgeBlend!=null?' ¬∑ <b style="color:'+(bp.edgeBlend>=0?'var(--grn)':'var(--red)')+'">'+edgePair(bp.edgeBlend,bp.edgeFair)+'</b>':'')+'</span></div>';
   });
-  h+='</div>';
-  h+='<div class="card" style="border-color:var(--gld)"><b style="color:var(--gld);font-size:13px">&#11088; TOP MATCHUPS TONIGHT ('+A.length+' A-grades)</b>';
+  h+='</details>';
+  h+='<details class="card" style="border-color:var(--gld)"><summary style="cursor:pointer;color:var(--gld);font-size:13px;font-weight:800">&#11088; TOP MATCHUPS ('+A.length+' A-grades) <span class="mut" style="font-weight:400">‚Äî grade view, reference (tap)</span></summary>';
   h+='<div style="font-size:10px;margin-top:2px" class="mut">Lineups posted: '+conf+'/'+D.games.length+' games ¬∑ ranked best-to-worst ¬∑ &#128994; top play &nbsp; &#128993; playable (read the note) &nbsp; &#128308; weak ‚Äî lean pass. A yellow/red pick shows why in plain words.</div>';
   if(A.length)A.slice(0,12).forEach(function(x){
     var lt=pickLight(x),why=pickWhy(x);
@@ -1766,7 +1774,7 @@ function render(){
       +(x.bestProp?'<br><span style="color:var(--gld);font-size:11px">&#127921; '+esc(x.bestProp.label)+' O'+x.bestProp.line+' '+(x.bestProp.hr>0?'+':'')+x.bestProp.hr+' on Hard Rock'+(x.bestProp.fair!=null?(x.bestProp.fair-impliedP(x.bestProp.hr)>=-0.005?' ‚úì fair':''):'')+(x.bestProp.stale?' (stale)':'')+'</span>':'<br><span style="font-size:10px;color:'+(x.propFetch==='failed'||x.propFetch==='not_covered'?'var(--amb)':'var(--mut)')+'">'+(x.propFetch==='failed'?'‚ö† server unreachable':x.propFetch==='not_covered'?'not pulled yet':'not posted yet')+'</span>')+'</div>';
   });
   else h+='<div style="font-size:11px;margin-top:5px" class="mut">No A-grades right now ‚Äî check back when lineups post.</div>';
-  h+='</div>';
+  h+='</details>';
   // ‚îÄ‚îÄ PITCHER STRIKEOUT PROPS board (brief ¬ß5/¬ß6) ‚îÄ‚îÄ
   if(D.pitchers&&D.pitchers.length){
     var withBet=D.pitchers.filter(function(p){return p.proj&&p.proj.recommend;});
@@ -1776,7 +1784,7 @@ function render(){
     var withLine=D.pitchers.filter(function(p){return p.proj&&p.proj.ok&&p.proj.line!=null&&p.proj.edge!=null;});
     var flaggedCt=withLine.filter(function(p){return p.proj.edge>=0.10;}).length;
     var miscal=withLine.length>=4&&(flaggedCt/withLine.length)>K_SLATE_FLAG_MAX;
-    h+='<div class="card" style="border-color:'+(miscal?'var(--red)':'var(--pur)')+'"><b style="color:'+(miscal?'var(--red)':'var(--pur)')+';font-size:13px">&#9918; PITCHER STRIKEOUT PROPS ('+withBet.length+' recommended ¬∑ '+held+' held)</b>';
+    h+='<details class="card" style="border-color:'+(miscal?'var(--red)':'var(--pur)')+'"'+(miscal?' open':'')+'><summary style="cursor:pointer;color:'+(miscal?'var(--red)':'var(--pur)')+';font-size:13px;font-weight:800">&#9918; K re-cut + model calibration ('+withBet.length+' rec ¬∑ '+held+' held)'+(miscal?' &#9888; MISCALIBRATED':'')+' <span class="mut" style="font-weight:400">‚Äî Ks are in Decisions above (tap)</span></summary>';
     if(miscal)h+='<div style="color:var(--red);font-weight:800;font-size:11px;margin-top:4px">‚ö† MODEL LIKELY MISCALIBRATED FOR THIS SLATE ‚Äî '+flaggedCt+'/'+withLine.length+' props diverge from the market. Treat all K props as low-confidence tonight; the sharp market is probably right.</div>';
     h+='<div style="font-size:10px;margin-top:2px" class="mut">Expected Ks = Log5 (pitcher K% √ó opp lineup contact) ‚Üí times-through-order decay ‚Üí Poisson, edge MARKET-ANCHORED to the de-vig fair. Guardrails hold back below-average-K arms, openers, injury/trajectory flags, oversized edges, and unconfirmed lines. Ranked by edge. Projection, not a lock.</div>';
     // rolling calibration (instrument, don't tune) ‚Äî is the model running hot/cold vs real box-score Ks?
@@ -1788,7 +1796,7 @@ function render(){
       h+='<div style="font-size:12px;margin-top:6px">'+(pr.confidence==='HIGH'?'&#128994;':pr.confidence==='MEDIUM'?'&#128993;':'&#128308;')+' <b>'+esc(p.name)+'</b> <span class="mut">('+esc(TEAM_ABBR[p.team]||p.team)+' '+(p.throws||'?')+'HP vs '+esc(p.opp)+')</span> ‚Äî <b style="color:var(--pur)">Ks '+(pr.side==='Over'?'O':'U')+pr.line+(pr.hrPrice!=null?' '+(pr.hrPrice>0?'+':'')+pr.hrPrice:'')+'</b> ¬∑ model <b>'+pr.mu+'</b> Ks'+(pr.edgePrice!=null?' ¬∑ <b>'+edgePair(pr.edgePrice,pr.edgeFair)+'</b>':'')+' ¬∑ '+pr.confidence+(pr.marketFlag?'<br><span style="font-size:10px;color:var(--amb)">‚ö† '+esc(pr.marketFlag)+'</span>':'')+'</div>';
     });
     if(!BD.pitcher.length)h+='<div style="font-size:11px;margin-top:5px" class="mut">No recommended K plays right now ‚Äî lines not posted yet, or all held by the guardrails (see cards below).</div>';
-    h+='</div>';
+    h+='</details>';
     D.pitchers.forEach(function(p,ix){h+=pcard(p,ix);});
   }
   D.hitters.slice(0,120).forEach(function(x,ix){h+=mcard(x,ix);});
