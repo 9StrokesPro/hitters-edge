@@ -63,18 +63,7 @@ var MLB='https://statsapi.mlb.com/api/v1';
 var OWM_KEY='6a060c8de21d6f1a5cd9d6fed2b7a53b';
 var ODDS_KEY='e738de03c4b7e835c52b50e1a0b1c494'; // ONLY for game totals context (~2 credits/load)
 var K='me15_';
-var BUILD='v15.018'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
-// ME-56 ‚Äî generation-time write to the Drive mirror. The scheduled grader is cloud-only and can't write a
-// Sheet cell; the browser card CAN. On generation we POST every logged row to a Cloudflare worker that appends
-// to the Drive sheet (setup + worker code in edge-scanner-server; see FROM-CODER). Empty URL = no-op (falls
-// back to the ME-56a copy-dump bridge) until Joe sets the deployed endpoint here.
-var PLAYS_ENDPOINT=''; // e.g. 'https://edge-scanner.<acct>.workers.dev/plays'
-function postPlays(build){
-  if(!PLAYS_ENDPOINT)return; var pe=sg('playedges_'+todayStr(),null); if(!pe||!pe.rows||!pe.rows.length)return;
-  try{fetch(PLAYS_ENDPOINT,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({build:build,date:todayStr(),at:Date.now(),rows:pe.rows})})
-    .then(function(r){return r.json();}).then(function(j){try{console.log('[ME-56 plays POST] '+(j&&j.ok?('appended '+(j.appended||pe.rows.length)+' rows to Drive'):'endpoint returned '+JSON.stringify(j)));}catch(e){}})
-    .catch(function(e){try{console.log('[ME-56 plays POST] failed (rows still in the ME-56a copy-dump): '+e.message);}catch(_){}});}catch(e){}
-}
+var BUILD='v15.019'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
 // ME-16 ‚Äî price band, configured in ONE place. Reject anything worse than PRICE_MIN or longer than
 // PRICE_MAX at GENERATION (before it reaches a board), not as a display toggle.
 var PRICE_MIN=-140, PRICE_MAX=150;
@@ -1734,7 +1723,6 @@ async function loadAll(){
   });
   tagTravel(hitters,games); // ME-53 ‚Äî capture tz / zone-delta / local first-pitch on every hitter row (no model change)
   logKProjections(pitchers);logEdgePlays(hitters);logPlayEdges(hitters);logTargets(targets);logMarketAudit(hitters); // instrument
-  postPlays(BUILD); // ME-56 ‚Äî push tonight's rows to the Drive mirror via the worker (no-op until PLAYS_ENDPOINT is set)
   var kcal=null;try{kcal=await settleKProjections();}catch(e){} // settle prior nights vs real box-score Ks
   var ecal=null;try{ecal=await settleEdgePlays();}catch(e){}     // settle prior edge plays, grouped by signal
   var gcal=null;try{gcal=await settlePlayEdges();}catch(e){}     // ME-15 ‚Äî settle the WHOLE evaluated population, bucketed by grade
