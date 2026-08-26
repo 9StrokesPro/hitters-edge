@@ -212,6 +212,19 @@ function buildKLayer(gls,season){
 var PARKS={'Coors Field':115,'Great American Ball Park':112,'Fenway Park':108,'Globe Life Field':107,'Citizens Bank Park':106,'American Family Field':105,'Wrigley Field':104,'Rogers Centre':104,'Yankee Stadium':103,'Truist Park':102,'Camden Yards':103,'Guaranteed Rate Field':103,'Dodger Stadium':101,'T-Mobile Park':100,'Progressive Field':100,'Nationals Park':100,'Daikin Park':98,'Minute Maid Park':98,'Angel Stadium':99,'Chase Field':99,'loanDepot park':98,'Oracle Park':97,'Citi Field':97,'Comerica Park':97,'Petco Park':96,'Target Field':96,'PNC Park':96,'Busch Stadium':95,'Kauffman Stadium':95,'Tropicana Field':97,'Sutter Health Park':98};
 var TEAM_ABBR={'Arizona Diamondbacks':'AZ','Atlanta Braves':'ATL','Baltimore Orioles':'BAL','Boston Red Sox':'BOS','Chicago Cubs':'CHC','Chicago White Sox':'CWS','Cincinnati Reds':'CIN','Cleveland Guardians':'CLE','Colorado Rockies':'COL','Detroit Tigers':'DET','Houston Astros':'HOU','Kansas City Royals':'KC','Los Angeles Angels':'LAA','Los Angeles Dodgers':'LAD','Miami Marlins':'MIA','Milwaukee Brewers':'MIL','Minnesota Twins':'MIN','New York Mets':'NYM','New York Yankees':'NYY','Philadelphia Phillies':'PHI','Pittsburgh Pirates':'PIT','San Diego Padres':'SD','San Francisco Giants':'SF','Seattle Mariners':'SEA','St. Louis Cardinals':'STL','Tampa Bay Rays':'TB','Texas Rangers':'TEX','Toronto Blue Jays':'TOR','Washington Nationals':'WSH','Athletics':'ATH','Oakland Athletics':'ATH'};
 var STADIUM_TYPE={'AZ':'retractable','HOU':'retractable','SEA':'retractable','MIA':'retractable','MIL':'retractable','TEX':'retractable','TOR':'retractable'};
+// ME-53 ‚Äî home UTC offset by team (standard time; DST ignored ‚Äî coarse zone-delta is all we need). CAPTURE ONLY.
+var TEAM_TZ={ATL:-5,BAL:-5,BOS:-5,CIN:-5,CLE:-5,DET:-5,MIA:-5,NYM:-5,NYY:-5,PHI:-5,PIT:-5,TB:-5,TOR:-5,WSH:-5,CHC:-6,CWS:-6,HOU:-6,KC:-6,MIL:-6,MIN:-6,STL:-6,TEX:-6,AZ:-7,COL:-7,LAA:-8,LAD:-8,SD:-8,SF:-8,SEA:-8,ATH:-8};
+function tzOff(a){return TEAM_TZ[a]!=null?TEAM_TZ[a]:-5;}
+function localHour(iso,tz){if(!iso)return null;var d=new Date(iso);if(isNaN(d.getTime()))return null;return Math.round(((d.getUTCHours()+d.getUTCMinutes()/60+tz+48)%24)*10)/10;}
+// Per-hitter travel/circadian capture: zone delta (venue tz ‚àí his home tz, ‚àí = west), local first pitch,
+// is-home. Road-trip days needs a schedule pull ‚Äî left null for now (flagged), the rest is free from the game.
+function tagTravel(hitters,games){
+  (hitters||[]).forEach(function(h){
+    var parts=(h.game||'').split(' @ ');if(parts.length!==2){h.travel=null;return;}
+    var home=parts[1].trim(),me=TEAM_ABBR[h.team]||h.team,meTz=tzOff(me),venueTz=tzOff(home);
+    h.travel={homeTz:meTz,venueTz:venueTz,zoneDelta:venueTz-meTz,isHome:(me===home),localFP:localHour(h.start,venueTz),roadTripDays:null};
+  });
+}
 var CITY_BY_ABBR={'AZ':'Phoenix,US','ATL':'Atlanta,US','BAL':'Baltimore,US','BOS':'Boston,US','CHC':'Chicago,US','CWS':'Chicago,US','CIN':'Cincinnati,US','CLE':'Cleveland,US','COL':'Denver,US','DET':'Detroit,US','HOU':'Houston,US','KC':'Kansas City,US','LAA':'Anaheim,US','LAD':'Los Angeles,US','MIA':'Miami,US','MIL':'Milwaukee,US','MIN':'Minneapolis,US','NYM':'New York,US','NYY':'New York,US','PHI':'Philadelphia,US','PIT':'Pittsburgh,US','SD':'San Diego,US','SF':'San Francisco,US','SEA':'Seattle,US','STL':'St. Louis,US','TB':'St. Petersburg,US','TEX':'Arlington,US','TOR':'Toronto,CA','WSH':'Washington,US','ATH':'Sacramento,US'};
 // pitch-type code -> readable
 var PITCH_NAME={FF:'4-seam FB',SI:'Sinker',FC:'Cutter',SL:'Slider',ST:'Sweeper',CU:'Curveball',KC:'Knuckle-curve',CH:'Changeup',FS:'Splitter',SV:'Slurve',FO:'Forkball',SC:'Screwball',KN:'Knuckleball'};
@@ -862,6 +875,70 @@ function logKProjections(pitchers){
     .map(function(p){return {id:p.P.id,name:p.name,mu:p.proj.mu,line:p.proj.line,side:p.proj.side,flagged:!!p.proj.marketFlag};});
   if(recs.length)ss('kproj_'+todayStr(),recs);
 }
+// ME-54 ‚Äî market-selection audit. Log EVERY eligible market per surfaced hitter; settle each; ask how often
+// the SURFACED market lost while an alternative available at the same moment won (the Culpepper "right hitter,
+// wrong prop" case). Right hitter, wrong market is a different failure than a bad hitter read ‚Äî measure it.
+function logMarketAudit(hitters){
+  var recs=[];
+  (hitters||[]).forEach(function(h){
+    if(!h.spot||h.grade==='D'||!h.bestProp||!h.ladder||!h.ladder.all)return;
+    var mkts=h.ladder.all.filter(function(r){return r.line!=null&&r.mkt;}).map(function(r){return{mkt:r.mkt,line:r.line};});
+    if(mkts.length>=2)recs.push({id:h.id,name:h.name,surf:h.bestProp.mkt,mkts:mkts});
+  });
+  if(recs.length)ss('mproj_'+todayStr(),recs);
+}
+async function settleMarketAudit(){
+  var today=todayStr(),pre=K+'mproj_',dates=[];
+  for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(k&&k.indexOf(pre)===0){var d=k.slice(pre.length);if(d<today)dates.push(d);}}
+  if(!dates.length)return sg('mcalib',null);
+  var cal=sg('mcalib',{n:0,surfWon:0,altBeat:0,recent:[]});
+  for(var di=0;di<dates.length;di++){
+    var date=dates[di],proj=sg('mproj_'+date,null);if(!proj||!proj.length){localStorage.removeItem(K+'mproj_'+date);continue;}
+    await pool(proj,async function(pr){
+      if(pr._done)return;
+      var gl=await apiFetch(MLB+'/people/'+pr.id+'/stats?stats=gameLog&group=hitting&season='+SEASON+'&sportId=1');
+      var gls=gl&&gl.stats&&gl.stats[0]&&gl.stats[0].splits||[];
+      if(!gls.filter(function(x){return x.date===date;}).length)return; // didn't play that date yet
+      var surfWon=false,altWon=false;
+      pr.mkts.forEach(function(m){var act=statForMkt(gls,date,m.mkt);if(act==null)return;var won=act>m.line;if(m.mkt===pr.surf)surfWon=won;else if(won)altWon=true;});
+      cal.n++;if(surfWon)cal.surfWon++;if(!surfWon&&altWon)cal.altBeat++;
+      cal.recent.unshift({name:pr.name,date:date,surf:pr.surf,surfWon:surfWon,altWon:altWon});if(cal.recent.length>60)cal.recent.pop();
+      pr._done=true;
+    },CONC);
+    var allDone=proj.every(function(p){return p._done;});
+    if(allDone||date<new Date(Date.now()-5*864e5).toISOString().slice(0,10))localStorage.removeItem(K+'mproj_'+date);else ss('mproj_'+date,proj);
+  }
+  ss('mcalib',cal);return cal;
+}
+// ME-51 ‚Äî grade the TARGET LIST. Log projected hits-allowed/start (projHits) per pitcher; settle vs ACTUAL
+// hits allowed. Cheapest calibration in the system: no prices, no bets ‚Äî just "is the headline number good?"
+function logTargets(targets){
+  var recs=(targets||[]).filter(function(t){return t.id&&t.projHits!=null;}).map(function(t){return{id:t.id,name:t.name,proj:t.projHits,cls:t.cls,l3:t.hitsPS,opp:t.opp};});
+  if(recs.length)ss('tproj_'+todayStr(),recs);
+}
+async function settleTargets(){
+  var today=todayStr(),pre=K+'tproj_',dates=[];
+  for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(k&&k.indexOf(pre)===0){var d=k.slice(pre.length);if(d<today)dates.push(d);}}
+  if(!dates.length)return sg('tcalib',null);
+  var cal=sg('tcalib',{n:0,sumAbs:0,sumDiff:0,byTag:{},recent:[]});if(!cal.byTag)cal.byTag={};
+  for(var di=0;di<dates.length;di++){
+    var date=dates[di],proj=sg('tproj_'+date,null);if(!proj||!proj.length){localStorage.removeItem(K+'tproj_'+date);continue;}
+    await pool(proj,async function(pr){
+      if(pr._done)return;
+      var gl=await apiFetch(MLB+'/people/'+pr.id+'/stats?stats=gameLog&group=pitching&season='+SEASON+'&sportId=1');
+      var gls=gl&&gl.stats&&gl.stats[0]&&gl.stats[0].splits||[];
+      var g=gls.filter(function(x){return x.date===date&&(parseInt(x.stat.gamesStarted)||0)>0;});
+      if(g.length){var act=g.reduce(function(a,x){return a+(parseInt(x.stat.hits)||0);},0),err=pr.proj-act; // proj ‚àí actual (+ = over-projected hittability)
+        cal.n++;cal.sumAbs+=Math.abs(err);cal.sumDiff+=err;
+        var tg=pr.cls||'?';if(!cal.byTag[tg])cal.byTag[tg]={n:0,sa:0,sd:0};cal.byTag[tg].n++;cal.byTag[tg].sa+=Math.abs(err);cal.byTag[tg].sd+=err;
+        cal.recent.unshift({name:pr.name,date:date,proj:pr.proj,act:act,err:Math.round(err*10)/10,cls:pr.cls});if(cal.recent.length>60)cal.recent.pop();
+        pr._done=true;}
+    },CONC);
+    var allDone=proj.every(function(p){return p._done;});
+    if(allDone||date<new Date(Date.now()-5*864e5).toISOString().slice(0,10))localStorage.removeItem(K+'tproj_'+date);else ss('tproj_'+date,proj);
+  }
+  ss('tcalib',cal);return cal;
+}
 async function settleKProjections(){
   var today=todayStr(),pre=K+'kproj_',dates=[];
   for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(k&&k.indexOf(pre)===0){var d=k.slice(pre.length);if(d<today)dates.push(d);}}
@@ -909,6 +986,8 @@ function logPlayEdges(hitters){
         engine_lambda:r3(hitterLambda(h.b,bp.mkt)),engine_lambda_v2:hitterLambdaV2(h,bp.mkt),market_lambda:marketLambda(bp.fair,bp.line,bp.mkt),hand_lambda_l7:null,slot_estimated:!!h.slotEstimated, // ME-43/47/49
         slot_mult:h.slotMult,platoon_mult:h.platoonMult, // ME-62 ‚Äî for the residual regression
         l7_lambda:(h.b&&h.b.l7&&h.b.l7[bp.mkt]!=null)?r3(h.b.l7[bp.mkt]):null,l10_lambda:(h.b&&h.b.l10&&h.b.l10[bp.mkt]!=null)?r3(h.b.l10[bp.mkt]):null,streak:(formRead(h,bp.mkt)||{}).streak, // ME-63 ‚Äî recent-form windows
+        tz_delta:h.travel&&h.travel.zoneDelta,local_fp:h.travel&&h.travel.localFP,is_home:h.travel&&h.travel.isHome,road_trip_days:h.travel&&h.travel.roadTripDays, // ME-53 travel capture
+        opp_starter_id:h.pit&&h.pit.id, // ME-52 ‚Äî so the STARTER_EXITED void can be settled later
         se_edge:bp.seEdge,t_stat:bp.tStat,se_approx:!!bp.seApprox, // ME-59 ‚Äî SE(edge) + t, per row
         edge_blend:bp.edgeBlend,edge_pure:bp.edgePure,edge_tilt_only:bp.edgeTiltOnly,edge_fair:bp.edgeFair,
         gated:bp.edgeBlend!=null&&bp.edgeBlend>=EDGE_GATE});
@@ -932,6 +1011,12 @@ function logPlayEdges(hitters){
   var tops=rows.filter(function(r){return r.sec==='top'&&r.edge_blend!=null;});
   function em(f){var g={};tops.forEach(function(r){var k=f(r);if(k==null)return;if(!g[k])g[k]={s:0,n:0};g[k].s+=r.edge_blend;g[k].n++;});return Object.keys(g).map(function(k){return k+' '+(g[k].s/g[k].n*100).toFixed(1)+'pp(n'+g[k].n+')';}).join(' ¬∑ ');}
   try{console.log('[ME-38 edge by SLOT] '+em(function(r){return r.spot==null?null:r.spot<=3?'1-3':r.spot<=6?'4-6':'7-9';})+' ¬∑ [by PARK] '+em(function(r){return r.park==null?null:r.park>=104?'hitter':r.park<=96?'pitcher':'neutral';}));}catch(e){}
+  // ME-53 ‚Äî capture confirmation: tonight's zone-delta distribution (units-per-play bucketing comes after settle)
+  try{var zc={};tops.forEach(function(r){if(r.tz_delta==null)return;var k=r.tz_delta+'h';zc[k]=(zc[k]||0)+1;});
+    console.log('[ME-53 zone-delta on the board] '+(Object.keys(zc).map(function(k){return k+':'+zc[k];}).join(' ¬∑ ')||'all home/neutral'));}catch(e){}
+  // ME-60 ‚Äî how many rows have a live Œª ABOVE the bias-clamp turn (extrapolating the linear correction)? If large, Part 2 (refit) is urgent.
+  try{var cm={};tops.forEach(function(r){if(BIAS_LAMBDA_MAX[r.mkt]!=null&&r.engine_lambda_v2!=null&&r.engine_lambda_v2>BIAS_LAMBDA_MAX[r.mkt])cm[r.mkt]=(cm[r.mkt]||0)+1;});
+    var cmk=Object.keys(cm);console.log('[ME-60 bias clamp] rows over the turn: '+(cmk.length?cmk.map(function(m){return m.replace('batter_','')+' '+cm[m]+' (turn '+BIAS_LAMBDA_MAX[m]+')';}).join(' ¬∑ '):'none ‚Äî all Œª inside the fit range'));}catch(e){}
   assertOneProb(rows); // ME-19 acceptance ‚Äî no (player,mkt,line) may carry two different probabilities
 }
 // ME-19 test ‚Äî one probability function everywhere. Scans every surfaced row; if the same
@@ -1115,8 +1200,12 @@ async function settlePlayEdges(){
   var today=todayStr(),pre=K+'playedges_',dates=[];
   for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(k&&k.indexOf(pre)===0){var d=k.slice(pre.length);if(d<today)dates.push(d);}}
   if(!dates.length)return sg('gcalib',null);
-  var cal=sg('gcalib',{byGrade:{},byTilt:{},n:0,w:0,l:0});if(!cal.byGrade)cal.byGrade={};if(!cal.byTilt)cal.byTilt={}; // ME-40 ‚Äî tilt control group
-  var fetched=0,MAX=25; // cap fetches per load; drain the backlog across loads
+  var cal=sg('gcalib',{byGrade:{},byTilt:{},n:0,w:0,l:0,starterExited:0});if(!cal.byGrade)cal.byGrade={};if(!cal.byTilt)cal.byTilt={};if(cal.starterExited==null)cal.starterExited=0; // ME-40 tilt control ¬∑ ME-52 void count
+  var fetched=0,MAX=25,sbf={}; // cap fetches per load; sbf = starter-BF cache (id|date ‚Üí BF) for the ME-52 void
+  async function starterBF(id,date){var key=id+'|'+date;if(sbf[key]!==undefined)return sbf[key];if(fetched>=MAX)return null;
+    var pg=await apiFetch(MLB+'/people/'+id+'/stats?stats=gameLog&group=pitching&season='+SEASON+'&sportId=1');fetched++;
+    var ps=(pg&&pg.stats&&pg.stats[0]&&pg.stats[0].splits||[]).filter(function(x){return x.date===date;});
+    sbf[key]=ps.length?ps.reduce(function(a,x){return a+(parseInt(x.stat.battersFaced)||0);},0):null;return sbf[key];}
   for(var di=0;di<dates.length&&fetched<MAX;di++){
     var date=dates[di],rec=sg('playedges_'+date,null);
     if(!rec||!rec.rows){localStorage.removeItem(K+'playedges_'+date);continue;}
@@ -1126,10 +1215,14 @@ async function settlePlayEdges(){
       var gl=await apiFetch(MLB+'/people/'+r.id+'/stats?stats=gameLog&group=hitting&season='+SEASON+'&sportId=1');fetched++;
       var gls=gl&&gl.stats&&gl.stats[0]&&gl.stats[0].splits||[];
       var stat=statForMkt(gls,date,r.mkt);
-      if(stat!=null){var win=stat>r.line;cal.n++;win?cal.w++:cal.l++;
-        var g=r.grade||'?';if(!cal.byGrade[g])cal.byGrade[g]={w:0,l:0};win?cal.byGrade[g].w++:cal.byGrade[g].l++;
-        var tb=(r.tilt==null||r.tilt<=0)?'none':(r.tilt<0.03?'low(+)':'high(++)'); // ME-40 ‚Äî every row, incl. tilt=0 control
-        if(!cal.byTilt[tb])cal.byTilt[tb]={w:0,l:0};win?cal.byTilt[tb].w++:cal.byTilt[tb].l++;
+      if(stat!=null){var win=stat>r.line;
+        // ME-52 ‚Äî if the opposing STARTER faced <9 batters (exited early), every hitter play in that game faced a
+        // bullpen the system never evaluated. Settle the bet but EXCLUDE it from calibration.
+        var exited=false;if(r.opp_starter_id){var bf=await starterBF(r.opp_starter_id,date);if(bf!=null&&bf<9){exited=true;cal.starterExited++;}}
+        if(!exited){cal.n++;win?cal.w++:cal.l++;
+          var g=r.grade||'?';if(!cal.byGrade[g])cal.byGrade[g]={w:0,l:0};win?cal.byGrade[g].w++:cal.byGrade[g].l++;
+          var tb=(r.tilt==null||r.tilt<=0)?'none':(r.tilt<0.03?'low(+)':'high(++)');
+          if(!cal.byTilt[tb])cal.byTilt[tb]={w:0,l:0};win?cal.byTilt[tb].w++:cal.byTilt[tb].l++;}
         r._done=true;}
     }
     var allDone=tops.every(function(r){return r._done||r.id==null;});
@@ -1178,10 +1271,19 @@ var ME29_BIAS_L={batter_total_bases:[-0.2092,0.171],batter_hits_runs_rbis:[-0.13
 // (uncorrected ‚Äî imperfect for composites, but far better than a sign-flipped over-correction). Proper
 // per-line composite modelling is ME-33/34/35.
 var ME29_LINE={batter_total_bases:1.5,batter_hits_runs_rbis:1.5,batter_rbis:0.5,batter_hits:0.5,batter_singles:0.5,batter_doubles:0.5,batter_runs_scored:0.5};
+// ME-60 ‚Äî BIAS CLAMP. poissonCorr = rawP ‚àí (a+bŒª) is NON-MONOTONIC on clumped markets: the pmf slope decays
+// while the linear bias grows forever, so above a turning point a BETTER hitter scores LOWER (the model
+// inverts). Cap the Œª USED FOR THE BIAS at the turning point (where pmf(‚åäline‚åã,Œª)=b, the peak of poissonCorr).
+// Above it the bias is constant ‚Üí d/dŒª = pmf > 0 ‚Üí monotone everywhere. Fit-sample max wasn't recorded, so we
+// fall back to the turning point per the ticket; Phase-1 Œªs all sit under it, so today's numbers don't move.
+var BIAS_LAMBDA_MAX={};
+(function(){Object.keys(ME29_BIAS_L).forEach(function(mkt){var b=ME29_BIAS_L[mkt][1],k=Math.floor(ME29_LINE[mkt]),turn=10;
+  for(var L=Math.max(k,0.001);L<=10.0001;L+=0.001){if(poissonPMF(k,L)<=b){turn=Math.round(L*1000)/1000;break;}}
+  BIAS_LAMBDA_MAX[mkt]=turn;});})();
 function poissonCorr(mkt,lam,line){
   var raw=poissonOver(lam,line),b=0;
   if(ME29_LINE[mkt]!=null&&line!==ME29_LINE[mkt])return Math.max(0.01,Math.min(0.99,raw)); // ME-39 ‚Äî off the fitted line: no correction
-  if(ME29_BIAS_L[mkt])b=Math.max(0,ME29_BIAS_L[mkt][0]+ME29_BIAS_L[mkt][1]*lam);   // clumped: linear, never below 0
+  if(ME29_BIAS_L[mkt]){var bl=Math.min(lam,BIAS_LAMBDA_MAX[mkt]!=null?BIAS_LAMBDA_MAX[mkt]:lam);b=Math.max(0,ME29_BIAS_L[mkt][0]+ME29_BIAS_L[mkt][1]*bl);} // ME-60 clamp ‚Äî bias Œª frozen at the turn
   else if(ME29_BIAS_C[mkt]!=null)b=ME29_BIAS_C[mkt];                                 // clean: constant (negative ‚Üí adds back)
   return Math.max(0.01,Math.min(0.99,raw-b));
 }
@@ -1534,7 +1636,7 @@ async function loadAll(){
     [[g.awayPit,g.homeTeam,g.homeId],[g.homePit,g.awayTeam,g.awayId]].forEach(function(x){
       var pp=x[0];if(!pp)return;var P=pitMap[pp.id];if(!P)return;
       var t=buildTarget(P,sc.pit[P.id]||null);
-      if(t){t.opp=x[1];t.oppId=x[2];t.game=g.awayTeam+' @ '+g.homeTeam;t.start=g.start;targets.push(t);}
+      if(t){t.id=P.id;t.opp=x[1];t.oppId=x[2];t.game=g.awayTeam+' @ '+g.homeTeam;t.start=g.start;targets.push(t);} // ME-51 ‚Äî carry pitcher id to settle projHits
     });
   });
   // ME-46 ‚Äî labels DERIVED from projHits (descriptions, not rank adjustments). TARGET = hittable vs
@@ -1614,11 +1716,14 @@ async function loadAll(){
     var ae=(a.proj&&a.proj.edgePrice!=null)?a.proj.edgePrice:-1,be=(b.proj&&b.proj.edgePrice!=null)?b.proj.edgePrice:-1; // ME-22 ‚Äî edge_vs_price
     return be-ae;
   });
-  logKProjections(pitchers);logEdgePlays(hitters);logPlayEdges(hitters); // instrument: K + edge plays (tagged) + ME-26 three-edge log on every row
+  tagTravel(hitters,games); // ME-53 ‚Äî capture tz / zone-delta / local first-pitch on every hitter row (no model change)
+  logKProjections(pitchers);logEdgePlays(hitters);logPlayEdges(hitters);logTargets(targets);logMarketAudit(hitters); // instrument
   var kcal=null;try{kcal=await settleKProjections();}catch(e){} // settle prior nights vs real box-score Ks
   var ecal=null;try{ecal=await settleEdgePlays();}catch(e){}     // settle prior edge plays, grouped by signal
   var gcal=null;try{gcal=await settlePlayEdges();}catch(e){}     // ME-15 ‚Äî settle the WHOLE evaluated population, bucketed by grade
-  D={hitters:hitters,games:games,pitchers:pitchers,targets:targets,kcalib:kcal,ecalib:ecal,gcalib:gcal,generatedAt:new Date(),loadSec:Math.round((Date.now()-t0)/1000),propsAt:propRes.at,serverDown:propRes.serverDown};
+  var tcal=null;try{tcal=await settleTargets();}catch(e){}       // ME-51 ‚Äî settle the target list vs actual hits allowed
+  var mcal=null;try{mcal=await settleMarketAudit();}catch(e){}   // ME-54 ‚Äî did the surfaced market beat its alternatives?
+  D={hitters:hitters,games:games,pitchers:pitchers,targets:targets,kcalib:kcal,ecalib:ecal,gcalib:gcal,tcalib:tcal,mcalib:mcal,generatedAt:new Date(),loadSec:Math.round((Date.now()-t0)/1000),propsAt:propRes.at,serverDown:propRes.serverDown};
   render();
   setS(hitters.length+' matchup cards ‚Ä¢ '+games.length+' games ‚Ä¢ built in '+D.loadSec+'s');
   freshLine();
@@ -1862,10 +1967,11 @@ function boardData(){
   function endorsed(h){return pickLight(h)!=='red';}                               // ME-32 ‚Äî red = inputs we won't stand behind
   var held=[];
   function holdHit(h,bp){held.push({kind:'HIT',name:h.name,sub:(TEAM_ABBR[h.team]||h.team)+' vs '+(h.oppPitName||'TBD'),mkt:bp.label,edge:bp.edgeBlend,reason:pickWhy(h)||'thin or conflicting data'});}
-  // ME-45 ‚Äî ace exclusion is a HARD filter at the pool: an ace-opposed hitter reaches no board section, and
-  // is not a HELD item either. Count what was removed, by pitcher. K props (below) are untouched.
-  var aceRem={};D.hitters.forEach(function(x){if(x.spot&&x.grade!=='D'&&aceOut(x)){var p=x.oppPitName||'?';aceRem[p]=(aceRem[p]||0)+1;}});
-  try{var at=Object.keys(aceRem);console.log('[ME-45 ace filter xBA‚â§'+ACE_XBA_MAX+'] removed '+at.reduce(function(a,p){return a+aceRem[p];},0)+' hitter'+(at.length?': '+at.map(function(p){return p+' √ó'+aceRem[p];}).join(', '):'s'));}catch(e){}
+  // ME-45 ‚Äî ace exclusion is a HARD filter at the pool: an ace-opposed hitter reaches no BOARD section.
+  // ME-50 ‚Äî but it MUST stay in HELD (with reason ACE_OPPONENT, price, and market) ‚Äî HELD is the control
+  // group ME-15 needs to prove the picks beat the pool, and ace matchups are exactly the comparison we want.
+  var aceRem={};D.hitters.forEach(function(x){if(x.spot&&x.grade!=='D'&&aceOut(x)){var p=x.oppPitName||'?';aceRem[p]=(aceRem[p]||0)+1;var bp=x.bestProp;if(bp&&bp.line!=null)held.push({kind:'HIT',name:x.name,sub:(TEAM_ABBR[x.team]||x.team)+' vs '+(x.oppPitName||'TBD'),mkt:bp.label+' O'+bp.line+' '+(bp.hr>0?'+':'')+bp.hr,edge:bp.edgeBlend,reason:'ACE_OPPONENT ‚Äî opp season xBA-agst '+f3(x.pSav&&x.pSav.xba)});}});
+  try{var at=Object.keys(aceRem);console.log('[ME-45 ace filter xBA‚â§'+ACE_XBA_MAX+'] removed '+at.reduce(function(a,p){return a+aceRem[p];},0)+' hitter'+(at.length?': '+at.map(function(p){return p+' √ó'+aceRem[p];}).join(', '):'s')+' ‚Äî kept in HELD as control (ME-50)');}catch(e){}
   var edgePool=D.hitters.filter(function(x){return x.edgeProp&&x.spot&&x.grade!=='D'&&!aceOut(x)&&passes(x.edgeProp);});
   var contactPool=D.hitters.filter(function(x){return x.contactProp&&x.spot&&x.grade!=='D'&&!aceOut(x)&&passes(x.contactProp);});
   var topPool=D.hitters.filter(function(x){return x.bestProp&&x.spot&&x.grade!=='D'&&!aceOut(x)&&passes(x.bestProp);}); // ME-45 ace + ME-32 keep LOW for HELD routing
@@ -1912,12 +2018,20 @@ function render(){
   }
   var h='';
   var BD=boardData();
+  // ME-54 / ME-52 nightly reports (suppress <10 per ME-15)
+  try{var mc=D.mcalib;if(mc&&mc.n>=10)console.log('[ME-54 market selection, n='+mc.n+'] surfaced market won '+mc.surfWon+'/'+mc.n+' ('+Math.round(mc.surfWon/mc.n*100)+'%) ¬∑ wrong-prop (surfaced lost, an alt won) '+mc.altBeat+'/'+mc.n+' ('+Math.round(mc.altBeat/mc.n*100)+'%)');else if(mc)console.log('[ME-54] n='+mc.n+' <10 ‚Äî suppressed');}catch(e){}
+  try{var gc2=D.gcalib;if(gc2&&gc2.starterExited)console.log('[ME-52] '+gc2.starterExited+' hitter play(s) voided from calibration ‚Äî opposing starter faced <9 batters (STARTER_EXITED)');}catch(e){}
   var A=D.hitters.filter(function(x){return x.grade==='A';});
   var conf=D.games.filter(function(g){return g.posted;}).length;
   // ‚îÄ‚îÄ üéØ PITCHER TARGETS ‚Äî "Is He Hittable?" (THE FRONT DOOR ‚Äî sorted by recent hits allowed) ‚îÄ‚îÄ
   if(D.targets&&D.targets.length){
     h+='<details class="card" style="border-color:var(--red)"><summary style="cursor:pointer;color:var(--red);font-size:13px;font-weight:800">&#127919; PITCHER TARGETS ‚Äî Is He Hittable? ('+D.targets.length+') <span class="mut" style="font-weight:400">‚Äî research input, not a decision list (tap to expand)</span></summary>';
-    h+='<div style="font-size:10px;margin-top:2px" class="mut">An INPUT, not a decision ‚Äî sorted by <b>projected hits allowed</b> (recent form regressed toward the season baseline; ME-46). TARGET/DUE/MIRAGE are descriptions of that number, not rank boosts. Use it to understand WHY a hitter is on the decision list, not to pick from. Expand any arm for the Statcast confirmation and his weak side.</div>';
+    h+='<div style="font-size:10px;margin-top:2px" class="mut">An INPUT, not a decision ‚Äî sorted by <b>projected hits allowed</b> (recent form regressed toward the season baseline; ME-46). Labels describe that number, not rank boosts. Use it to understand WHY a hitter is on the decision list, not to pick from.</div>';
+    // ME-51 ‚Äî is the projected-hits number any good? MAE + signed bias vs actual hits allowed, overall + by tag.
+    var tc=D.tcalib;
+    if(tc&&tc.n>0){var mae=tc.sumAbs/tc.n,bias=tc.sumDiff/tc.n;
+      h+='<div style="font-size:10px;margin-top:4px;padding:5px 7px;border-radius:7px;background:rgba(59,130,246,.10)"><b>&#127919; TARGET-LIST CALIBRATION</b> ‚Äî projected vs actual hits allowed, n='+tc.n+(tc.n<30?' <span class="mut">(insufficient ‚Äî need n‚â•30)</span>':'')+'<br>MAE <b>'+mae.toFixed(2)+'</b> H ¬∑ signed bias <b style="color:'+(Math.abs(bias)<=0.5?'var(--grn)':'var(--amb)')+'">'+(bias>=0?'+':'')+bias.toFixed(2)+'</b> H '+(bias>0.3?'(over-projecting hittability)':bias<-0.3?'(under-projecting)':'(centered)');
+      h+='<br>by tag: '+Object.keys(tc.byTag).map(function(g){var s=tc.byTag[g];return g+' MAE '+(s.sa/s.n).toFixed(2)+'/bias '+(s.sd/s.n>=0?'+':'')+(s.sd/s.n).toFixed(2)+' (n'+s.n+')';}).join(' ¬∑ ')+'</div>';}
     D.targets.forEach(function(t,ix){h+=tcard(t,ix);});
     h+='</details>';
   }
