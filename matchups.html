@@ -319,11 +319,20 @@ async function getBatter(id){
   var pgSD={},pgN=gls.length;
   MK.forEach(function(mk){var sum=0,sq=0;gls.forEach(function(x){var v=mk[1](x.stat);sum+=v;sq+=v*v;});
     pgSD[mk[0]]=(pgN>=2)?Math.round(Math.sqrt(Math.max(0,(sq-sum*sum/pgN)/(pgN-1)))*1000)/1000:null;});
-  return{playerId:id,batSide:batSide,games:g,avg:avg,obp:obp,slg:slg,pgSD:pgSD,pgN:pgN,
+  // RECENT-FORM read (proposed ME-63) ‚Äî per-market rate over L7 & L10, so season-vs-recent is a hot/cold
+  // detector. TWO windows on purpose: 7 games alone is noise (Burleson read cold on L7, hot on L10 same day),
+  // so a streak is only flagged when BOTH windows agree ‚Äî never a lone badge off 7 games.
+  function winRate(arr,fn){return arr.length?arr.reduce(function(a,x){return a+fn(x.stat);},0)/arr.length:null;}
+  var l7={},l10={},L7g=gls.slice(-7),L10g=gls.slice(-10);
+  MK.forEach(function(mk){l7[mk[0]]=winRate(L7g,mk[1]);l10[mk[0]]=winRate(L10g,mk[1]);});
+  return{playerId:id,batSide:batSide,games:g,avg:avg,obp:obp,slg:slg,pgSD:pgSD,pgN:pgN,l7:l7,l10:l10,l7n:L7g.length,l10n:L10g.length,
+    // ME-61 ‚Äî RAW totals + ONE denominator (player's own gamesPlayed). hitterLambda computes exact rates from
+    // these, so Œª = (H+R+RBI)/G to the decimal ‚Äî no drift from summing three separately-rounded per-game rates.
+    tot:{hits:hits,runs:runs,rbi:rbi,tb:tb,hrs:hrs,dbl:dbl,tri:tri,singles:singles},gN:g,
     iso:Math.round(Math.max(slg-avg,0)*1000)/1000,
     bbRate:Math.round(Math.max(obp-avg,0)*1000)/1000,
     hpg:Math.round(hits/g*100)/100,tbpg:Math.round(tb/g*100)/100,runspg:Math.round(runs/g*100)/100,rbipg:Math.round(rbi/g*100)/100,
-    hrpg:Math.round(hrs/g*1000)/1000,dblpg:Math.round(dbl/g*1000)/1000,tripg:Math.round(tri/g*1000)/1000,onepg:Math.round(singles/g*1000)/1000, // per-game rates for per-prop selection
+    hrpg:Math.round(hrs/g*1000)/1000,dblpg:Math.round(dbl/g*1000)/1000,tripg:Math.round(tri/g*1000)/1000,onepg:Math.round(singles/g*1000)/1000, // per-game rates (display)
     splitVsL:splitVsL,splitVsR:splitVsR,roll10avg:roll10avg,roll10slg:roll10slg,hotCold:hotCold,lastGame:lastGame};
 }
 async function getPitcher(id){
@@ -523,7 +532,19 @@ var LG_RATE={batter_hits:0.90,batter_total_bases:1.55,batter_home_runs:0.13,batt
 // This player's own per-game rate for a given prop market (the basis of "what is HE good at").
 function hitterLambda(b,mkt){
   if(!b)return null;
-  if(mkt==='batter_hits')return b.hpg;
+  // ME-61 ‚Äî exact rate from raw totals √∑ ONE denominator (gamesPlayed). Œª(HRR) = (H+R+RBI)/G exactly.
+  if(b.tot&&b.gN>0){var t=b.tot,g=b.gN;
+    if(mkt==='batter_hits')return t.hits/g;
+    if(mkt==='batter_total_bases')return t.tb/g;
+    if(mkt==='batter_home_runs')return t.hrs/g;
+    if(mkt==='batter_doubles')return t.dbl/g;
+    if(mkt==='batter_singles')return t.singles/g;
+    if(mkt==='batter_runs_scored')return t.runs/g;
+    if(mkt==='batter_rbis')return t.rbi/g;
+    if(mkt==='batter_hits_runs_rbis')return (t.hits+t.runs+t.rbi)/g;
+    return null;
+  }
+  if(mkt==='batter_hits')return b.hpg; // fallback (rounded display rates)
   if(mkt==='batter_total_bases')return b.tbpg;
   if(mkt==='batter_home_runs')return b.hrpg;
   if(mkt==='batter_doubles')return b.dblpg;
@@ -734,6 +755,19 @@ function attachProps(hitters,res){
 }
 // ME-38 ‚Äî matchup-aware Œª (v2 = season rate √ó slot √ó platoon, both mean-neutral). THIS is the live Œª (propProb).
 function hitterLambdaV2(h,mkt){var v1=hitterLambda(h.b,mkt);return v1==null?null:Math.round(v1*(h.slotMult||1)*(h.platoonMult||1)*1000)/1000;}
+// Recent-form read for a market (proposed ME-63): season vs L7 vs L10, streak flagged ONLY when BOTH recent
+// windows agree (7 games alone is noise). HOT/COLD need L7 and L10 each ‚â•15% off season; disagreeing = MIXED.
+function formRead(h,mkt){
+  if(!h||!h.b)return null;
+  var season=hitterLambda(h.b,mkt);if(season==null||season<=0)return null;
+  var l7=h.b.l7&&h.b.l7[mkt],l10=h.b.l10&&h.b.l10[mkt];
+  if(l7==null||l10==null)return{season:season,l7:l7,l10:l10,streak:'‚Äî'};
+  var g7=(l7-season)/season,g10=(l10-season)/season,TH=0.15;
+  // confident HOT/COLD ONLY when BOTH windows agree beyond the threshold; everything else is 'mixed'
+  // (inconclusive ‚Äî could be flat, could be volatile). The numbers are shown either way so Joe eyeballs it.
+  var streak=(g7<=-TH&&g10<=-TH)?'COLD':(g7>=TH&&g10>=TH)?'HOT':'mixed';
+  return{season:Math.round(season*100)/100,l7:Math.round(l7*100)/100,l10:Math.round(l10*100)/100,streak:streak,g7:g7,g10:g10};
+}
 function hhmm(ts){return ts?new Date(ts).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}):'';}
 function propLine(bp){ // "TB O1.5 ‚àí120 on Hard Rock ‚Äî +2.1pp edge (as of 1:01)"
   if(!bp)return null;
@@ -873,6 +907,8 @@ function logPlayEdges(hitters){
       rows.push({sec:sec,id:h.id,name:h.name,team:h.team,mkt:bp.mkt,line:bp.line,hr:bp.hr,grade:h.grade,score:h.score,park:h.park,spot:h.spot, // ME-04/15/38 ‚Äî grade + park + slot on every EVALUATED row
         model:bp.modelP,fair:bp.fair,blend:bp.blend,blend_notilt:bp.blendNoTilt,tilt:bp.tilt,tilt_preclip:bp.tiltPreClip,tilt_null:bp.tiltNull,hold:bp.hold, // ME-26/27/30
         engine_lambda:r3(hitterLambda(h.b,bp.mkt)),engine_lambda_v2:hitterLambdaV2(h,bp.mkt),market_lambda:marketLambda(bp.fair,bp.line,bp.mkt),hand_lambda_l7:null,slot_estimated:!!h.slotEstimated, // ME-43/47/49
+        slot_mult:h.slotMult,platoon_mult:h.platoonMult, // ME-62 ‚Äî for the residual regression
+        l7_lambda:(h.b&&h.b.l7&&h.b.l7[bp.mkt]!=null)?r3(h.b.l7[bp.mkt]):null,l10_lambda:(h.b&&h.b.l10&&h.b.l10[bp.mkt]!=null)?r3(h.b.l10[bp.mkt]):null,streak:(formRead(h,bp.mkt)||{}).streak, // ME-63 ‚Äî recent-form windows
         se_edge:bp.seEdge,t_stat:bp.tStat,se_approx:!!bp.seApprox, // ME-59 ‚Äî SE(edge) + t, per row
         edge_blend:bp.edgeBlend,edge_pure:bp.edgePure,edge_tilt_only:bp.edgeTiltOnly,edge_fair:bp.edgeFair,
         gated:bp.edgeBlend!=null&&bp.edgeBlend>=EDGE_GATE});
@@ -886,6 +922,10 @@ function logPlayEdges(hitters){
   // ME-30 ‚Äî hold (vig) per market: the price band constrains price, not vig. A max-hold filter may do more work.
   var holdTxt=Object.keys(holdByMkt).map(function(m){return m.replace('batter_','')+' '+(holdByMkt[m].sum/holdByMkt[m].n*100).toFixed(1)+'pp';}).join(' ¬∑ ');
   try{console.log('[ME-30 avg hold/market] '+(holdTxt||'‚Äî')+' ¬∑ [ME-27 tilt collapsed on null Statcast] '+nullTilt+' plays');}catch(e){}
+  // ME-61 ‚Äî print the HRR numerator (H+R+RBI) and denominator (G) per surfaced hitter so v1 Œª = num/denom
+  // stays hand-checkable EVERY day. If num/G ‚â† the player's season line, the denominator (gamesPlayed) is the suspect.
+  try{var aud=(hitters||[]).filter(function(h){return h.spot&&h.grade!=='D'&&h.b&&h.b.tot&&h.b.gN;}).slice(0,8).map(function(h){var t=h.b.tot,g=h.b.gN,num=t.hits+t.runs+t.rbi;return h.name+' HRR '+num+'/'+g+'='+(num/g).toFixed(2);});
+    if(aud.length)console.log('[ME-61 base-rate audit ‚Äî v1 HRR Œª = (H+R+RBI)/G] '+aud.join(' ¬∑ '));}catch(e){}
   // ME-38 ‚Äî is the edge an artifact of matchup-blind modelP? Bucket THIS slate's edges by slot & park.
   // If edge climbs as the SPOT worsens / the PARK gets more pitcher-friendly, the season-rate model is
   // reading "market underrates him" in exactly the spots it can't see. Slope here = artifact confirmed.
@@ -964,6 +1004,35 @@ function lambdaShadowReport(){
   console.log('  v2 closer to 1.00? '+(Math.abs(v2.m-1)<Math.abs(v1.m-1)?'YES ‚Äî '+(Math.abs(v1.m-1)-Math.abs(v2.m-1)).toFixed(3)+' closer':'NO ‚Äî do not flip')+' (v1 measured 1.23 on 8/25)');
   console.log('  residual structure (should be ~0): v2/market vs slot r='+cSlot.toFixed(2)+' ¬∑ vs park r='+cPark.toFixed(2)+(Math.abs(cSlot)>0.2||Math.abs(cPark)>0.2?' ‚ö† a multiplier is missing/wrong':' ‚úì'));
   return{n:R.length,v1:v1,v2:v2,corrSlot:cSlot,corrPark:cPark};
+}
+// ME-62 ‚Äî ME-38 acceptance criterion 3, NEVER RUN before now. Regress log(Œª_v2 / Œª_market) on log(slotMult)
+// and log(platoonMult), with an intercept to absorb the selection-bias level (the board over-samples good
+// slots/platoons, so the mean ratio >1 is expected and is NOT the test). Under the null that each multiplier
+// is correctly scaled vs what the market already prices, both SLOPES are 0. A slope significantly >0 means
+// THAT multiplier is too large. Reports both coefficients with SE and n. Do NOT touch a multiplier before this.
+function residualTest(){
+  var pre=K+'playedges_',R=[];
+  for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(k&&k.indexOf(pre)===0){var rec=sg(k.slice(K.length),null);
+    (rec&&rec.rows||[]).forEach(function(r){if(r.sec==='top'&&r.engine_lambda_v2>0&&r.market_lambda>0&&r.slot_mult>0&&r.platoon_mult>0)R.push(r);});}}
+  if(R.length<10){console.log('[ME-62] n='+R.length+' <10 ‚Äî need more slates (ME-15). Test suppressed.');return;}
+  var X=R.map(function(r){return [1,Math.log(r.slot_mult),Math.log(r.platoon_mult)];}),y=R.map(function(r){return Math.log(r.engine_lambda_v2/r.market_lambda);});
+  var XtX=[[0,0,0],[0,0,0],[0,0,0]],Xty=[0,0,0];
+  for(var n=0;n<X.length;n++){for(var a=0;a<3;a++){Xty[a]+=X[n][a]*y[n];for(var b=0;b<3;b++)XtX[a][b]+=X[n][a]*X[n][b];}}
+  function inv3(m){var d=m[0][0]*(m[1][1]*m[2][2]-m[1][2]*m[2][1])-m[0][1]*(m[1][0]*m[2][2]-m[1][2]*m[2][0])+m[0][2]*(m[1][0]*m[2][1]-m[1][1]*m[2][0]);
+    if(Math.abs(d)<1e-12)return null;var c=[[(m[1][1]*m[2][2]-m[1][2]*m[2][1]),(m[0][2]*m[2][1]-m[0][1]*m[2][2]),(m[0][1]*m[1][2]-m[0][2]*m[1][1])],
+      [(m[1][2]*m[2][0]-m[1][0]*m[2][2]),(m[0][0]*m[2][2]-m[0][2]*m[2][0]),(m[0][2]*m[1][0]-m[0][0]*m[1][2])],
+      [(m[1][0]*m[2][1]-m[1][1]*m[2][0]),(m[0][1]*m[2][0]-m[0][0]*m[2][1]),(m[0][0]*m[1][1]-m[0][1]*m[1][0])]];
+    return c.map(function(row){return row.map(function(v){return v/d;});});}
+  var inv=inv3(XtX);if(!inv){console.log('[ME-62] singular (no variation in the multipliers on this sample) ‚Äî need more spread.');return;}
+  var beta=[0,0,0];for(var a2=0;a2<3;a2++)for(var b2=0;b2<3;b2++)beta[a2]+=inv[a2][b2]*Xty[b2];
+  var rss=0;for(var m2=0;m2<X.length;m2++){var yh=beta[0]+beta[1]*X[m2][1]+beta[2]*X[m2][2];rss+=(y[m2]-yh)*(y[m2]-yh);}
+  var sig2=rss/Math.max(X.length-3,1),se=[Math.sqrt(sig2*inv[0][0]),Math.sqrt(sig2*inv[1][1]),Math.sqrt(sig2*inv[2][2])];
+  function tag(bta,s){return (Math.abs(bta)>2*s)?(bta>0?' ‚ö† >0, multiplier TOO LARGE':' ‚ö† <0, too small'):' ‚úì ~0 (correctly scaled)';}
+  console.log('[ME-62 residual test ‚Äî regress log(v2/market) on log(mult), n='+X.length+']');
+  console.log('  slot coef    = '+beta[1].toFixed(3)+' ¬± '+se[1].toFixed(3)+tag(beta[1],se[1]));
+  console.log('  platoon coef = '+beta[2].toFixed(3)+' ¬± '+se[2].toFixed(3)+tag(beta[2],se[2]));
+  console.log('  intercept '+beta[0].toFixed(3)+' (absorbs selection level ‚Äî not the test)');
+  return{n:X.length,slot:{coef:beta[1],se:se[1]},platoon:{coef:beta[2],se:se[2]},intercept:beta[0]};
 }
 // ME-44 ‚Äî "why isn't player X on the board?" as a lookup. FIRST gate failed, in order, with the number.
 function traceExclusions(name){
@@ -1816,7 +1885,7 @@ function boardData(){
   dropped.top=topPool.length-topHit.length;
   topHit.forEach(function(h){var bp=h.bestProp;
     var q=bp.tStat!=null?bp.tStat:-99;                                              // ME-59 ‚Äî RANK ON t (edge / its SE), not raw edge
-    top.push({kind:'HIT',light:pickLight(h),name:h.name,sub:(TEAM_ABBR[h.team]||h.team)+' vs '+(h.oppPitName||'TBD'),game:h.game,bet:bp.label+' O'+bp.line+' '+(bp.hr>0?'+':'')+bp.hr,pct:Math.round(bp.blend*100),vp:bp.edgeBlend,vf:bp.edgeFair,t:bp.tStat,se:bp.seEdge,seAppx:bp.seApprox,el:r3(hitterLambda(h.b,bp.mkt)),ml:marketLambda(bp.fair,bp.line,bp.mkt),v2l:hitterLambdaV2(h,bp.mkt),metric:Math.round(bp.blend*100)+'% ¬∑ '+edgePair(bp.edgeBlend,bp.edgeFair),conf:h.confidence,flag:pickWhy(h),reason:hitReason(h),rank:q});});
+    top.push({kind:'HIT',light:pickLight(h),name:h.name,sub:(TEAM_ABBR[h.team]||h.team)+' vs '+(h.oppPitName||'TBD'),game:h.game,bet:bp.label+' O'+bp.line+' '+(bp.hr>0?'+':'')+bp.hr,pct:Math.round(bp.blend*100),vp:bp.edgeBlend,vf:bp.edgeFair,t:bp.tStat,se:bp.seEdge,seAppx:bp.seApprox,form:formRead(h,bp.mkt),el:r3(hitterLambda(h.b,bp.mkt)),ml:marketLambda(bp.fair,bp.line,bp.mkt),v2l:hitterLambdaV2(h,bp.mkt),metric:Math.round(bp.blend*100)+'% ¬∑ '+edgePair(bp.edgeBlend,bp.edgeFair),conf:h.confidence,flag:pickWhy(h),reason:hitReason(h),rank:q});});
   pitcher.forEach(function(p){var pr=p.proj;
     var q=pr.tStat!=null?pr.tStat:-99;                                              // ME-59 ‚Äî same ruler, rank on t
     top.push({kind:'K',light:pr.confidence==='HIGH'?'green':'yellow',name:p.name,sub:(TEAM_ABBR[p.team]||p.team)+' '+p.throws+'HP vs '+p.opp,game:p.game,bet:'Ks '+(pr.side==='Over'?'O':'U')+pr.line+(pr.hrPrice!=null?' '+(pr.hrPrice>0?'+':'')+pr.hrPrice:''),pct:null,vp:pr.edgePrice,vf:pr.edgeFair,t:pr.tStat,se:pr.seEdge,seAppx:pr.seApprox,metric:pr.edgePrice!=null?edgePair(pr.edgePrice,pr.edgeFair):'Œº '+pr.mu+' Ks',conf:pr.confidence,flag:pr.marketFlag,reason:'model '+pr.mu+' Ks',rank:q});});
@@ -1867,7 +1936,10 @@ function render(){
       var shared=(pk.game&&byGame[pk.game]&&byGame[pk.game].length>=2);
       var vp=(pk.vp!=null)?((pk.vp>=0?'+':'')+(pk.vp*100).toFixed(1)+'pp'):'--',lift=(pk.vf!=null)?((pk.vf>=0?'+':'')+(pk.vf*100).toFixed(1)+'pp'):'--';
       var seTxt=(pk.se!=null)?' ¬±'+(pk.se*100).toFixed(1):'',tTxt=(pk.t!=null)?' <b>(t '+pk.t.toFixed(2)+(pk.seAppx?'~':'')+')</b>':'',noise=(pk.t!=null&&pk.t<2.0)?' <span style="color:var(--amb);font-size:10px">‚ö† inside noise</span>':'';
-      h+='<div style="font-size:12px;margin-top:6px;border-top:1px solid var(--bord);padding-top:5px'+(shared?';border-left:3px solid var(--amb);padding-left:6px':'')+'">'+lightDot(pk.light)+' <span class="tag" style="background:rgba(167,139,250,.12);color:var(--pur);font-size:9px">'+pk.kind+'</span> <b>'+esc(pk.name)+'</b> <span class="mut">('+esc(pk.sub)+')</span>'+(shared?' <span style="color:var(--amb);font-size:9px">&#9670; '+esc(pk.game)+'</span>':'')+'<br><b style="color:var(--gld)">'+esc(pk.bet)+'</b>'+(pk.pct!=null?' ¬∑ '+pk.pct+'%':'')+' ¬∑ <b style="color:'+(pk.vp>=0?'var(--grn)':'var(--red)')+'">'+vp+seTxt+'</b>'+tTxt+noise+' <span class="mut">¬∑ lift '+lift+'</span> ¬∑ '+esc(pk.conf)+(pk.flag?' ¬∑ <span style="color:var(--amb)">&#9888; '+esc((''+pk.flag).replace(/<[^>]+>/g,''))+'</span>':'')+(pk.reason?'<br><span style="font-size:10px" class="mut">'+esc(pk.reason)+'</span>':'')+'</div>';
+      var fr=pk.form,formTxt='';
+      if(fr&&fr.l7!=null&&fr.l10!=null){var fcol=fr.streak==='COLD'?'var(--blu)':fr.streak==='HOT'?'var(--grn)':'var(--mut)',fw=fr.streak==='COLD'?'‚ùÑ cold (both windows)':fr.streak==='HOT'?'üî• hot (both windows)':'~ mixed';
+        formTxt='<br><span style="font-size:9px" class="mut">form (H+R+RBI-scale Œª): season <b>'+fr.season+'</b> ¬∑ L7 '+fr.l7+' ¬∑ L10 '+fr.l10+' ¬∑ <span style="color:'+fcol+'">'+fw+'</span></span>';}
+      h+='<div style="font-size:12px;margin-top:6px;border-top:1px solid var(--bord);padding-top:5px'+(shared?';border-left:3px solid var(--amb);padding-left:6px':'')+'">'+lightDot(pk.light)+' <span class="tag" style="background:rgba(167,139,250,.12);color:var(--pur);font-size:9px">'+pk.kind+'</span> <b>'+esc(pk.name)+'</b> <span class="mut">('+esc(pk.sub)+')</span>'+(shared?' <span style="color:var(--amb);font-size:9px">&#9670; '+esc(pk.game)+'</span>':'')+'<br><b style="color:var(--gld)">'+esc(pk.bet)+'</b>'+(pk.pct!=null?' ¬∑ '+pk.pct+'%':'')+' ¬∑ <b style="color:'+(pk.vp>=0?'var(--grn)':'var(--red)')+'">'+vp+seTxt+'</b>'+tTxt+noise+' <span class="mut">¬∑ lift '+lift+'</span> ¬∑ '+esc(pk.conf)+(pk.flag?' ¬∑ <span style="color:var(--amb)">&#9888; '+esc((''+pk.flag).replace(/<[^>]+>/g,''))+'</span>':'')+formTxt+(pk.reason?'<br><span style="font-size:10px" class="mut">'+esc(pk.reason)+'</span>':'')+'</div>';
     });
     h+='</div>';
   }else{
@@ -1986,9 +2058,9 @@ function copyTop(){
   }
   // ‚îÄ‚îÄ üèÜ TOP PICKS ‚Äî best of every board, ranked, auditable ‚îÄ‚îÄ
   if(BD.top.length){
-    t+='\nüèÜ TOP PICKS ‚Äî ranked by EDGE vs price (highest first) ¬∑ endorsed only (held listed below)\n';
+    t+='\nüèÜ TOP PICKS ‚Äî ranked by t (edge √∑ its SE; ME-59) ¬∑ endorsed only (held listed below)\n';
     BD.top.forEach(function(pk){
-      t+=dotTxt(pk.light)+' ['+pk.kind+'] '+pk.name+' ('+pk.sub+') ‚Äî '+pk.bet+' | '+pk.metric+(pk.se!=null?' ¬±'+(pk.se*100).toFixed(1):'')+(pk.t!=null?' (t '+pk.t.toFixed(2)+(pk.seAppx?' SE_APPROX':'')+')':'')+(pk.t!=null&&pk.t<2?' [inside noise]':'')+' ¬∑ '+pk.conf+(pk.el!=null||pk.ml!=null?' | Œª v1 '+(pk.el!=null?pk.el:'--')+' ¬∑ v2 '+(pk.v2l!=null?pk.v2l:'--')+' ¬∑ mkt '+(pk.ml!=null?pk.ml:'--')+' ¬∑ hand_L7 ____':'')+'\n'; // ME-43/47/49/59 columns
+      t+=dotTxt(pk.light)+' ['+pk.kind+'] '+pk.name+' ('+pk.sub+') ‚Äî '+pk.bet+' | '+pk.metric+(pk.se!=null?' ¬±'+(pk.se*100).toFixed(1):'')+(pk.t!=null?' (t '+pk.t.toFixed(2)+(pk.seAppx?' SE_APPROX':'')+')':'')+(pk.t!=null&&pk.t<2?' [inside noise]':'')+(pk.form&&pk.form.l7!=null?' | form S'+pk.form.season+'/L7 '+pk.form.l7+'/L10 '+pk.form.l10+' '+pk.form.streak:'')+' ¬∑ '+pk.conf+(pk.el!=null||pk.ml!=null?' | Œª v1 '+(pk.el!=null?pk.el:'--')+' ¬∑ v2 '+(pk.v2l!=null?pk.v2l:'--')+' ¬∑ mkt '+(pk.ml!=null?pk.ml:'--')+' ¬∑ hand_L7 ____':'')+'\n'; // ME-43/47/49/59 columns
       if(pk.flag)t+='     ‚ö† '+stripTags(pk.flag)+'\n';
       if(pk.reason)t+='     why: '+pk.reason+'\n';
     });
