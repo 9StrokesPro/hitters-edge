@@ -63,6 +63,18 @@ var MLB='https://statsapi.mlb.com/api/v1';
 var OWM_KEY='6a060c8de21d6f1a5cd9d6fed2b7a53b';
 var ODDS_KEY='e738de03c4b7e835c52b50e1a0b1c494'; // ONLY for game totals context (~2 credits/load)
 var K='me15_';
+var BUILD='v15.018'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
+// ME-56 ‚Äî generation-time write to the Drive mirror. The scheduled grader is cloud-only and can't write a
+// Sheet cell; the browser card CAN. On generation we POST every logged row to a Cloudflare worker that appends
+// to the Drive sheet (setup + worker code in edge-scanner-server; see FROM-CODER). Empty URL = no-op (falls
+// back to the ME-56a copy-dump bridge) until Joe sets the deployed endpoint here.
+var PLAYS_ENDPOINT=''; // e.g. 'https://edge-scanner.<acct>.workers.dev/plays'
+function postPlays(build){
+  if(!PLAYS_ENDPOINT)return; var pe=sg('playedges_'+todayStr(),null); if(!pe||!pe.rows||!pe.rows.length)return;
+  try{fetch(PLAYS_ENDPOINT,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({build:build,date:todayStr(),at:Date.now(),rows:pe.rows})})
+    .then(function(r){return r.json();}).then(function(j){try{console.log('[ME-56 plays POST] '+(j&&j.ok?('appended '+(j.appended||pe.rows.length)+' rows to Drive'):'endpoint returned '+JSON.stringify(j)));}catch(e){}})
+    .catch(function(e){try{console.log('[ME-56 plays POST] failed (rows still in the ME-56a copy-dump): '+e.message);}catch(_){}});}catch(e){}
+}
 // ME-16 ‚Äî price band, configured in ONE place. Reject anything worse than PRICE_MIN or longer than
 // PRICE_MAX at GENERATION (before it reaches a board), not as a display toggle.
 var PRICE_MIN=-140, PRICE_MAX=150;
@@ -981,7 +993,8 @@ function logPlayEdges(hitters){
     if(!h.spot||h.grade==='D')return;
     [['top',h.bestProp],['edge',h.edgeProp],['contact',h.contactProp]].forEach(function(pr){
       var sec=pr[0],bp=pr[1];if(!bp||bp.line==null||!bp.mkt)return;
-      rows.push({sec:sec,id:h.id,name:h.name,team:h.team,mkt:bp.mkt,line:bp.line,hr:bp.hr,grade:h.grade,score:h.score,park:h.park,spot:h.spot, // ME-04/15/38 ‚Äî grade + park + slot on every EVALUATED row
+      rows.push({row_id:todayStr()+'|'+h.id+'|'+bp.mkt+'|'+bp.line+'|'+sec,supersedes_row_id:null, // ME-55 ‚Äî stable id + supersede key; grader tallies only non-superseded rows
+        sec:sec,id:h.id,name:h.name,team:h.team,mkt:bp.mkt,line:bp.line,hr:bp.hr,grade:h.grade,score:h.score,park:h.park,spot:h.spot, // ME-04/15/38 ‚Äî grade + park + slot on every EVALUATED row
         model:bp.modelP,fair:bp.fair,blend:bp.blend,blend_notilt:bp.blendNoTilt,tilt:bp.tilt,tilt_preclip:bp.tiltPreClip,tilt_null:bp.tiltNull,hold:bp.hold, // ME-26/27/30
         engine_lambda:r3(hitterLambda(h.b,bp.mkt)),engine_lambda_v2:hitterLambdaV2(h,bp.mkt),market_lambda:marketLambda(bp.fair,bp.line,bp.mkt),hand_lambda_l7:null,slot_estimated:!!h.slotEstimated, // ME-43/47/49
         slot_mult:h.slotMult,platoon_mult:h.platoonMult, // ME-62 ‚Äî for the residual regression
@@ -1639,12 +1652,15 @@ async function loadAll(){
       if(t){t.id=P.id;t.opp=x[1];t.oppId=x[2];t.game=g.awayTeam+' @ '+g.homeTeam;t.start=g.start;targets.push(t);} // ME-51 ‚Äî carry pitcher id to settle projHits
     });
   });
-  // ME-46 ‚Äî labels DERIVED from projHits (descriptions, not rank adjustments). TARGET = hittable vs
-  // tonight's field (projHits above the slate median); DUE/MIRAGE = which way his recent form regresses.
+  // ME-48 ‚Äî ONE axis of labels, RETIRING DUE/MIRAGE (two opposite meanings across builds). The PRIMARY label
+  // is the between-pitcher read off projHits terciles: TARGET (top third ‚Äî hittable vs tonight's field),
+  // NEUTRAL (middle), AVOID (bottom third ‚Äî the elite arms, must never read as an invitation). Recent-form
+  // regression is a MODIFIER only ("regressing up/down"), never a category.
   (function(){var ph=targets.map(function(t){return t.projHits;}).sort(function(a,b){return a-b;});
-    var med=ph.length?ph[Math.floor(ph.length/2)]:0;
+    var n=ph.length,loC=n?ph[Math.floor(n/3)]:0,hiC=n?ph[Math.floor(2*n/3)]:0;
     targets.forEach(function(t){var L3=t.hitsPS;
-      t.cls=(t.projHits>=med&&ph.length>=3)?'TARGET':(t.projHits>L3+0.1?'DUE':t.projHits<L3-0.1?'MIRAGE':'NEUTRAL');});})();
+      t.cls=(n<3)?'NEUTRAL':(t.projHits>=hiC?'TARGET':t.projHits<=loC?'AVOID':'NEUTRAL');
+      t.regress=(t.projHits>L3+0.1)?'regressing up':(t.projHits<L3-0.1)?'regressing down':'';});})();
   targets.sort(function(a,b){return b.sortKey-a.sortKey;}); // sortKey = projHits, nothing added
   // hitters
   var jobs=[];
@@ -1718,6 +1734,7 @@ async function loadAll(){
   });
   tagTravel(hitters,games); // ME-53 ‚Äî capture tz / zone-delta / local first-pitch on every hitter row (no model change)
   logKProjections(pitchers);logEdgePlays(hitters);logPlayEdges(hitters);logTargets(targets);logMarketAudit(hitters); // instrument
+  postPlays(BUILD); // ME-56 ‚Äî push tonight's rows to the Drive mirror via the worker (no-op until PLAYS_ENDPOINT is set)
   var kcal=null;try{kcal=await settleKProjections();}catch(e){} // settle prior nights vs real box-score Ks
   var ecal=null;try{ecal=await settleEdgePlays();}catch(e){}     // settle prior edge plays, grouped by signal
   var gcal=null;try{gcal=await settlePlayEdges();}catch(e){}     // ME-15 ‚Äî settle the WHOLE evaluated population, bucketed by grade
@@ -1931,12 +1948,12 @@ function tgp(ix){var el=document.getElementById('pc'+ix);if(el)el.classList.togg
 // renders. Returns the ranked Edge / Contact / Pitcher lists + a combined TOP PICKS list (top of each).
 // ‚îÄ‚îÄ PITCHER TARGET CARD ‚Äî hits number up top (headline), metrics on expand ‚îÄ‚îÄ
 function tcard(t,ix){
-  var col=t.cls==='TARGET'?'var(--grn)':t.cls==='DUE'?'var(--amb)':t.cls==='MIRAGE'?'var(--red)':'var(--mut)';
-  var rgb=t.cls==='TARGET'?'34,197,94':t.cls==='DUE'?'245,158,11':t.cls==='MIRAGE'?'239,68,68':'139,148,167';
+  var col=t.cls==='TARGET'?'var(--grn)':t.cls==='AVOID'?'var(--red)':'var(--mut)'; // ME-48
+  var rgb=t.cls==='TARGET'?'34,197,94':t.cls==='AVOID'?'239,68,68':'139,148,167';
   var when=new Date(t.start).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});
   var trendTxt=t.trend==='worsening'?'‚Üë worsening':t.trend==='improving'?'‚Üì improving':'flat';
   var head='<div class="mhead" onclick="tgt('+ix+')"><div>'
-    +'<div style="font-weight:800;font-size:14px">'+esc(t.name)+' <small>('+(t.throws||'?')+'HP)</small> <span class="tag" style="background:rgba('+rgb+',.15);color:'+col+'">'+t.cls+'</span></div>'
+    +'<div style="font-weight:800;font-size:14px">'+esc(t.name)+' <small>('+(t.throws||'?')+'HP)</small> <span class="tag" style="background:rgba('+rgb+',.15);color:'+col+'">'+t.cls+'</span>'+(t.regress?' <span class="mut" style="font-size:9px">'+t.regress+'</span>':'')+'</div>'
     +'<div style="font-size:10px" class="mut">vs '+esc(t.opp)+' ¬∑ '+when+(t.hw&&t.hw!=='even'?' ¬∑ weak vs '+t.hw:'')+'</div></div>'
     +'<div style="text-align:right"><div style="font-size:22px;font-weight:900;color:'+col+'">'+t.hitsPS+'</div><div style="font-size:9px" class="mut">H/start (L3) ¬∑ '+trendTxt+'</div></div></div>';
   var b='<div class="mbody">';
@@ -1945,7 +1962,7 @@ function tcard(t,ix){
   b+='<div class="sect"><div class="sh">LAYER 2 ‚Äî IS IT REAL? (contact quality allowed)</div>'
     +(t.xba!=null?'xBA-against <b>'+f3(t.xba)+'</b> ¬∑ xSLG-against <b>'+f3(t.xslg)+'</b><br>':'<span class="mut">no Statcast row yet</span><br>')
     +(t.hh!=null?'Hard-Hit '+t.hh+'% ¬∑ Barrel '+t.br+'% ¬∑ Exit velo '+t.ev+' mph':'')
-    +'<br>'+(t.cls==='MIRAGE'?'<b style="color:var(--red)">MIRAGE ‚Äî hits are on SOFT contact (bloops/luck); downgraded.</b>':t.cls==='DUE'?'<b style="color:var(--amb)">DUE ‚Äî getting BARRELED but few hits so far; unlucky, about to break.</b>':t.hardContact?'<b style="color:var(--grn)">Hard contact confirms it ‚Äî the hittability is real.</b>':'contact quality ~average')+'</div>';
+    +'<br>'+(t.cls==='AVOID'?'<b style="color:var(--red)">AVOID ‚Äî bottom of tonight\'s field by projected hits; an elite arm, not a target.</b>':t.cls==='TARGET'?'<b style="color:var(--grn)">TARGET ‚Äî top of the field by projected hits; the hittable spot.</b>'+(t.hardContact?' Hard contact confirms it.':''):'NEUTRAL ‚Äî middle of the field.')+(t.regress?' <span class="mut">('+t.regress+' vs his L3)</span>':'')+'</div>';
   b+='<div class="sect"><div class="sh">LAYER 3 ‚Äî THE EDGE & THE AIM</div>'
     +(t.whiffDrop?'<b>Losing swing-and-miss</b> (K/9 '+(t.k9Delta>0?'+':'')+t.k9Delta+' vs season) ‚Äî more balls in play<br>':'')
     +(t.lineLags?'<b style="color:var(--grn)">Worse LATELY than his season line ‚Äî the market line hasn‚Äôt caught up (the edge)</b><br>':'')
@@ -2161,7 +2178,7 @@ function stripTags(s){return(''+(s||'')).replace(/<[^>]+>/g,'');}
 function copyTop(){
   if(!D){toast('Still loading');return;}
   var BD=boardData();
-  var t='MATCHUP ENGINE v15 ‚Äî '+new Date().toLocaleString()+' (data '+D.generatedAt.toLocaleTimeString()+')\n';
+  var t='MATCHUP ENGINE '+BUILD+' ‚Äî '+new Date().toLocaleString()+' (data '+D.generatedAt.toLocaleTimeString()+')\n';
   t+='Read the TARGET LIST first (which pitchers are hittable), then the plays built off it.\n';
   // ‚îÄ‚îÄ üéØ PITCHER TARGETS ‚Äî the front door (sorted by recent hits allowed) ‚îÄ‚îÄ
   if(D.targets&&D.targets.length){
@@ -2184,14 +2201,19 @@ function copyTop(){
     t+='\n‚ö† HELD ‚Äî '+BD.held.length+' caught by the gate (diagnostic, NOT a bet list)\n';
     BD.held.forEach(function(pk){t+='‚ö† '+stripTags(''+pk.reason)+'\n     '+pk.name+' ¬∑ '+pk.sub+' ¬∑ '+pk.kind+' '+pk.mkt+(pk.edge!=null?' ¬∑ '+(pk.edge>=0?'+':'')+(pk.edge*100).toFixed(1)+'pp':'')+'\n';});
   }
-  // ‚îÄ‚îÄ üéØ EDGE PLAYS ‚Äî Runs / RBI / HR ‚îÄ‚îÄ
-  t+='\nüéØ EDGE PLAYS ‚Äî Runs / RBI / HR ('+BD.edge.length+') ¬∑ context that can beat the generic price\n';
-  BD.edge.slice(0,20).forEach(function(x){var bp=x.edgeProp,why=pickWhy(x);
-    t+=dotTxt(pickLight(x))+' '+x.name+' ('+(TEAM_ABBR[x.team]||x.team)+' vs '+(x.oppPitName||'TBD')+') ‚Äî '+bp.label+' O'+bp.line+' '+(bp.hr>0?'+':'')+bp.hr+' | '+edgePair(bp.edgeBlend,bp.edgeFair)+', '+Math.round(bp.blend*100)+'% ¬∑ '+x.confidence+'\n';
+  // ME-42 ‚Äî DEDUP: one row per unique (player, market, line, price). A play already in TOP PICKS is not
+  // repeated in the re-cut sections below; those show only ADDITIONAL plays, so N lines = N unique bets.
+  var seen42={};BD.top.forEach(function(pk){seen42[pk.name+'|'+pk.bet]=1;});
+  function betStr42(bp){return bp.label+' O'+bp.line+' '+(bp.hr>0?'+':'')+bp.hr;}
+  // ‚îÄ‚îÄ üéØ EDGE PLAYS ‚Äî Runs / RBI / HR (only those NOT already in Top Picks) ‚îÄ‚îÄ
+  var edgeNew=BD.edge.filter(function(x){var k=x.name+'|'+betStr42(x.edgeProp);if(seen42[k])return false;seen42[k]=1;return true;});
+  t+='\nüéØ EDGE PLAYS ‚Äî Runs / RBI / HR ('+edgeNew.length+' not already above) ¬∑ context that can beat the generic price\n';
+  edgeNew.slice(0,20).forEach(function(x){var bp=x.edgeProp,why=pickWhy(x);
+    t+=dotTxt(pickLight(x))+' '+x.name+' ('+(TEAM_ABBR[x.team]||x.team)+' vs '+(x.oppPitName||'TBD')+') ‚Äî '+betStr42(bp)+' | '+edgePair(bp.edgeBlend,bp.edgeFair)+', '+Math.round(bp.blend*100)+'% ¬∑ '+x.confidence+'\n';
     t+='     why: '+((bp.edgeWhy||[]).join(' ¬∑ ')||'context lean')+'\n';
     if(why)t+='     ‚ö† '+stripTags(why)+'\n';
   });
-  if(!BD.edge.length)t+='(none yet ‚Äî show once lineups/totals/pitchers post)\n';
+  if(!edgeNew.length)t+='(nothing new ‚Äî all edge plays are already in Top Picks)\n';
   // ‚îÄ‚îÄ ‚öæ PITCHER Ks / PITCHER EDGE ‚îÄ‚îÄ
   var kb=BD.pitcher;
   t+='\n‚öæ PITCHER K PROPS ('+kb.length+' recommended) ¬∑ Log5 ‚Üí Poisson, edge vs de-vig fair (market-anchored)\n';
@@ -2200,13 +2222,32 @@ function copyTop(){
     if(pr.marketFlag)t+='     ‚ö† '+stripTags(pr.marketFlag)+'\n';
   });
   if(!kb.length)t+='(no recommended K plays ‚Äî lines not posted or all held)\n';
-  // ‚îÄ‚îÄ üü¢ CONTACT PLAYS ‚Äî Hits / Singles / TB / HRR ‚îÄ‚îÄ
-  t+='\nüü¢ CONTACT PLAYS ‚Äî Hits / Singles / TB / HRR ('+BD.contact.length+') ¬∑ safer, high-hit-rate, tightly priced\n';
-  BD.contact.slice(0,20).forEach(function(x){var bp=x.contactProp;
-    t+=dotTxt(pickLight(x))+' '+x.name+' ('+(TEAM_ABBR[x.team]||x.team)+') ‚Äî '+bp.label+' O'+bp.line+' '+(bp.hr>0?'+':'')+bp.hr+' | '+Math.round(bp.blend*100)+'% to cash'+(bp.edgeBlend!=null?', '+edgePair(bp.edgeBlend,bp.edgeFair):'')+' ¬∑ '+x.confidence+'\n';
+  // ‚îÄ‚îÄ üü¢ CONTACT PLAYS ‚Äî Hits / Singles / TB / HRR (only those NOT already above ‚Äî ME-42 dedup) ‚îÄ‚îÄ
+  var contactNew=BD.contact.filter(function(x){var k=x.name+'|'+betStr42(x.contactProp);if(seen42[k])return false;seen42[k]=1;return true;});
+  t+='\nüü¢ CONTACT PLAYS ‚Äî Hits / Singles / TB / HRR ('+contactNew.length+' not already above) ¬∑ safer, high-hit-rate, tightly priced\n';
+  contactNew.slice(0,20).forEach(function(x){var bp=x.contactProp;
+    t+=dotTxt(pickLight(x))+' '+x.name+' ('+(TEAM_ABBR[x.team]||x.team)+') ‚Äî '+betStr42(bp)+' | '+Math.round(bp.blend*100)+'% to cash'+(bp.edgeBlend!=null?', '+edgePair(bp.edgeBlend,bp.edgeFair):'')+' ¬∑ '+x.confidence+'\n';
   });
-  navigator.clipboard.writeText(t).then(function(){toast('Copied ALL boards (Top Picks + Edge + Ks + Contact)');}).catch(function(){toast('Copy failed');});
+  if(!contactNew.length)t+='(nothing new ‚Äî all contact plays are already in Top Picks)\n';
+  // ‚îÄ‚îÄ ME-56a ‚Äî FULL DATA DUMP: every logged column, machine-readable, for CARD-LATEST.txt ‚Üí Drive mirror ‚îÄ‚îÄ
+  // Dumps the UNION of keys across the logged playedges rows (auto-includes any future column) + calib payloads.
+  var pe=sg('playedges_'+todayStr(),null);
+  if(pe&&pe.rows&&pe.rows.length){
+    var keyset={};pe.rows.forEach(function(r){Object.keys(r).forEach(function(k){keyset[k]=1;});});
+    var cols=Object.keys(keyset);
+    t+='\n=== DATA DUMP (ME-56a ‚Äî '+pe.rows.length+' rows ¬∑ build '+BUILD+' ¬∑ '+cols.length+' columns) ===\n';
+    t+=cols.join(',')+'\n';
+    pe.rows.forEach(function(r){t+=cols.map(function(c){var v=r[c];return (v==null)?'':(''+v).replace(/[,\n]/g,';');}).join(',')+'\n';});
+  }else t+='\n=== DATA DUMP (ME-56a) ‚Äî no logged rows this slate yet ===\n';
+  // HELD ACE_OPPONENT rows explicitly (control group), plus populated calibration payloads
+  var aceHeld=(BD.held||[]).filter(function(p){return /ACE_OPPONENT/.test(''+p.reason);});
+  if(aceHeld.length){t+='\nACE_OPPONENT (control, '+aceHeld.length+'): '+aceHeld.map(function(p){return p.name+' '+p.mkt+' ['+stripTags(''+p.reason)+']';}).join(' | ')+'\n';}
+  if(D.tcalib&&D.tcalib.n)t+='tcalib: '+JSON.stringify(D.tcalib)+'\n';
+  if(D.mcalib&&D.mcalib.n)t+='mcalib: '+JSON.stringify(D.mcalib)+'\n';
+  if(D.gcalib&&D.gcalib.n)t+='gcalib: '+JSON.stringify({n:D.gcalib.n,w:D.gcalib.w,l:D.gcalib.l,byGrade:D.gcalib.byGrade,byTilt:D.gcalib.byTilt,starterExited:D.gcalib.starterExited})+'\n';
+  navigator.clipboard.writeText(t).then(function(){toast('Copied ‚Äî boards + FULL DATA DUMP (ME-56a)');}).catch(function(){toast('Copy failed');});
 }
+(function(){var lg=document.querySelector('.logo');if(lg)lg.innerHTML='&#9918; Matchup Engine '+BUILD;try{document.title='Matchup Engine '+BUILD;}catch(e){}})(); // NEXT #1 ‚Äî stamp build number in header + tab title
 loadAll();
 </script>
 </body>
