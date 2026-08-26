@@ -105,6 +105,7 @@ function slp(ms){return new Promise(function(r){setTimeout(r,ms);});}
 function toast(m){var t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(function(){t.classList.remove('show');},2600);}
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
 function f3(v){if(v==null)return'--';if(v<0)return'-'+f3(-v);return v>=1?v.toFixed(3):('.'+String(Math.round(v*1000)).padStart(3,'0'));}
+function r3(x){return x==null?null:Math.round(x*1000)/1000;} // ME-49 ‚Äî 3-decimal lambda display, no float dust
 async function apiFetch(url){try{var r=await fetch(url);if(!r.ok)throw 0;return await r.json();}catch(e){return null;}}
 async function pool(items,fn,n){var i=0,out=new Array(items.length);async function w(){while(i<items.length){var ix=i++;out[ix]=await fn(items[ix],ix);}}var ws=[];for(var j=0;j<Math.min(n,items.length);j++)ws.push(w());await Promise.all(ws);return out;}
 function windCardinal(deg){if(deg==null)return'';return['N','NE','E','SE','S','SW','W','NW'][Math.round(deg/45)%8];}
@@ -195,7 +196,10 @@ function buildKLayer(gls,season){
   var seasonHitsPerStart=starts.length?Math.round(starts.reduce(function(a,x){return a+x.h;},0)/starts.length*10)/10:null;
   var hitsTrend='flat';
   if(recentStarts.length>=4){var r2h=(recentStarts[recentStarts.length-1].h+recentStarts[recentStarts.length-2].h)/2,pri=recentStarts.slice(0,-2).reduce(function(a,x){return a+x.h;},0)/(recentStarts.length-2);if(r2h>=pri+1.5)hitsTrend='worsening';else if(r2h<=pri-1.5)hitsTrend='improving';}
-  return{kGames:games.slice(-5),qStarts:qual.length,seasonStarts:starts.length, // ME-11 ‚Äî season starts (qStarts is last-3 only, max 3)
+  // ME-59 ‚Äî per-start K sample SD over the season (assumption-free error; Ks are under-dispersed so ‚àö(Œº/G) overstates)
+  var kArr=starts.map(function(x){return x.k;}),kMean=kArr.length?kArr.reduce(function(a,b){return a+b;},0)/kArr.length:0;
+  var kSD=(kArr.length>=2)?Math.round(Math.sqrt(kArr.reduce(function(a,b){return a+(b-kMean)*(b-kMean);},0)/(kArr.length-1))*1000)/1000:null;
+  return{kGames:games.slice(-5),qStarts:qual.length,seasonStarts:starts.length,kSD:kSD, // ME-11 season starts ¬∑ ME-59 per-start K SD
     hitsL3:hitsL3,hitsL5:hitsL5,hitsArr:hitsArr,hitsPerStart:hitsPerStart,seasonHitsPerStart:seasonHitsPerStart,hitsTrend:hitsTrend,nStarts:recentStarts.length,
     k_per_game_L3:k_per_game_L3,k9_L3:k9_L3,avg_ip_L3:avg_ip_L3,whip_L7:whip_L7,recent_kpct:recent_kpct,
     season_kpct:season.kpct,season_era:season.era,season_whip:season.whip,season_k9:season.k9,
@@ -308,7 +312,14 @@ async function getBatter(id){
   var hotCold=diff>=0.050?'HOT':diff>=0.020?'Warming':diff<=-0.050?'COLD':diff<=-0.020?'Cooling':'Neutral';
   var lastGame=gls.length?gls[gls.length-1].date:null;
   var singles=Math.max(hits-hrs-dbl-tri,0);
-  return{playerId:id,batSide:batSide,games:g,avg:avg,obp:obp,slg:slg,
+  // ME-59 ‚Äî per-game SAMPLE SD per market, from the actual game log. This is the ASSUMPTION-FREE error input:
+  // it gets clumping right for free (H+R+RBI/TB are over-dispersed ‚Üí bigger SD than ‚àö(Œª/G) would give). Stored
+  // so SE(Œª)=SD/‚àön; propProb falls back to the Poisson ‚àö(Œª/G) only when no log (flagged SE_APPROX).
+  var MK=[['batter_hits',function(s){return +s.hits||0;}],['batter_total_bases',function(s){return +s.totalBases||0;}],['batter_runs_scored',function(s){return +s.runs||0;}],['batter_rbis',function(s){return +s.rbi||0;}],['batter_home_runs',function(s){return +s.homeRuns||0;}],['batter_doubles',function(s){return +s.doubles||0;}],['batter_singles',function(s){return Math.max(0,(+s.hits||0)-(+s.doubles||0)-(+s.triples||0)-(+s.homeRuns||0));}],['batter_hits_runs_rbis',function(s){return (+s.hits||0)+(+s.runs||0)+(+s.rbi||0);}]];
+  var pgSD={},pgN=gls.length;
+  MK.forEach(function(mk){var sum=0,sq=0;gls.forEach(function(x){var v=mk[1](x.stat);sum+=v;sq+=v*v;});
+    pgSD[mk[0]]=(pgN>=2)?Math.round(Math.sqrt(Math.max(0,(sq-sum*sum/pgN)/(pgN-1)))*1000)/1000:null;});
+  return{playerId:id,batSide:batSide,games:g,avg:avg,obp:obp,slg:slg,pgSD:pgSD,pgN:pgN,
     iso:Math.round(Math.max(slg-avg,0)*1000)/1000,
     bbRate:Math.round(Math.max(obp-avg,0)*1000)/1000,
     hpg:Math.round(hits/g*100)/100,tbpg:Math.round(tb/g*100)/100,runspg:Math.round(runs/g*100)/100,rbipg:Math.round(rbi/g*100)/100,
@@ -522,6 +533,23 @@ function hitterLambda(b,mkt){
   if(mkt==='batter_hits_runs_rbis')return (b.hpg||0)+(b.runspg||0)+(b.rbipg||0);
   return null;
 }
+// ME-38 Phase 1 ‚Äî MATCHUP-AWARE Œª multipliers (slot + platoon). SHADOW MODE: computed & logged, NOT yet fed
+// to the live number (propProb still uses the raw season rate). Every multiplier is NORMALIZED at runtime so
+// its batch mean is exactly 1.000 ‚Äî a multiplier that averaged >1 would inflate the whole board and move every
+// edge together. Raw here; normalization + storage happen in attachProps.
+var SLOT_PA=[0,4.61,4.50,4.39,4.29,4.18,4.08,3.98,3.88,3.78],LEAGUE_PA=4.19; // expected PA by lineup slot (VERIFY vs league; only the RELATIVE shape matters ‚Äî normalization handles the level)
+function slotMultRaw(spot){return (spot>=1&&spot<=9)?SLOT_PA[spot]/LEAGUE_PA:null;}
+// league directional platoon multiplier by (batter side, pitcher hand). Absolute level is irrelevant (normalized);
+// only the RELATIVE ordering matters: platoon-advantage pairs high, same-hand pairs low, switch neutral.
+var PLATOON_PAIR={LR:1.03,LL:0.93,RL:1.03,RR:0.98,S:1.00};
+function platoonMultRaw(b,oppHand){
+  if(!b||!oppHand)return null;
+  var side=(b.batSide||'R').charAt(0),sp=(oppHand.charAt(0)==='L')?b.splitVsL:b.splitVsR;
+  var ov=(b.obp||0)+(b.slg||0),indiv=(sp&&sp.ops&&ov>0)?sp.ops/ov:1;      // batter vs this hand relative to his overall (quality cancels)
+  var pa=(sp&&sp.ab)||0,w=pa/(pa+1000);                                    // REGRESS HARD ‚Äî one season (~150 PA) is mostly noise
+  var pair=(side==='S')?PLATOON_PAIR.S:(PLATOON_PAIR[side+oppHand.charAt(0)]||1.0);
+  return w*indiv+(1-w)*pair;                                              // regressed toward the league pair
+}
 // CONTEXTUAL EDGE ‚Äî the heart of "where we beat them." Hits/Singles are priced to the penny (no edge).
 // But Runs/RBI/HR depend on context the generic market price underweights ‚Äî lineup traffic, game total,
 // park, a barrel-prone pitcher. This returns our TILT vs the market fair (+ = our read favors the over)
@@ -572,8 +600,8 @@ function contextTilt(h,mkt){
 // candidate edges (blend / pure-model / tilt-only), each vs the price you PAY (breakeven = implied).
 function propProb(p,h,mkt){
   if(!p||p.hr==null)return null;
-  var lam=hitterLambda(h.b,mkt);
-  var modelP=(lam!=null)?poissonCorr(mkt,lam,p.line):null;              // ME-29 de-biased Poisson (still matchup-BLIND ‚Äî ME-28)
+  var lam=hitterLambdaV2(h,mkt);                                        // ME-38 ‚Äî matchup-aware Œª IS LIVE (slot√óplatoon, mean-neutral); v1 still logged for comparison. Neutrality is HARD-GATED in render().
+  var modelP=(lam!=null)?poissonCorr(mkt,lam,p.line):null;              // ME-29 de-biased Poisson on the matchup-aware Œª
   var fair=(p.fair!=null)?p.fair:null;                                  // de-vig market fair
   var core=modelBlend(modelP,fair);                                    // BLEND_W¬∑model + (1‚àíBLEND_W)¬∑fair (no tilt)
   var ct=contextTilt(h,mkt),tilt=ct.tilt;
@@ -582,10 +610,26 @@ function propProb(p,h,mkt){
   var blend=(core!=null)?Math.max(0.03,Math.min(0.97,core+tilt)):core;
   var tiltP=(fair!=null)?Math.max(0.03,Math.min(0.97,fair+tilt)):null; // fair nudged by the orthogonal tilt (for edge_tilt_only)
   var imp=impliedP(p.hr);
+  var eb=edgeVsPrice(blend,p.hr);
+  // ME-59 ‚Äî STANDARD ERROR on the edge. SE(Œª)=sample-SD/‚àön (assumption-free; clumping handled for free) scaled
+  // to the live Œª; ‚àö(Œª/G) only as a flagged fallback. SE(modelP)=pmf(floor(line),Œª)¬∑SE(Œª); SE(edge)=BLEND_W¬∑SE(modelP).
+  // This is a LOWER BOUND: it omits the de-vig error on `fair` (small ‚Äî market prices are precise) and the ME-29
+  // bias-correction coefficient error (fit residuals not carried). `implied` is exact and contributes nothing.
+  var seEdge=null,tStat=null,seApprox=false;
+  if(lam!=null&&modelP!=null){
+    var v1=hitterLambda(h.b,mkt),sd=(h.b&&h.b.pgSD)?h.b.pgSD[mkt]:null,n=(h.b&&h.b.pgN)||0;
+    var seLam;
+    if(sd!=null&&n>=2){seLam=(sd/Math.sqrt(n))*((v1&&v1>0)?lam/v1:1);}          // sample-SD path, scaled to live Œª
+    else{var G=n>=2?n:((h.b&&h.b.games)||1);seLam=Math.sqrt(lam/Math.max(G,1));seApprox=true;} // Poisson fallback
+    var seModelP=poissonPMF(Math.floor(p.line),lam)*seLam;
+    seEdge=Math.round(BLEND_W*seModelP*10000)/10000;
+    tStat=(seEdge>0&&eb!=null)?Math.round(eb/seEdge*100)/100:null;
+  }
   return {modelP:modelP!=null?Math.round(modelP*1000)/1000:null, fair:fair, blendNoTilt:core!=null?Math.round(core*1000)/1000:null,
     blend:blend!=null?Math.round(blend*1000)/1000:null, hold:(fair!=null&&imp!=null)?Math.round((imp-fair)*1000)/1000:null, // ME-30 ‚Äî vig on this row
     tilt:tilt, tiltP:tiltP!=null?Math.round(tiltP*1000)/1000:null, tiltTags:ct.tags, tiltWhy:ct.why, tiltPrimary:ct.primary, tiltPreClip:ct.preClip, tiltNull:ct.nullStatcast,
-    edge_blend:edgeVsPrice(blend,p.hr), edge_pure:edgeVsPrice(modelP,p.hr), edge_tilt_only:edgeVsPrice(tiltP,p.hr),
+    se_edge:seEdge, t_stat:tStat, se_approx:seApprox, // ME-59 ‚Äî SE(edge) lower bound + t; rank on t, not pp
+    edge_blend:eb, edge_pure:edgeVsPrice(modelP,p.hr), edge_tilt_only:edgeVsPrice(tiltP,p.hr),
     edge_notilt:edgeVsPrice(core,p.hr), // ME-36 ‚Äî edge WITHOUT tilt; the gate requires this ‚â•0 so an unmeasured tilt can't qualify a play alone
     edge_fair:(blend!=null&&fair!=null)?Math.round((blend-fair)*1000)/1000:null}; // ME-22 ‚Äî the second ruler (our prob vs de-vig fair)
 }
@@ -619,7 +663,7 @@ function pickBestProp(pm,h,allowed){
     var score=tilt*130+affinity*9+likely*7+(value!=null?value*40:0)+fitB*2-longshotPen;
     var rec={mkt:mkt,label:MKT_LABEL[mkt]||mkt,line:p.line,hr:p.hr,fair:p.fair,nBooks:p.nBooks,at:p.at,stale:p.stale,
       value:value,likely:Math.round(likely*1000)/1000,modelP:pp.modelP,affinity:Math.round(affinity*100)/100,
-      blend:pp.blend,blendNoTilt:pp.blendNoTilt,edgeBlend:pp.edge_blend,edgePure:pp.edge_pure,edgeTiltOnly:pp.edge_tilt_only,edgeFair:pp.edge_fair,edgeNoTilt:pp.edge_notilt,hold:pp.hold,tiltPreClip:pp.tiltPreClip,tiltNull:pp.tiltNull, // ME-19/26/22/27/30
+      blend:pp.blend,blendNoTilt:pp.blendNoTilt,edgeBlend:pp.edge_blend,edgePure:pp.edge_pure,edgeTiltOnly:pp.edge_tilt_only,edgeFair:pp.edge_fair,edgeNoTilt:pp.edge_notilt,hold:pp.hold,tiltPreClip:pp.tiltPreClip,tiltNull:pp.tiltNull,seEdge:pp.se_edge,tStat:pp.t_stat,seApprox:pp.se_approx, // ME-19/26/22/27/30
       tilt:tilt,edgeP:edgeP!=null?Math.round(edgeP*1000)/1000:null,edgeWhy:ct.why,edgeTags:ct.tags,edgePrimary:ct.primary,score:score};
     ranked.push(rec);
     if(score>bs){bs=score;best=rec;}
@@ -652,7 +696,7 @@ function propLadder(pm,h){
     if(mkt==='batter_total_bases')score-=0.02;       // TB: fewer paths ‚Üí demote vs HRR
     if(tier==='trap')score-=0.15;
     rows.push({mkt:mkt,label:MKT_LABEL[mkt]||mkt,line:p.line,hr:p.hr,fair:p.fair,nBooks:p.nBooks,at:p.at,stale:p.stale,inBand:priceInBand(p.hr),
-      modelP:pp.modelP,prob:Math.round(rankP*1000)/1000,blend:pp.blend,blendNoTilt:pp.blendNoTilt,edgeBlend:pp.edge_blend,edgePure:pp.edge_pure,edgeTiltOnly:pp.edge_tilt_only,edgeFair:pp.edge_fair,edgeNoTilt:pp.edge_notilt,hold:pp.hold,tiltPreClip:pp.tiltPreClip,tiltNull:pp.tiltNull, // ME-19/26/22/27/30
+      modelP:pp.modelP,prob:Math.round(rankP*1000)/1000,blend:pp.blend,blendNoTilt:pp.blendNoTilt,edgeBlend:pp.edge_blend,edgePure:pp.edge_pure,edgeTiltOnly:pp.edge_tilt_only,edgeFair:pp.edge_fair,edgeNoTilt:pp.edge_notilt,hold:pp.hold,tiltPreClip:pp.tiltPreClip,tiltNull:pp.tiltNull,seEdge:pp.se_edge,tStat:pp.t_stat,seApprox:pp.se_approx, // ME-19/26/22/27/30
       likely:p.fair!=null?p.fair:modelP,value:value,ev:ev,tier:tier,note:note,score:score});
   });
   var main=rows.filter(function(r){return r.tier!=='dart';}).sort(function(a,b){return b.score-a.score;});
@@ -668,7 +712,17 @@ function attachProps(hitters,res){
   Object.keys(props).forEach(function(nm){var pm=props[nm];Object.keys(pm).forEach(function(mkt){var hr=pm[mkt]&&pm[mkt].hr;if(hr==null)return;if(hr<PRICE_MIN){cut.below[mkt]=(cut.below[mkt]||0)+1;cut.belowN++;}else if(hr>PRICE_MAX){cut.above[mkt]=(cut.above[mkt]||0)+1;cut.aboveN++;}});});
   try{console.log('[ME-16 price band '+PRICE_MIN+'..+'+PRICE_MAX+'] removed '+cut.belowN+' worse-than-'+PRICE_MIN+' ('+JSON.stringify(cut.below)+') and '+cut.aboveN+' longer-than-+'+PRICE_MAX+' ('+JSON.stringify(cut.above)+')');}catch(e){}
   window.__bandCut=cut;
+  // ME-38 Phase 1 ‚Äî compute slot + platoon multipliers for every hitter, then NORMALIZE each to a batch mean
+  // of EXACTLY 1.000 (acceptance #1, HARD-GATED in render). These now feed the LIVE number (propProb ‚Üí v2);
+  // v1 is still logged alongside for the paired comparison. slot unknown ‚Üí neutral 1.0 + SLOT_ESTIMATED.
+  var sRaw=[],pRaw=[];
+  hitters.forEach(function(h){h._slotRaw=slotMultRaw(h.spot);h._platRaw=platoonMultRaw(h.b,h.pit&&h.pit.throws);h.slotEstimated=(h.spot==null);
+    if(h._slotRaw!=null)sRaw.push(h._slotRaw);if(h._platRaw!=null)pRaw.push(h._platRaw);});
+  var sMean=sRaw.length?sRaw.reduce(function(a,x){return a+x;},0)/sRaw.length:1;
+  var pMean=pRaw.length?pRaw.reduce(function(a,x){return a+x;},0)/pRaw.length:1;
   hitters.forEach(function(h){
+    h.slotMult=(h._slotRaw!=null&&sMean>0)?Math.round(h._slotRaw/sMean*1000)/1000:1;
+    h.platoonMult=(h._platRaw!=null&&pMean>0)?Math.round(h._platRaw/pMean*1000)/1000:1;
     var pm=props[h.name];h.props=pm||null;
     h.propFetch=status[h.game]||(pm?'ok':'no_event'); // ok | stale | failed | no_event
     h.ladder=propLadder(pm,h);                       // the picker's decision menu
@@ -676,7 +730,10 @@ function attachProps(hitters,res){
     h.edgeProp=pickBestProp(pm,h,EDGE_MKTS);         // value-hunt view (Runs/RBI/HR)
     h.contactProp=pickBestProp(pm,h,CONTACT_MKTS);
   });
+  try{console.log('[ME-38 Phase1 LIVE] slot √ómean '+sMean.toFixed(3)+'‚Üí1.000 (n '+sRaw.length+') ¬∑ platoon √ómean '+pMean.toFixed(3)+'‚Üí1.000 (n '+pRaw.length+') ‚Äî v2 is the live Œª; v1 logged for comparison (BLEND_W still 0.5)');}catch(e){}
 }
+// ME-38 ‚Äî matchup-aware Œª (v2 = season rate √ó slot √ó platoon, both mean-neutral). THIS is the live Œª (propProb).
+function hitterLambdaV2(h,mkt){var v1=hitterLambda(h.b,mkt);return v1==null?null:Math.round(v1*(h.slotMult||1)*(h.platoonMult||1)*1000)/1000;}
 function hhmm(ts){return ts?new Date(ts).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}):'';}
 function propLine(bp){ // "TB O1.5 ‚àí120 on Hard Rock ‚Äî +2.1pp edge (as of 1:01)"
   if(!bp)return null;
@@ -815,7 +872,8 @@ function logPlayEdges(hitters){
       var sec=pr[0],bp=pr[1];if(!bp||bp.line==null||!bp.mkt)return;
       rows.push({sec:sec,id:h.id,name:h.name,team:h.team,mkt:bp.mkt,line:bp.line,hr:bp.hr,grade:h.grade,score:h.score,park:h.park,spot:h.spot, // ME-04/15/38 ‚Äî grade + park + slot on every EVALUATED row
         model:bp.modelP,fair:bp.fair,blend:bp.blend,blend_notilt:bp.blendNoTilt,tilt:bp.tilt,tilt_preclip:bp.tiltPreClip,tilt_null:bp.tiltNull,hold:bp.hold, // ME-26/27/30
-        engine_lambda:hitterLambda(h.b,bp.mkt),market_lambda:marketLambda(bp.fair,bp.line),hand_lambda_l7:null, // ME-43 ‚Äî hand filled by operator
+        engine_lambda:r3(hitterLambda(h.b,bp.mkt)),engine_lambda_v2:hitterLambdaV2(h,bp.mkt),market_lambda:marketLambda(bp.fair,bp.line,bp.mkt),hand_lambda_l7:null,slot_estimated:!!h.slotEstimated, // ME-43/47/49
+        se_edge:bp.seEdge,t_stat:bp.tStat,se_approx:!!bp.seApprox, // ME-59 ‚Äî SE(edge) + t, per row
         edge_blend:bp.edgeBlend,edge_pure:bp.edgePure,edge_tilt_only:bp.edgeTiltOnly,edge_fair:bp.edgeFair,
         gated:bp.edgeBlend!=null&&bp.edgeBlend>=EDGE_GATE});
       if(sec==='top'){ // summarise once per player (the primary prop)
@@ -886,6 +944,26 @@ function lambdaReport(){
   var a=ms(hm),b=ms(he);
   console.log('[ME-43 Œª report, n='+hm.length+'] hand‚àímarket = '+(a.m>=0?'+':'')+a.m.toFixed(3)+' ¬± '+a.se.toFixed(3)+' ¬∑ hand‚àíengine = '+(b.m>=0?'+':'')+b.m.toFixed(3)+' ¬± '+b.se.toFixed(3));
   return{n:hm.length,handMinusMarket:a,handMinusEngine:b};
+}
+// ME-38 ‚Äî SHADOW report. The real test (acceptance #2/#3): is v2/market closer to 1.00 than v1/market, and
+// does the v2/market ratio still CORRELATE with slot or park? Residual correlation = a multiplier is missing.
+// Excludes SLOT_ESTIMATED rows (acceptance #5). Flip v2 live only when it wins here ‚Äî not before.
+function lambdaShadowReport(){
+  var pre=K+'playedges_',R=[];
+  for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(k&&k.indexOf(pre)===0){var rec=sg(k.slice(K.length),null);
+    (rec&&rec.rows||[]).forEach(function(r){if(r.sec==='top'&&!r.slot_estimated&&r.market_lambda>0&&r.engine_lambda!=null&&r.engine_lambda_v2!=null)R.push(r);});}}
+  if(R.length<10){console.log('[ME-38 shadow] n='+R.length+' <10 qualified rows ‚Äî need more slates (ME-15 suppression). v2 stays shadow.');return;}
+  function ms(a){var m=a.reduce(function(s,x){return s+x;},0)/a.length;return{m:m,sd:Math.sqrt(a.reduce(function(s,x){return s+(x-m)*(x-m);},0)/a.length)};}
+  function corr(x,y){var mx=x.reduce(function(s,v){return s+v;},0)/x.length,my=y.reduce(function(s,v){return s+v;},0)/y.length,cov=0,vx=0,vy=0;
+    for(var j=0;j<x.length;j++){cov+=(x[j]-mx)*(y[j]-my);vx+=(x[j]-mx)*(x[j]-mx);vy+=(y[j]-my)*(y[j]-my);}return (vx&&vy)?cov/Math.sqrt(vx*vy):0;}
+  var v1=ms(R.map(function(r){return r.engine_lambda/r.market_lambda;})),v2=ms(R.map(function(r){return r.engine_lambda_v2/r.market_lambda;}));
+  var ratio=R.map(function(r){return r.engine_lambda_v2/r.market_lambda;});
+  var cSlot=corr(ratio,R.map(function(r){return r.spot||5;})),cPark=corr(ratio,R.map(function(r){return r.park||100;}));
+  console.log('[ME-38 shadow, n='+R.length+']');
+  console.log('  v1/market = '+v1.m.toFixed(3)+' (spread '+v1.sd.toFixed(3)+') ¬∑ v2/market = '+v2.m.toFixed(3)+' (spread '+v2.sd.toFixed(3)+')');
+  console.log('  v2 closer to 1.00? '+(Math.abs(v2.m-1)<Math.abs(v1.m-1)?'YES ‚Äî '+(Math.abs(v1.m-1)-Math.abs(v2.m-1)).toFixed(3)+' closer':'NO ‚Äî do not flip')+' (v1 measured 1.23 on 8/25)');
+  console.log('  residual structure (should be ~0): v2/market vs slot r='+cSlot.toFixed(2)+' ¬∑ vs park r='+cPark.toFixed(2)+(Math.abs(cSlot)>0.2||Math.abs(cPark)>0.2?' ‚ö† a multiplier is missing/wrong':' ‚úì'));
+  return{n:R.length,v1:v1,v2:v2,corrSlot:cSlot,corrPark:cPark};
 }
 // ME-44 ‚Äî "why isn't player X on the board?" as a lookup. FIRST gate failed, in order, with the number.
 function traceExclusions(name){
@@ -999,13 +1077,21 @@ function poissonOver(mu,line){
   for(var k=0;k<thresh;k++){cdf+=term;term*=mu/(k+1);}
   return Math.max(0,Math.min(1,1-cdf));
 }
-// ME-43 ‚Äî invert the de-vig fair probability through the Poisson: solve for the Œª the MARKET implies at this
-// line. poissonOver is monotonic in Œª, so a bisection converges. Lets the operator compare his own L7 Œª to
-// what the market and the engine each think, after ~30 plays instead of the ~380 a win-rate needs.
-function marketLambda(fair,line){
+// ME-59 ‚Äî Poisson pmf at k. d/dŒª of P(X>line) = pmf(floor(line),Œª) exactly, so this propagates SE(Œª)‚ÜíSE(modelP).
+function poissonPMF(k,lam){if(lam<0||k<0)return 0;var t=Math.exp(-lam);for(var i=1;i<=k;i++)t*=lam/i;return t;}
+// ME-43/47 ‚Äî invert the de-vig fair probability through the SAME transform modelP passes through:
+// poissonCorr(mkt, Œª, line), NOT raw poissonOver. Inverting through the wrong function put market_lambda on a
+// different scale and inflated the engine-vs-market gap ~30% (read 1.33, true 1.23). Now re-inverting the
+// engine's own printed modelP returns the engine's Œª exactly. Bisection (poissonCorr is monotonic in Œª over range).
+function marketLambda(fair,line,mkt){
   if(fair==null||fair<=0.01||fair>=0.99)return null;
-  var lo=0,hi=20;for(var i=0;i<44;i++){var mid=(lo+hi)/2;if(poissonOver(mid,line)<fair)lo=mid;else hi=mid;}
-  return Math.round((lo+hi)/2*1000)/1000;
+  // poissonCorr is NON-monotonic for clumped markets (the Œª-growing ME-29 bias makes it rise then fall), so
+  // bisection can land on the wrong branch. Scan upward and take the FIRST (lowest) crossing ‚Äî the realistic Œª.
+  var prev=poissonCorr(mkt,0,line),prevL=0;
+  for(var L=0.005;L<=8.0001;L+=0.005){var v=poissonCorr(mkt,L,line);
+    if(v>=fair){var d=v-prev,t=(d!==0)?(fair-prev)/d:0;return Math.round((prevL+t*(L-prevL))*1000)/1000;}
+    prev=v;prevL=L;}
+  return null; // fair sits above this market's reachable peak
 }
 // ME-29 ‚Äî a season-rate Poisson assumes events arrive one at a time, independently. CLUMPED markets break
 // that: a HR books a hit+run+RBI in the same instant, a double books 2 total bases at once. Measured on
@@ -1109,6 +1195,14 @@ function projectK(P,oppSplit,kprop,ctx){
     }
     out.edgeFair=out.edge;                                                          // existing K edge is vs the de-vig fair
     out.edgePrice=(out.modelP!=null&&out.hrPrice!=null)?Math.round((out.modelP-impliedP(out.hrPrice))*1000)/1000:null; // ME-22 ‚Äî same ruler as hitters (our prob ‚àí price you pay)
+    // ME-59 ‚Äî SE + t on the K edge. The anchored prob moves K_MKT_WEIGHT¬∑pmf per unit Œº, so SE(edge)=K_MKT_WEIGHT¬∑pmf¬∑SE(Œº);
+    // SE(Œº)=per-start K SD/‚àön (assumption-free ‚Äî Ks are under-dispersed, ‚àö(Œº/G) overstates), fallback ‚àö(Œº/n) flagged.
+    if(out.edgePrice!=null&&mu!=null&&kprop.line!=null){
+      var kN=L.seasonStarts||0,seMu,ap=false;
+      if(L.kSD!=null&&kN>=2){seMu=L.kSD/Math.sqrt(kN);}else{seMu=Math.sqrt(mu/Math.max(kN||1,1));ap=true;}
+      var seModel=K_MKT_WEIGHT*poissonPMF(Math.floor(kprop.line),mu)*seMu;
+      out.seEdge=Math.round(seModel*10000)/10000;out.tStat=(seModel>0)?Math.round(out.edgePrice/seModel*100)/100:null;out.seApprox=ap;
+    }
     out.divergence=Math.round((mu-kprop.line)*10)/10;                    // + = model above the CURRENT line
     // ‚îÄ‚îÄ LINE RELIABILITY (line-sync fix) ‚îÄ‚îÄ
     // The edge AND the guardrail read the SAME reconciled line (server: Hard Rock's line, else the
@@ -1721,18 +1815,32 @@ function boardData(){
   var topHit=topPool.filter(endorsed);
   dropped.top=topPool.length-topHit.length;
   topHit.forEach(function(h){var bp=h.bestProp;
-    var q=bp.edgeBlend!=null?bp.edgeBlend:-1;                                       // ME-21 ‚Äî rank on edge vs price, not likelihood
-    top.push({kind:'HIT',light:pickLight(h),name:h.name,sub:(TEAM_ABBR[h.team]||h.team)+' vs '+(h.oppPitName||'TBD'),game:h.game,bet:bp.label+' O'+bp.line+' '+(bp.hr>0?'+':'')+bp.hr,pct:Math.round(bp.blend*100),vp:bp.edgeBlend,vf:bp.edgeFair,el:hitterLambda(h.b,bp.mkt),ml:marketLambda(bp.fair,bp.line),metric:Math.round(bp.blend*100)+'% ¬∑ '+edgePair(bp.edgeBlend,bp.edgeFair),conf:h.confidence,flag:pickWhy(h),reason:hitReason(h),rank:q});});
+    var q=bp.tStat!=null?bp.tStat:-99;                                              // ME-59 ‚Äî RANK ON t (edge / its SE), not raw edge
+    top.push({kind:'HIT',light:pickLight(h),name:h.name,sub:(TEAM_ABBR[h.team]||h.team)+' vs '+(h.oppPitName||'TBD'),game:h.game,bet:bp.label+' O'+bp.line+' '+(bp.hr>0?'+':'')+bp.hr,pct:Math.round(bp.blend*100),vp:bp.edgeBlend,vf:bp.edgeFair,t:bp.tStat,se:bp.seEdge,seAppx:bp.seApprox,el:r3(hitterLambda(h.b,bp.mkt)),ml:marketLambda(bp.fair,bp.line,bp.mkt),v2l:hitterLambdaV2(h,bp.mkt),metric:Math.round(bp.blend*100)+'% ¬∑ '+edgePair(bp.edgeBlend,bp.edgeFair),conf:h.confidence,flag:pickWhy(h),reason:hitReason(h),rank:q});});
   pitcher.forEach(function(p){var pr=p.proj;
-    var q=pr.edgePrice!=null?pr.edgePrice:-1;                                       // ME-21 ‚Äî same ruler, same sort
-    top.push({kind:'K',light:pr.confidence==='HIGH'?'green':'yellow',name:p.name,sub:(TEAM_ABBR[p.team]||p.team)+' '+p.throws+'HP vs '+p.opp,game:p.game,bet:'Ks '+(pr.side==='Over'?'O':'U')+pr.line+(pr.hrPrice!=null?' '+(pr.hrPrice>0?'+':'')+pr.hrPrice:''),pct:null,vp:pr.edgePrice,vf:pr.edgeFair,metric:pr.edgePrice!=null?edgePair(pr.edgePrice,pr.edgeFair):'Œº '+pr.mu+' Ks',conf:pr.confidence,flag:pr.marketFlag,reason:'model '+pr.mu+' Ks',rank:q});});
+    var q=pr.tStat!=null?pr.tStat:-99;                                              // ME-59 ‚Äî same ruler, rank on t
+    top.push({kind:'K',light:pr.confidence==='HIGH'?'green':'yellow',name:p.name,sub:(TEAM_ABBR[p.team]||p.team)+' '+p.throws+'HP vs '+p.opp,game:p.game,bet:'Ks '+(pr.side==='Over'?'O':'U')+pr.line+(pr.hrPrice!=null?' '+(pr.hrPrice>0?'+':'')+pr.hrPrice:''),pct:null,vp:pr.edgePrice,vf:pr.edgeFair,t:pr.tStat,se:pr.seEdge,seAppx:pr.seApprox,metric:pr.edgePrice!=null?edgePair(pr.edgePrice,pr.edgeFair):'Œº '+pr.mu+' Ks',conf:pr.confidence,flag:pr.marketFlag,reason:'model '+pr.mu+' Ks',rank:q});});
   heldK.forEach(function(p){var pr=p.proj;held.push({kind:'K',name:p.name,sub:(TEAM_ABBR[p.team]||p.team)+' '+(p.throws||'?')+'HP vs '+p.opp,mkt:'Ks '+(pr.side==='Over'?'O':'U')+pr.line,edge:pr.edgePrice,reason:pr.marketFlag||'low confidence'});});
-  top.sort(function(a,b){return b.rank-a.rank;});
+  top.sort(function(a,b){return b.rank-a.rank;}); // ME-59 ‚Äî rank is now t
   try{console.log('[ME-20 gate +'+(EDGE_GATE*100).toFixed(1)+'pp] suppressed edge:'+dropped.edge+' contact:'+dropped.contact+' top:'+dropped.top+' ¬∑ [ME-32 held, not endorsed] '+held.length);}catch(e){}
+  // ME-59 ‚Äî distribution of t across the board (how many plays are actually distinguishable from zero edge)
+  try{var ts=top.map(function(p){return p.t;}).filter(function(x){return x!=null;});if(ts.length){var ge2=ts.filter(function(x){return x>=2;}).length,ge15=ts.filter(function(x){return x>=1.5&&x<2;}).length;
+    console.log('[ME-59 t across board, n='+ts.length+'] t‚â•2.0: '+ge2+' ¬∑ 1.5‚Äì2.0: '+ge15+' ¬∑ <1.5: '+(ts.length-ge2-ge15)+' ¬∑ max '+Math.max.apply(null,ts).toFixed(2)+' (ranking on t, NOT gating ‚Äî need ~50 rows first)');}}catch(e){}
   return{edge:edge,contact:contact,pitcher:pitcher,top:top.slice(0,14),held:held,dropped:dropped};
 }
 function render(){
   if(!D)return;
+  // ME-38 GATE 1 ‚Äî HARD-FAIL if a live matchup multiplier is not mean-neutral. A non-neutral multiplier
+  // silently shifts the ENTIRE board while the card still looks normal. Refuse to render ‚Äî do not warn and continue.
+  var _sm=D.hitters.filter(function(x){return x._slotRaw!=null;}).map(function(x){return x.slotMult;});
+  var _pm=D.hitters.filter(function(x){return x._platRaw!=null;}).map(function(x){return x.platoonMult;});
+  function _mn(a){return a.length?a.reduce(function(s,x){return s+x;},0)/a.length:1;}
+  var _sMean=_mn(_sm),_pMean=_mn(_pm);
+  if(Math.abs(_sMean-1)>0.005||Math.abs(_pMean-1)>0.005){
+    document.getElementById('main').innerHTML='<div class="card" style="border-color:var(--red)"><b style="color:var(--red);font-size:14px">&#9888; BOARD HELD ‚Äî Œª neutrality gate failed</b>'
+      +'<div style="font-size:11px;margin-top:5px">A matchup multiplier is not mean-neutral (slot mean <b>'+_sMean.toFixed(4)+'</b>, platoon mean <b>'+_pMean.toFixed(4)+'</b> ‚Äî must be 1.000 ¬± 0.005). A non-neutral multiplier shifts the whole board and moves every edge together, so the card is refusing to render rather than show shifted numbers. This is a guardrail (ME-38), not an error you caused. Reload; if it persists, the normalization is broken.</div></div>';
+    return;
+  }
   var h='';
   var BD=boardData();
   var A=D.hitters.filter(function(x){return x.grade==='A';});
@@ -1754,11 +1862,12 @@ function render(){
     var corrPlays=corr.reduce(function(a,g){return a+byGame[g].length;},0),nGames=Object.keys(byGame).length;
     h+='<div class="card" style="border-color:var(--gld);background:rgba(234,179,8,.06)"><b style="color:var(--gld);font-size:14px">&#127942; TONIGHT&#39;S DECISIONS ('+BD.top.length+' play'+(BD.top.length===1?'':'s')+' ¬∑ '+nGames+' game'+(nGames===1?'':'s')+')</b>';
     if(corrPlays>=2)h+='<div style="margin-top:4px;padding:5px 7px;border-radius:7px;background:rgba(239,68,68,.12);color:var(--red);font-size:11px"><b>&#9888; CORRELATED:</b> '+corrPlays+' of '+BD.top.length+' plays share '+corr.length+' game'+(corr.length===1?'':'s')+' ('+corr.map(function(g){return esc(g)+' &times;'+byGame[g].length;}).join(', ')+'). Same game &ne; independent bets ‚Äî size accordingly.</div>';
-    h+='<div style="font-size:10px;margin-top:3px" class="mut">One row per player ‚Äî the ONLY decision list (Edge / Contact / K below are the same bets re-cut by market, collapsed). Ranked by <b>edge vs price</b> (your net edge ‚Äî the vig is already in it). <b>Model lift</b> = how far above the sharp de-vig market the model sits; at the same price, prefer the SMALLER lift ‚Äî the model is doing less of the work, and the model is the part with no track record. üü¢ confirmed ¬∑ üü° lineup projected.</div>'+suppNote;
+    h+='<div style="font-size:10px;margin-top:3px" class="mut">One row per player ‚Äî the ONLY decision list (Edge / Contact / K below are the same bets re-cut by market, collapsed). <b>Ranked by t</b> = edge √∑ its own standard error (ME-59): a smaller sample or a softer number means a bigger SE and a lower t even at the same pp. <b>t &lt; 2.0 = inside the noise</b> ‚Äî not distinguishable from zero edge yet (marked, not hidden). Model lift = how far above the de-vig market the model reaches. üü¢ confirmed ¬∑ üü° lineup projected.</div>'+suppNote;
     BD.top.forEach(function(pk){
       var shared=(pk.game&&byGame[pk.game]&&byGame[pk.game].length>=2);
       var vp=(pk.vp!=null)?((pk.vp>=0?'+':'')+(pk.vp*100).toFixed(1)+'pp'):'--',lift=(pk.vf!=null)?((pk.vf>=0?'+':'')+(pk.vf*100).toFixed(1)+'pp'):'--';
-      h+='<div style="font-size:12px;margin-top:6px;border-top:1px solid var(--bord);padding-top:5px'+(shared?';border-left:3px solid var(--amb);padding-left:6px':'')+'">'+lightDot(pk.light)+' <span class="tag" style="background:rgba(167,139,250,.12);color:var(--pur);font-size:9px">'+pk.kind+'</span> <b>'+esc(pk.name)+'</b> <span class="mut">('+esc(pk.sub)+')</span>'+(shared?' <span style="color:var(--amb);font-size:9px">&#9670; '+esc(pk.game)+'</span>':'')+'<br><b style="color:var(--gld)">'+esc(pk.bet)+'</b>'+(pk.pct!=null?' ¬∑ '+pk.pct+'%':'')+' ¬∑ <b style="color:'+(pk.vp>=0?'var(--grn)':'var(--red)')+'">'+vp+' edge</b> <span class="mut">¬∑ model lift '+lift+'</span> ¬∑ '+esc(pk.conf)+(pk.flag?' ¬∑ <span style="color:var(--amb)">&#9888; '+esc((''+pk.flag).replace(/<[^>]+>/g,''))+'</span>':'')+(pk.reason?'<br><span style="font-size:10px" class="mut">'+esc(pk.reason)+'</span>':'')+'</div>';
+      var seTxt=(pk.se!=null)?' ¬±'+(pk.se*100).toFixed(1):'',tTxt=(pk.t!=null)?' <b>(t '+pk.t.toFixed(2)+(pk.seAppx?'~':'')+')</b>':'',noise=(pk.t!=null&&pk.t<2.0)?' <span style="color:var(--amb);font-size:10px">‚ö† inside noise</span>':'';
+      h+='<div style="font-size:12px;margin-top:6px;border-top:1px solid var(--bord);padding-top:5px'+(shared?';border-left:3px solid var(--amb);padding-left:6px':'')+'">'+lightDot(pk.light)+' <span class="tag" style="background:rgba(167,139,250,.12);color:var(--pur);font-size:9px">'+pk.kind+'</span> <b>'+esc(pk.name)+'</b> <span class="mut">('+esc(pk.sub)+')</span>'+(shared?' <span style="color:var(--amb);font-size:9px">&#9670; '+esc(pk.game)+'</span>':'')+'<br><b style="color:var(--gld)">'+esc(pk.bet)+'</b>'+(pk.pct!=null?' ¬∑ '+pk.pct+'%':'')+' ¬∑ <b style="color:'+(pk.vp>=0?'var(--grn)':'var(--red)')+'">'+vp+seTxt+'</b>'+tTxt+noise+' <span class="mut">¬∑ lift '+lift+'</span> ¬∑ '+esc(pk.conf)+(pk.flag?' ¬∑ <span style="color:var(--amb)">&#9888; '+esc((''+pk.flag).replace(/<[^>]+>/g,''))+'</span>':'')+(pk.reason?'<br><span style="font-size:10px" class="mut">'+esc(pk.reason)+'</span>':'')+'</div>';
     });
     h+='</div>';
   }else{
@@ -1879,7 +1988,7 @@ function copyTop(){
   if(BD.top.length){
     t+='\nüèÜ TOP PICKS ‚Äî ranked by EDGE vs price (highest first) ¬∑ endorsed only (held listed below)\n';
     BD.top.forEach(function(pk){
-      t+=dotTxt(pk.light)+' ['+pk.kind+'] '+pk.name+' ('+pk.sub+') ‚Äî '+pk.bet+' | '+pk.metric+' ¬∑ '+pk.conf+(pk.el!=null||pk.ml!=null?' | Œª eng '+(pk.el!=null?pk.el:'--')+' ¬∑ mkt '+(pk.ml!=null?pk.ml:'--')+' ¬∑ hand_L7 ____':'')+'\n'; // ME-43 columns
+      t+=dotTxt(pk.light)+' ['+pk.kind+'] '+pk.name+' ('+pk.sub+') ‚Äî '+pk.bet+' | '+pk.metric+(pk.se!=null?' ¬±'+(pk.se*100).toFixed(1):'')+(pk.t!=null?' (t '+pk.t.toFixed(2)+(pk.seAppx?' SE_APPROX':'')+')':'')+(pk.t!=null&&pk.t<2?' [inside noise]':'')+' ¬∑ '+pk.conf+(pk.el!=null||pk.ml!=null?' | Œª v1 '+(pk.el!=null?pk.el:'--')+' ¬∑ v2 '+(pk.v2l!=null?pk.v2l:'--')+' ¬∑ mkt '+(pk.ml!=null?pk.ml:'--')+' ¬∑ hand_L7 ____':'')+'\n'; // ME-43/47/49/59 columns
       if(pk.flag)t+='     ‚ö† '+stripTags(pk.flag)+'\n';
       if(pk.reason)t+='     why: '+pk.reason+'\n';
     });
