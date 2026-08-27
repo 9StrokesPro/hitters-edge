@@ -63,7 +63,8 @@ var MLB='https://statsapi.mlb.com/api/v1';
 var OWM_KEY='6a060c8de21d6f1a5cd9d6fed2b7a53b';
 var ODDS_KEY='e738de03c4b7e835c52b50e1a0b1c494'; // ONLY for game totals context (~2 credits/load)
 var K='me15_';
-var BUILD='v15.021'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
+var BUILD='v15.022'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
+var SHOW_LEGACY=false; // NEXT(2026-08-27) #2 ‚Äî the ONE LIST is the ONLY decision surface, on the PAGE and in the COPY EXPORT. The legacy board sections (Top Picks / Edge / Contact / K / HELD) apply the FULL ace filter while the one list uses the ME-70a-corrected version ‚Äî two surfaces disagreeing = Joe bets a stale board. Flag off, not deleted, so diagnostics recover. Target list + DATA DUMP are NOT legacy (front door + grader feed) and stay.
 // ME-86 ‚Äî stake sizing from bankroll + unit, so a 15-bet night is mechanical not 15 decisions. Configurable
 // in localStorage (me15_bankroll / me15_unit_pct); flat 1u per bet. setBankroll(n)/setUnit(pct) from console.
 var BANKROLL=sg('bankroll',1000), UNIT_PCT=sg('unit_pct',0.01);
@@ -2075,13 +2076,13 @@ function unifiedList(){
       else if(red)held='thin/conflict';
       else if(r.edgeNoTilt!=null&&r.edgeNoTilt<0)held='tilt-only';
       else if(r.edgeBlend<EDGE_GATE)held='below +'+(EDGE_GATE*100).toFixed(1)+'pp gate';
-      rows.push({kind:'HIT',player:h.name,sub:(TEAM_ABBR[h.team]||h.team)+' vs '+(h.oppPitName||'TBD'),
+      rows.push({kind:'HIT',player:h.name,team:(TEAM_ABBR[h.team]||h.team),oppStarter:(h.oppPitName||'TBD'),sub:(TEAM_ABBR[h.team]||h.team)+' vs '+(h.oppPitName||'TBD'),
         mkt:r.label,line:r.line,side:'O',price:r.hr,prob:r.blend,edge:r.edgeBlend,t:r.tStat,seAppx:r.seApprox,
         held:held,released:(ace&&released)?'ace_released':null,light:pickLight(h),conf:h.confidence});
     });
   });
   (D.pitchers||[]).forEach(function(p){var pr=p.proj;if(!pr||!pr.ok||pr.line==null||pr.edgePrice==null||pr.hrPrice==null||!priceInBand(pr.hrPrice))return;
-    rows.push({kind:'K',player:p.name,sub:(TEAM_ABBR[p.team]||p.team)+' '+(p.throws||'?')+'HP vs '+p.opp,
+    rows.push({kind:'K',player:p.name,team:(TEAM_ABBR[p.team]||p.team),oppStarter:'(self)',sub:(TEAM_ABBR[p.team]||p.team)+' '+(p.throws||'?')+'HP vs '+p.opp,
       mkt:'Ks',line:pr.line,side:pr.side==='Over'?'O':'U',price:pr.hrPrice,prob:pr.modelP,edge:pr.edgePrice,t:pr.tStat,seAppx:pr.seApprox,
       held:pr.recommend?null:(pr.holdReason||pr.marketFlag||'held'),released:null,light:pr.confidence==='HIGH'?'green':pr.confidence==='LOW'?'red':'yellow',conf:pr.confidence});
   });
@@ -2091,7 +2092,7 @@ function unifiedList(){
     var held=null;
     if(!hp.inBand)held='price outside band';
     else if(hp.edge<EDGE_GATE)held='below +'+(EDGE_GATE*100).toFixed(1)+'pp gate';
-    rows.push({kind:'PH',player:t.name,sub:(TEAM_ABBR[t.team]||t.team||'?')+' vs '+(t.opp||'TBD')+' ‚Äî hits allowed',
+    rows.push({kind:'PH',player:t.name,team:(TEAM_ABBR[t.team]||t.team||'?'),oppStarter:'(self)',sub:(TEAM_ABBR[t.team]||t.team||'?')+' vs '+(t.opp||'TBD')+' ‚Äî hits allowed',
       mkt:'Hits allowed',line:hp.line,side:hp.side==='Over'?'O':'U',price:hp.price,prob:hp.modelP,edge:hp.edge,t:hp.tStat,seAppx:hp.seApprox,
       held:held,released:'new_market_unvalidated (n=8)',light:'yellow',conf:'NEW'});
   });
@@ -2112,7 +2113,6 @@ function render(){
     return;
   }
   var h='';
-  var SHOW_LEGACY=false; // NEXT #7 ‚Äî the ONE LIST is the card. The old Top Picks / Edge / Contact / HELD sections are REMOVED (two surfaces that disagree = betting a stale board). Flag off, not deleted, so the diagnostics can be recovered.
   var BD=boardData();
   // ME-54 / ME-52 nightly reports (suppress <10 per ME-15)
   try{var mc=D.mcalib;if(mc&&mc.n>=10)console.log('[ME-54 market selection, n='+mc.n+'] surfaced market won '+mc.surfWon+'/'+mc.n+' ('+Math.round(mc.surfWon/mc.n*100)+'%) ¬∑ wrong-prop (surfaced lost, an alt won) '+mc.altBeat+'/'+mc.n+' ('+Math.round(mc.altBeat/mc.n*100)+'%)');else if(mc)console.log('[ME-54] n='+mc.n+' <10 ‚Äî suppressed');}catch(e){}
@@ -2285,15 +2285,35 @@ function copyList(){
 function copyTop(){
   if(!D){toast('Still loading');return;}
   var BD=boardData();
+  var u=unitDollars();
   var t='MATCHUP ENGINE '+BUILD+' ‚Äî '+new Date().toLocaleString()+' (data '+D.generatedAt.toLocaleTimeString()+')\n';
-  t+='Read the TARGET LIST first (which pitchers are hittable), then the plays built off it.\n';
-  // ‚îÄ‚îÄ üéØ PITCHER TARGETS ‚Äî the front door (sorted by recent hits allowed) ‚îÄ‚îÄ
+  // ‚îÄ‚îÄ üìã ONE LIST ‚Äî THE PRIMARY SURFACE (NEXT #1). Every eligible row, edge-sorted, held inline with reason.
+  //    This is the decision list Joe/analyst/grader all read. Legacy board sections are gated off below (SHOW_LEGACY).
+  var UL=unifiedList(),ULbet=UL.filter(function(r){return !r.held;}).length,ULheld=UL.length-ULbet;
+  t+='\n‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê üìã ONE LIST ‚Äî '+ULbet+' bettable ¬∑ '+ULheld+' held ‚Äî READ TOP-DOWN, BET DOWN ‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê\n';
+  t+='sorted by EDGE VS PRICE ¬∑ flat $'+u+'/unit (bankroll $'+BANKROLL+', unit '+(UNIT_PCT*100).toFixed(1)+'%) ¬∑ t<2 = inside the noise ¬∑ held rows kept visible with the reason\n';
+  t+='#|player|team|opp_starter|market|line|side|price|modelP|breakeven|EDGE_VS_PRICE|t|stake|status\n';
+  UL.forEach(function(r,i){
+    var be=r.price!=null?Math.round(impliedP(r.price)*1000)/10:null;
+    var status=r.held?('HELD:'+r.held):(r.released?r.released:'BET');
+    t+=(i+1)+'|'+r.player+'|'+(r.team||'')+'|'+(r.oppStarter||'')+'|'+r.mkt+'|'+r.line+'|'+r.side+'|'+(r.price>0?'+':'')+r.price
+      +'|'+(r.prob!=null?Math.round(r.prob*100)+'%':'--')+'|'+(be!=null?be+'%':'--')
+      +'|'+(r.edge>=0?'+':'')+(r.edge*100).toFixed(1)+'pp|'+(r.t!=null?r.t.toFixed(2)+(r.seAppx?'~':''):'--')
+      +'|'+(r.held?'-':'$'+u)+'|'+status+'\n';
+  });
+  if(!UL.length)t+='(no eligible rows ‚Äî lineups/prices not posted yet)\n';
+  t+='\nThen the TARGET LIST (which pitchers are hittable + their hits-allowed odds) as research context.\n';
+  // ‚îÄ‚îÄ üéØ PITCHER TARGETS ‚Äî the front door (sorted by recent hits allowed) + ME-83 hits-allowed odds ‚îÄ‚îÄ
   if(D.targets&&D.targets.length){
     t+='\nüéØ PITCHER TARGETS ‚Äî Is He Hittable? (sorted by recent hits allowed)\n';
     D.targets.forEach(function(tg,i){
-      t+=(i+1)+'. '+tg.name+' ('+(tg.throws||'?')+'HP) vs '+tg.opp+' ‚Äî '+tg.hitsPS+' H/start (L3) ['+(tg.arr||[]).join(',')+'] ¬∑ '+tg.cls+(tg.hw&&tg.hw!=='even'?' ¬∑ weak vs '+tg.hw:'')+(tg.xba!=null?' ¬∑ xBA-agst '+tg.xba:'')+(tg.hitsTrend==='worsening'?' ¬∑ worsening':'')+'\n';
+      var hp=tg.hitsProp;var odds=hp&&hp.line!=null?' ¬∑ üìä HITS '+(hp.side==='Over'?'O':'U')+hp.line+' '+(hp.price>0?'+':'')+hp.price+' ('+(hp.edge>=0?'+':'')+(hp.edge*100).toFixed(1)+'pp)':' ¬∑ üìä hits line: not posted';
+      t+=(i+1)+'. '+tg.name+' ('+(tg.throws||'?')+'HP) vs '+tg.opp+' ‚Äî '+tg.hitsPS+' H/start (L3) ['+(tg.arr||[]).join(',')+'] ¬∑ '+tg.cls+(tg.hw&&tg.hw!=='even'?' ¬∑ weak vs '+tg.hw:'')+(tg.xba!=null?' ¬∑ xBA-agst '+tg.xba:'')+(tg.hitsTrend==='worsening'?' ¬∑ worsening':'')+odds+'\n';
     });
   }
+  // ‚îÄ‚îÄ LEGACY BOARD SECTIONS (NEXT #2) ‚Äî gated off. They apply the FULL ace filter and contradict the ONE LIST
+  //    (ME-70a-corrected). Kept behind SHOW_LEGACY (false) so diagnostics recover; DATA DUMP below is NOT legacy. ‚îÄ‚îÄ
+  if(SHOW_LEGACY){
   // ‚îÄ‚îÄ üèÜ TOP PICKS ‚Äî best of every board, ranked, auditable ‚îÄ‚îÄ
   if(BD.top.length){
     t+='\nüèÜ TOP PICKS ‚Äî ranked by t (edge √∑ its SE; ME-59) ¬∑ endorsed only (held listed below)\n';
@@ -2336,6 +2356,7 @@ function copyTop(){
     t+=dotTxt(pickLight(x))+' '+x.name+' ('+(TEAM_ABBR[x.team]||x.team)+') ‚Äî '+betStr42(bp)+' | '+Math.round(bp.blend*100)+'% to cash'+(bp.edgeBlend!=null?', '+edgePair(bp.edgeBlend,bp.edgeFair):'')+' ¬∑ '+x.confidence+'\n';
   });
   if(!contactNew.length)t+='(nothing new ‚Äî all contact plays are already in Top Picks)\n';
+  } // end SHOW_LEGACY
   // ‚îÄ‚îÄ ME-56a ‚Äî FULL DATA DUMP: every logged column, machine-readable, for CARD-LATEST.txt ‚Üí Drive mirror ‚îÄ‚îÄ
   // Dumps the UNION of keys across the logged playedges rows (auto-includes any future column) + calib payloads.
   var pe=sg('playedges_'+todayStr(),null);
@@ -2352,7 +2373,7 @@ function copyTop(){
   if(D.tcalib&&D.tcalib.n)t+='tcalib: '+JSON.stringify(D.tcalib)+'\n';
   if(D.mcalib&&D.mcalib.n)t+='mcalib: '+JSON.stringify(D.mcalib)+'\n';
   if(D.gcalib&&D.gcalib.n)t+='gcalib: '+JSON.stringify({n:D.gcalib.n,w:D.gcalib.w,l:D.gcalib.l,byGrade:D.gcalib.byGrade,byTilt:D.gcalib.byTilt,starterExited:D.gcalib.starterExited})+'\n';
-  navigator.clipboard.writeText(t).then(function(){toast('Copied ‚Äî boards + FULL DATA DUMP (ME-56a)');}).catch(function(){toast('Copy failed');});
+  navigator.clipboard.writeText(t).then(function(){toast('Copied ‚Äî ONE LIST + targets + DATA DUMP');}).catch(function(){toast('Copy failed');});
 }
 (function(){var lg=document.querySelector('.logo');if(lg)lg.innerHTML='&#9918; Matchup Engine '+BUILD;try{document.title='Matchup Engine '+BUILD;}catch(e){}})(); // NEXT #1 ‚Äî stamp build number in header + tab title
 loadAll();
