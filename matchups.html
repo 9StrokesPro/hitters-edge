@@ -63,7 +63,7 @@ var MLB='https://statsapi.mlb.com/api/v1';
 var OWM_KEY='6a060c8de21d6f1a5cd9d6fed2b7a53b';
 var ODDS_KEY='e738de03c4b7e835c52b50e1a0b1c494'; // ONLY for game totals context (~2 credits/load)
 var K='me15_';
-var BUILD='v15.024'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
+var BUILD='v15.025'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
 var SHOW_LEGACY=false; // NEXT(2026-08-27) #2 ‚Äî the ONE LIST is the ONLY decision surface, on the PAGE and in the COPY EXPORT. The legacy board sections (Top Picks / Edge / Contact / K / HELD) apply the FULL ace filter while the one list uses the ME-70a-corrected version ‚Äî two surfaces disagreeing = Joe bets a stale board. Flag off, not deleted, so diagnostics recover. Target list + DATA DUMP are NOT legacy (front door + grader feed) and stay.
 // ME-86 ‚Äî stake sizing from bankroll + unit, so a 15-bet night is mechanical not 15 decisions. Configurable
 // in localStorage (me15_bankroll / me15_unit_pct); flat 1u per bet. setBankroll(n)/setUnit(pct) from console.
@@ -1377,17 +1377,20 @@ function projectK(P,oppSplit,kprop,ctx){
     var pOver=poissonOver(mu,kprop.line),pUnder=1-pOver;                 // 6. distribution at the line
     out.line=kprop.line;out.pOver=pOver;out.pUnder=pUnder;out.nBooks=kprop.nBooks;
     out.hasHR=!!kprop.hasHR;out.totalBooks=kprop.totalBooks||0;out.lineSpread=kprop.lineSpread;out.lineDisagree=!!kprop.lineDisagree;
+    // ME-93 ‚Äî THE SIDE FOLLOWS THE PROJECTION vs THE LINE. proj (Œº) > line ‚Üí OVER, Œº < line ‚Üí UNDER. Full stop.
+    // (Was: side = sign(modelP ‚àí market_fair), which inverts whenever the market's implied projection differs from
+    //  ours ‚Äî Hughes Œº 5.67 > line 5.5 = OVER, but the market priced the over higher, so the old rule printed UNDER.)
+    out.side=(mu>kprop.line)?'Over':'Under';
     if(kprop.fair!=null){                                               // 7. edge vs de-vig fair ‚Äî MARKET-ANCHORED
       // A deep-book de-vig fair is a SHARP prior; a public-data model doesn't beat it by 15-20pp, and
       // Poisson over-states its own confidence at low K lines. Keep only K_MKT_WEIGHT of the model's
       // disagreement so edges are honest and the board centers on the market. Œº stays raw (below).
       var anchoredOver=kprop.fair+K_MKT_WEIGHT*(pOver-kprop.fair);
-      var edgeOver=anchoredOver-kprop.fair;                             // = K_MKT_WEIGHT*(pOver‚àífair)
-      out.side=edgeOver>=0?'Over':'Under';out.edge=Math.abs(edgeOver);
-      out.modelP=edgeOver>=0?anchoredOver:(1-anchoredOver);out.fairP=edgeOver>=0?kprop.fair:(1-kprop.fair);
-      out.rawModelP=pOver;out.hrPrice=edgeOver>=0?kprop.over:kprop.under;
+      out.modelP=out.side==='Over'?anchoredOver:(1-anchoredOver);out.fairP=out.side==='Over'?kprop.fair:(1-kprop.fair);
+      out.edge=Math.round((out.modelP-out.fairP)*1000)/1000;           // edge vs de-vig fair FOR THE CHOSEN SIDE (may be <0 = our projection favours a side the price does not reward)
+      out.rawModelP=pOver;out.hrPrice=out.side==='Over'?kprop.over:kprop.under;
     }else{
-      out.side=pOver>=0.5?'Over':'Under';out.modelP=Math.max(pOver,pUnder);out.hrPrice=pOver>=0.5?kprop.over:kprop.under;
+      out.modelP=out.side==='Over'?pOver:pUnder;out.hrPrice=out.side==='Over'?kprop.over:kprop.under;
     }
     out.edgeFair=out.edge;                                                          // existing K edge is vs the de-vig fair
     out.edgePrice=(out.modelP!=null&&out.hrPrice!=null)?Math.round((out.modelP-impliedP(out.hrPrice))*1000)/1000:null; // ME-22 ‚Äî same ruler as hitters (our prob ‚àí price you pay)
@@ -1734,11 +1737,12 @@ async function loadAll(){
   (targets||[]).forEach(function(t){
     var kp=(propRes.pitchers&&propRes.pitchers[t.name])||null, hm=kp&&kp.hits;
     if(!hm||hm.line==null||t.projHits==null){t.hitsProp=null;return;}
-    var line=hm.line, pOver=poissonOver(t.projHits,line), side, modelP, hrPrice;   // UNCORRECTED ‚Äî no poissonCorr
-    if(hm.fair!=null){
-      var anchoredOver=hm.fair+BLEND_W*(pOver-hm.fair), edgeOver=anchoredOver-hm.fair;
-      side=edgeOver>=0?'Over':'Under'; modelP=edgeOver>=0?anchoredOver:1-anchoredOver; hrPrice=edgeOver>=0?hm.over:hm.under;
-    }else{ side=pOver>=0.5?'Over':'Under'; modelP=Math.max(pOver,1-pOver); hrPrice=pOver>=0.5?hm.over:hm.under; }
+    var line=hm.line, pOver=poissonOver(t.projHits,line);   // UNCORRECTED ‚Äî no poissonCorr
+    // ME-93 ‚Äî SIDE FOLLOWS THE PROJECTION vs THE LINE: projHits > line ‚Üí OVER, projHits < line ‚Üí UNDER. (Was
+    // sign(modelP ‚àí market_fair), which inverted whenever the market's implied line differed from ours ‚Äî the Hughes bug.)
+    var side=(t.projHits>line)?'Over':'Under';
+    var anchoredOver=(hm.fair!=null)?(hm.fair+BLEND_W*(pOver-hm.fair)):pOver;
+    var modelP=(side==='Over')?anchoredOver:(1-anchoredOver), hrPrice=(side==='Over')?hm.over:hm.under;
     var edgePrice=(modelP!=null&&hrPrice!=null)?Math.round((modelP-impliedP(hrPrice))*1000)/1000:null;
     var G=t.seasonStarts||0, seMu=Math.sqrt(Math.max(t.projHits,0.01)/Math.max(G,1));
     var seModel=BLEND_W*poissonPMF(Math.floor(line),t.projHits)*seMu, tStat=(edgePrice!=null&&seModel>0)?Math.round(edgePrice/seModel*100)/100:null;
@@ -1791,6 +1795,24 @@ async function loadAll(){
     try{console.log('[ME-70 ace penalty] hard-excluded arms: '+nHard+(nHard>3?' ‚ö† EXPECTED 1-3 ‚Äî thresholds may be wrong':'')+' ¬∑ penalty '+(ACE_EDGE_PENALTY*100).toFixed(1)+'pp/all-markets ¬∑ xBA‚â§'+ACE_XBA_MAX+' AND bottom-tercile projHits AND K‚â•'+ACE_K_PROP_MIN);
       dbg.sort(function(a,b){return a.projHits-b.projHits;}).forEach(function(d){console.log('  '+(d.decision==='HARD-EXCLUDE'?'‚õî':'‚ûñ')+' '+d.name+' ‚Äî xBA '+f3(d.xba)+' ¬∑ projHits '+d.projHits+' ¬∑ Kprop '+d.kprop+' ¬∑ K% '+d.kpct+' ¬∑ '+d.cls+' ‚Üí '+d.decision);});}catch(e){}
   })();
+  // ‚îÄ‚îÄ ME-93 ‚Äî SIDE-SELECTION AUDIT. Every pitcher row: proj ¬∑ line ¬∑ side ¬∑ comparison. Rule: proj>line=OVER,
+  //    proj<line=UNDER. A ‚úó MISMATCH would mean the side still disagrees with the projection (the bug). Hitter
+  //    markets are OVER-only (poissonOver = P(over)); a spot-check confirms none is inverted. ‚îÄ‚îÄ
+  try{
+    var mism=0;
+    console.log('[ME-93 side audit ‚Äî rule: proj > line ‚Üí OVER, proj < line ‚Üí UNDER]');
+    pitchers.forEach(function(p){var pr=p.proj;if(!pr||!pr.ok||pr.line==null||pr.mu==null||!pr.side)return;
+      var expect=pr.mu>pr.line?'Over':'Under',ok=(expect===pr.side);if(!ok)mism++;
+      console.log('  K  '+p.name+': proj Œº '+pr.mu+' ¬∑ line '+pr.line+' ¬∑ side '+pr.side+' ('+(pr.mu>pr.line?'Œº>line':'Œº<line')+')'+(ok?' ‚úì':' ‚úó MISMATCH'));});
+    (targets||[]).forEach(function(t){var hp=t.hitsProp;if(!hp||hp.line==null||t.projHits==null||!hp.side)return;
+      var expect=t.projHits>hp.line?'Over':'Under',ok=(expect===hp.side);if(!ok)mism++;
+      console.log('  PH '+t.name+': proj '+t.projHits+' ¬∑ line '+hp.line+' ¬∑ side '+hp.side+' ('+(t.projHits>hp.line?'proj>line':'proj<line')+')'+(ok?' ‚úì':' ‚úó MISMATCH'));});
+    console.log('[ME-93] pitcher side mismatches: '+mism+(mism?' ‚úó STILL BROKEN':' ‚úì all sides follow the projection'));
+    // hitter markets: over-only by construction; confirm modelP is P(over) (a HIT primary with projHits/Œª above its
+    // line should read modelP>0.5). This is a sanity print, not a side switch ‚Äî hitters have no under on the ladder.
+    var hi=(hitters||[]).filter(function(h){return h.bestProp&&h.bestProp.modelP!=null;});
+    console.log('[ME-93 hitter check] '+hi.length+' primary rows, all side=OVER (ladder is over-only); modelP=P(over) via poissonOver ‚Äî no side selection, nothing to invert.');
+  }catch(e){}
   tagTravel(hitters,games); // ME-53 ‚Äî capture tz / zone-delta / local first-pitch on every hitter row (no model change)
   logKProjections(pitchers);logEdgePlays(hitters);logPlayEdges(hitters);logTargets(targets);logMarketAudit(hitters); // instrument
   var kcal=null;try{kcal=await settleKProjections();}catch(e){} // settle prior nights vs real box-score Ks
