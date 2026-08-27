@@ -63,7 +63,7 @@ var MLB='https://statsapi.mlb.com/api/v1';
 var OWM_KEY='6a060c8de21d6f1a5cd9d6fed2b7a53b';
 var ODDS_KEY='e738de03c4b7e835c52b50e1a0b1c494'; // ONLY for game totals context (~2 credits/load)
 var K='me15_';
-var BUILD='v15.023'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
+var BUILD='v15.024'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
 var SHOW_LEGACY=false; // NEXT(2026-08-27) #2 ‚Äî the ONE LIST is the ONLY decision surface, on the PAGE and in the COPY EXPORT. The legacy board sections (Top Picks / Edge / Contact / K / HELD) apply the FULL ace filter while the one list uses the ME-70a-corrected version ‚Äî two surfaces disagreeing = Joe bets a stale board. Flag off, not deleted, so diagnostics recover. Target list + DATA DUMP are NOT legacy (front door + grader feed) and stay.
 // ME-86 ‚Äî stake sizing from bankroll + unit, so a 15-bet night is mechanical not 15 decisions. Configurable
 // in localStorage (me15_bankroll / me15_unit_pct); flat 1u per bet. setBankroll(n)/setUnit(pct) from console.
@@ -79,7 +79,17 @@ function priceInBand(hr){return hr!=null&&hr>=PRICE_MIN&&hr<=PRICE_MAX;}
 // with ‚â•ACE_MIN_STARTS) has ALL of his props rejected before any board ‚Äî the market knows most exactly there.
 // SEASON, never L3 (recent form must never unlock an ace). HITTER props only; pitcher K props are unaffected.
 var ACE_XBA_MAX=0.240, ACE_MIN_STARTS=5;
-function aceOut(h){var xba=h&&h.pSav&&h.pSav.xba,ss=h&&h.pit&&h.pit.kLayer&&h.pit.kLayer.seasonStarts;return xba!=null&&ss!=null&&ss>=ACE_MIN_STARTS&&xba<=ACE_XBA_MAX;}
+// ME-70 (2026-08-27) ‚Äî the hard exclusion was TOO WIDE: it hid the board's biggest, most credible edges (Baldwin/
+// Alvarez vs Yamamoto) and was INCOHERENT (same hitter bettable on HRR, held on Runs). Now an arm is HARD-EXCLUDED
+// only when ALL THREE hold ‚Äî season xBA-agst ‚â§ ACE_XBA_MAX AND projected hits in the slate's BOTTOM TERCILE AND a
+// real strikeout signal (posted K prop ‚â• ACE_K_PROP_MIN, else season K% ‚â• league + ~1SD). Every other ace-ish arm
+// takes a flat ACE_EDGE_PENALTY on edge across ALL markets and competes on the one list. Decision is precomputed
+// per hitter in loadAll (h.aceHardExclude / h.acePenalize) since it needs the slate terciles + K props.
+var ACE_EDGE_PENALTY=0.010;  // 1.0pp off edge for an ace-ish (but not hard-excluded) matchup, all markets
+var ACE_K_PROP_MIN=6.5;      // posted K prop at/above this = high-K signal (the primary K test)
+var ACE_KPCT_SD=0.045;       // ~1SD of MLB starter K%; fallback high-K test when no K prop is posted
+function aceOut(h){return !!(h&&h.aceHardExclude);}                 // ME-70 ‚Äî hard exclusion only (all 3 conditions); computed in loadAll
+function acePenalty(h){return (h&&h.acePenalize)?ACE_EDGE_PENALTY:0;} // ME-70 ‚Äî 1pp edge haircut for ace-ish-but-not-excluded
 // ME-19 ‚Äî ONE probability everywhere = a blend of the player-rate model and the market fair, weight in
 // ONE place. modelP is matchup-BLIND (season rate only; see ME-28), so the market half is load-bearing ‚Äî
 // it is the only place matchup info (starter, park, slot) currently enters. Do NOT ship BLEND_W=1.0.
@@ -1002,7 +1012,7 @@ function logPlayEdges(hitters){
         l7_lambda:(h.b&&h.b.l7&&h.b.l7[bp.mkt]!=null)?r3(h.b.l7[bp.mkt]):null,l10_lambda:(h.b&&h.b.l10&&h.b.l10[bp.mkt]!=null)?r3(h.b.l10[bp.mkt]):null,streak:(formRead(h,bp.mkt)||{}).streak, // ME-63 ‚Äî recent-form windows
         tz_delta:h.travel&&h.travel.zoneDelta,local_fp:h.travel&&h.travel.localFP,is_home:h.travel&&h.travel.isHome,road_trip_days:h.travel&&h.travel.roadTripDays, // ME-53 travel capture
         opp_starter_id:h.pit&&h.pit.id, // ME-52 ‚Äî so the STARTER_EXITED void can be settled later
-        ace_released:(aceOut(h)&&bp.mkt==='batter_hits_runs_rbis')?1:0, // ME-70a ‚Äî HRR released from the ace filter; the exemption pulls in one column
+        ace_hard_exclude:h.aceHardExclude?1:0,ace_penalized:h.acePenalize?1:0, // ME-70 ‚Äî hard-exclude (all 3) vs 1pp edge penalty; log both so the constant can be fit at n‚â•30
         se_edge:bp.seEdge,t_stat:bp.tStat,se_approx:!!bp.seApprox, // ME-59 ‚Äî SE(edge) + t, per row
         edge_blend:bp.edgeBlend,edge_pure:bp.edgePure,edge_tilt_only:bp.edgeTiltOnly,edge_fair:bp.edgeFair,
         gated:bp.edgeBlend!=null&&bp.edgeBlend>=EDGE_GATE});
@@ -1661,10 +1671,11 @@ async function loadAll(){
   (function(){var ph=targets.map(function(t){return t.projHits;}).sort(function(a,b){return a-b;});
     var n=ph.length,loC=n?ph[Math.floor(n/3)]:0,hiC=n?ph[Math.floor(2*n/3)]:0;
     targets.forEach(function(t){var L3=t.hitsPS;
-      // ME-68 ‚Äî ONE SOURCE OF TRUTH: if ME-45 would exclude this arm's hitters (season ace), he CANNOT read
-      // TARGET. He gets his own marker. With ME-70a, HRR is released, so it's "ACE ‚Äî HRR only", not "no plays".
-      var isAce=(t.xba!=null&&t.xba<=ACE_XBA_MAX&&t.seasonStarts!=null&&t.seasonStarts>=ACE_MIN_STARTS);
-      t.cls=isAce?'ACE':(n<3)?'NEUTRAL':(t.projHits>=hiC?'TARGET':t.projHits<=loC?'AVOID':'NEUTRAL');
+      // ME-70 ‚Äî cls is set on projHits terciles ALONE here; ACE is re-assigned in the ace post-pass below, and ONLY
+      // to a HARD-EXCLUDED arm (all 3 conditions). An ace-ish arm that is NOT hard-excluded keeps its tercile label
+      // (Chris Sale stays TARGET) and its hitters take the edge penalty instead. t.loC/hiC stashed for that pass.
+      t.loC=loC;t.hiC=hiC;t.nSlate=n;
+      t.cls=(n<3)?'NEUTRAL':(t.projHits>=hiC?'TARGET':t.projHits<=loC?'AVOID':'NEUTRAL');
       t.regress=(t.projHits>L3+0.1)?'regressing up':(t.projHits<L3-0.1)?'regressing down':'';});})();
   targets.sort(function(a,b){return b.sortKey-a.sortKey;}); // sortKey = projHits, nothing added
   // hitters
@@ -1757,6 +1768,29 @@ async function loadAll(){
     var ae=(a.proj&&a.proj.edgePrice!=null)?a.proj.edgePrice:-1,be=(b.proj&&b.proj.edgePrice!=null)?b.proj.edgePrice:-1; // ME-22 ‚Äî edge_vs_price
     return be-ae;
   });
+  // ‚îÄ‚îÄ ME-70 ‚Äî ACE HARD-EXCLUDE vs PENALTY. Needs the slate projHits terciles (targets) AND the K props (pitchers),
+  //    so it runs here, after both. Hard-exclude an arm ONLY when all 3 hold; else his opposing hitters take the
+  //    flat edge penalty. Precomputed onto each hitter (h.aceHardExclude / h.acePenalize) and each target (t.cls
+  //    ACE only if hard-excluded), so aceOut()/acePenalty()/unifiedList/tcard all read one settled decision. ‚îÄ‚îÄ
+  (function(){
+    var loC=(targets[0]&&targets[0].loC!=null)?targets[0].loC:0; // slate bottom-tercile cutoff (same for all targets)
+    var kPropById={},kpctById={},hardEx={},aceish={},dbg=[];
+    pitchers.forEach(function(p){if(p.P&&p.P.id){kPropById[p.P.id]=(p.proj&&p.proj.line);kpctById[p.P.id]=(p.proj&&p.proj.pit_kpct);}});
+    targets.forEach(function(t){
+      var xbaOk=(t.xba!=null&&t.xba<=ACE_XBA_MAX&&t.seasonStarts!=null&&t.seasonStarts>=ACE_MIN_STARTS);
+      var botTercile=(t.projHits!=null&&t.nSlate>=3&&t.projHits<=loC);
+      var kprop=kPropById[t.id],kpct=kpctById[t.id];
+      var kHigh=(kprop!=null&&kprop>=ACE_K_PROP_MIN)||(kprop==null&&kpct!=null&&kpct>=LG_K_PCT+ACE_KPCT_SD);
+      var hard=xbaOk&&botTercile&&kHigh;
+      hardEx[t.id]=hard;aceish[t.id]=xbaOk;
+      if(hard)t.cls='ACE'; // ACE label now ONLY for a hard-excluded arm; Sale (top tercile) stays TARGET
+      if(xbaOk)dbg.push({name:t.name,xba:t.xba,projHits:t.projHits,kprop:(kprop!=null?kprop:'‚Äî'),kpct:(kpct!=null?+(kpct*100).toFixed(1):'‚Äî'),cls:t.cls,decision:hard?'HARD-EXCLUDE':'penalty(-1pp)'});
+    });
+    hitters.forEach(function(h){var pid=h.pit&&h.pit.id;h.aceHardExclude=(pid!=null&&!!hardEx[pid]);h.acePenalize=(pid!=null&&!!aceish[pid]&&!h.aceHardExclude);});
+    var nHard=Object.keys(hardEx).filter(function(k){return hardEx[k];}).length;
+    try{console.log('[ME-70 ace penalty] hard-excluded arms: '+nHard+(nHard>3?' ‚ö† EXPECTED 1-3 ‚Äî thresholds may be wrong':'')+' ¬∑ penalty '+(ACE_EDGE_PENALTY*100).toFixed(1)+'pp/all-markets ¬∑ xBA‚â§'+ACE_XBA_MAX+' AND bottom-tercile projHits AND K‚â•'+ACE_K_PROP_MIN);
+      dbg.sort(function(a,b){return a.projHits-b.projHits;}).forEach(function(d){console.log('  '+(d.decision==='HARD-EXCLUDE'?'‚õî':'‚ûñ')+' '+d.name+' ‚Äî xBA '+f3(d.xba)+' ¬∑ projHits '+d.projHits+' ¬∑ Kprop '+d.kprop+' ¬∑ K% '+d.kpct+' ¬∑ '+d.cls+' ‚Üí '+d.decision);});}catch(e){}
+  })();
   tagTravel(hitters,games); // ME-53 ‚Äî capture tz / zone-delta / local first-pitch on every hitter row (no model change)
   logKProjections(pitchers);logEdgePlays(hitters);logPlayEdges(hitters);logTargets(targets);logMarketAudit(hitters); // instrument
   var kcal=null;try{kcal=await settleKProjections();}catch(e){} // settle prior nights vs real box-score Ks
@@ -1974,7 +2008,7 @@ function tgp(ix){var el=document.getElementById('pc'+ix);if(el)el.classList.togg
 function tcard(t,ix){
   var col=t.cls==='TARGET'?'var(--grn)':t.cls==='AVOID'?'var(--red)':t.cls==='ACE'?'var(--pur)':'var(--mut)'; // ME-48/68
   var rgb=t.cls==='TARGET'?'34,197,94':t.cls==='AVOID'?'239,68,68':t.cls==='ACE'?'167,139,250':'139,148,167';
-  var clsLabel=t.cls==='ACE'?('ACE ‚Äî HRR only (xBA-agst '+f3(t.xba)+')'):t.cls; // ME-68 ‚Äî an ace never reads TARGET; one source of truth with the filter
+  var clsLabel=t.cls==='ACE'?('ACE ‚Äî hard-excluded (xBA-agst '+f3(t.xba)+')'):t.cls; // ME-70 ‚Äî ACE only for a hard-excluded arm (all 3 conditions)
   var when=new Date(t.start).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});
   var trendTxt=t.trend==='worsening'?'‚Üë worsening':t.trend==='improving'?'‚Üì improving':'flat';
   var head='<div class="mhead" onclick="tgt('+ix+')"><div>'
@@ -1999,7 +2033,7 @@ function tcard(t,ix){
   b+='<div class="sect"><div class="sh">LAYER 2 ‚Äî IS IT REAL? (contact quality allowed)</div>'
     +(t.xba!=null?'xBA-against <b>'+f3(t.xba)+'</b> ¬∑ xSLG-against <b>'+f3(t.xslg)+'</b><br>':'<span class="mut">no Statcast row yet</span><br>')
     +(t.hh!=null?'Hard-Hit '+t.hh+'% ¬∑ Barrel '+t.br+'% ¬∑ Exit velo '+t.ev+' mph':'')
-    +'<br>'+(t.cls==='ACE'?'<b style="color:var(--pur)">ACE (season xBA-agst '+f3(t.xba)+', '+t.seasonStarts+' starts) ‚Äî his hitters are held ACE_OPPONENT on every market EXCEPT H+R+RBI (ME-70a released it). Not a target.</b>':t.cls==='AVOID'?'<b style="color:var(--red)">AVOID ‚Äî bottom of tonight\'s field by projected hits; an elite arm, not a target.</b>':t.cls==='TARGET'?'<b style="color:var(--grn)">TARGET ‚Äî top of the field by projected hits; the hittable spot.</b>'+(t.hardContact?' Hard contact confirms it.':''):'NEUTRAL ‚Äî middle of the field.')+(t.cls!=='ACE'&&t.regress?' <span class="mut">('+t.regress+' vs his L3)</span>':'')+'</div>';
+    +'<br>'+(t.cls==='ACE'?'<b style="color:var(--pur)">ACE ‚Äî HARD-EXCLUDED (season xBA-agst '+f3(t.xba)+', '+t.seasonStarts+' starts, bottom-tercile projected hits, high K signal). His hitters are held ACE_OPPONENT on ALL markets. Not a target.</b>':t.cls==='AVOID'?'<b style="color:var(--red)">AVOID ‚Äî bottom of tonight\'s field by projected hits; an elite arm, not a target.</b>':t.cls==='TARGET'?'<b style="color:var(--grn)">TARGET ‚Äî top of the field by projected hits; the hittable spot.</b>'+(t.hardContact?' Hard contact confirms it.':''):'NEUTRAL ‚Äî middle of the field.')+((t.cls!=='ACE'&&t.xba!=null&&t.xba<=ACE_XBA_MAX&&t.seasonStarts>=ACE_MIN_STARTS)?' <span style="color:var(--amb);font-size:10px">‚Äî ace-lean (low xBA) not hard-excluded: his hitters take a '+(ACE_EDGE_PENALTY*100).toFixed(1)+'pp edge penalty, all markets.</span>':'')+(t.cls!=='ACE'&&t.regress?' <span class="mut">('+t.regress+' vs his L3)</span>':'')+'</div>';
   b+='<div class="sect"><div class="sh">LAYER 3 ‚Äî THE EDGE & THE AIM</div>'
     +(t.whiffDrop?'<b>Losing swing-and-miss</b> (K/9 '+(t.k9Delta>0?'+':'')+t.k9Delta+' vs season) ‚Äî more balls in play<br>':'')
     +(t.lineLags?'<b style="color:var(--grn)">Worse LATELY than his season line ‚Äî the market line hasn‚Äôt caught up (the edge)</b><br>':'')
@@ -2067,18 +2101,18 @@ function unifiedList(){
   var rows=[];
   (D.hitters||[]).forEach(function(h){
     if(!h.spot||h.grade==='D'||!h.ladder||!h.ladder.all)return;
-    var red=(pickLight(h)==='red'), ace=aceOut(h);
+    var red=(pickLight(h)==='red'), ace=aceOut(h), pen=acePenalty(h);              // ME-70 ‚Äî hard-exclude vs 1pp penalty
     h.ladder.all.forEach(function(r){
       if(!r.inBand||r.line==null||r.edgeBlend==null)return;                        // must be priced, in-band, evaluable
-      var released=(r.mkt==='batter_hits_runs_rbis');                              // ME-70a
+      var eff=Math.round((r.edgeBlend-pen)*1000)/1000;                             // ME-70 ‚Äî penalty haircut, ALL markets (market-agnostic)
       var held=null;
-      if(ace&&!released)held='ace_opponent';
+      if(ace)held='ace_opponent';                                                 // hard-excluded arm ‚Üí all markets held
       else if(red)held='thin/conflict';
       else if(r.edgeNoTilt!=null&&r.edgeNoTilt<0)held='tilt-only';
-      else if(r.edgeBlend<EDGE_GATE)held='below +'+(EDGE_GATE*100).toFixed(1)+'pp gate';
+      else if(eff<EDGE_GATE)held='below +'+(EDGE_GATE*100).toFixed(1)+'pp gate';   // penalized edge is what must clear the gate
       rows.push({kind:'HIT',player:h.name,team:(TEAM_ABBR[h.team]||h.team),oppStarter:(h.oppPitName||'TBD'),sub:(TEAM_ABBR[h.team]||h.team)+' vs '+(h.oppPitName||'TBD'),
-        mkt:r.label,line:r.line,side:'O',price:r.hr,prob:r.blend,edge:r.edgeBlend,t:r.tStat,seAppx:r.seApprox,
-        held:held,released:(ace&&released)?'ace_released':null,light:pickLight(h),conf:h.confidence});
+        mkt:r.label,line:r.line,side:'O',price:r.hr,prob:r.blend,edge:eff,t:r.tStat,seAppx:r.seApprox,
+        held:held,released:pen?'ace_penalized':null,light:pickLight(h),conf:h.confidence});
     });
   });
   (D.pitchers||[]).forEach(function(p){var pr=p.proj;if(!pr||!pr.ok||pr.line==null||pr.edgePrice==null||pr.hrPrice==null||!priceInBand(pr.hrPrice))return;
