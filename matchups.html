@@ -63,7 +63,7 @@ var MLB='https://statsapi.mlb.com/api/v1';
 var OWM_KEY='6a060c8de21d6f1a5cd9d6fed2b7a53b';
 var ODDS_KEY='e738de03c4b7e835c52b50e1a0b1c494'; // ONLY for game totals context (~2 credits/load)
 var K='me15_';
-var BUILD='v15.027'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
+var BUILD='v15.028'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
 var SHOW_LEGACY=false; // NEXT(2026-08-27) #2 ‚Äî the ONE LIST is the ONLY decision surface, on the PAGE and in the COPY EXPORT. The legacy board sections (Top Picks / Edge / Contact / K / HELD) apply the FULL ace filter while the one list uses the ME-70a-corrected version ‚Äî two surfaces disagreeing = Joe bets a stale board. Flag off, not deleted, so diagnostics recover. Target list + DATA DUMP are NOT legacy (front door + grader feed) and stay.
 // ME-86 ‚Äî stake sizing from bankroll + unit, so a 15-bet night is mechanical not 15 decisions. Configurable
 // in localStorage (me15_bankroll / me15_unit_pct); flat 1u per bet. setBankroll(n)/setUnit(pct) from console.
@@ -1847,7 +1847,7 @@ async function loadAll(){
 function postSlate(peLog){
   try{
     if(!D)return;
-    var unified=unifiedList().map(function(r){return {kind:r.kind,player:r.player,team:r.team,opp:r.oppStarter,market:r.mkt,line:r.line,side:r.side,price:r.price,modelP:r.prob,edge:r.edge,t:r.t,width:r.width,held:r.held||null,status:r.held?('HELD:'+r.held):(r.released||'BET')};});
+    var unified=unifiedList().map(function(r){return {kind:r.kind,player:r.player,team:r.team,opp:r.oppStarter,market:r.mkt,mktKey:r.mktKey,line:r.line,side:r.side,price:r.price,closing_price:null,modelP:r.prob,edge:r.edge,t:r.t,width:r.width,held:r.held||null,status:r.held?('HELD:'+r.held):(r.released||'BET')};}); // ME-74 ‚Äî closing_price stamped at close via /slate-close
     var targets=(D.targets||[]).map(function(t){var hp=t.hitsProp;return {name:t.name,id:t.id,cls:t.cls,projHits:t.projHits,projIP:t.projIP,hitsRate:t.hitsRate,hitsPS:t.hitsPS,line:hp&&hp.line,side:hp&&hp.side,over:hp&&hp.over,under:hp&&hp.under,edge:hp&&hp.edge};});
     var rows=(peLog&&peLog.rows)||[];
     if(!rows.length&&!unified.length)return; // nothing worth saving (empty build) ‚Äî don't overwrite a good capture
