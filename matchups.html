@@ -63,7 +63,7 @@ var MLB='https://statsapi.mlb.com/api/v1';
 var OWM_KEY='6a060c8de21d6f1a5cd9d6fed2b7a53b';
 var ODDS_KEY='e738de03c4b7e835c52b50e1a0b1c494'; // ONLY for game totals context (~2 credits/load)
 var K='me15_';
-var BUILD='v15.025'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
+var BUILD='v15.026'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
 var SHOW_LEGACY=false; // NEXT(2026-08-27) #2 ‚Äî the ONE LIST is the ONLY decision surface, on the PAGE and in the COPY EXPORT. The legacy board sections (Top Picks / Edge / Contact / K / HELD) apply the FULL ace filter while the one list uses the ME-70a-corrected version ‚Äî two surfaces disagreeing = Joe bets a stale board. Flag off, not deleted, so diagnostics recover. Target list + DATA DUMP are NOT legacy (front door + grader feed) and stay.
 // ME-86 ‚Äî stake sizing from bankroll + unit, so a 15-bet night is mechanical not 15 decisions. Configurable
 // in localStorage (me15_bankroll / me15_unit_pct); flat 1u per bet. setBankroll(n)/setUnit(pct) from console.
@@ -94,7 +94,7 @@ function acePenalty(h){return (h&&h.acePenalize)?ACE_EDGE_PENALTY:0;} // ME-70 �
 // ONE place. modelP is matchup-BLIND (season rate only; see ME-28), so the market half is load-bearing ‚Äî
 // it is the only place matchup info (starter, park, slot) currently enters. Do NOT ship BLEND_W=1.0.
 // ME-20 ‚Äî a play must clear EDGE_GATE of edge_vs_price to render in ANY recommending section.
-var BLEND_W=0.5, EDGE_GATE=0.02;
+var BLEND_W=0.5, EDGE_GATE=0.02, T_GATE=2.0; // ME-95 ‚Äî endorsement needs BOTH: edge‚â•EDGE_GATE AND t‚â•T_GATE
 function modelBlend(m,f){return (m==null&&f==null)?null:m==null?f:f==null?m:BLEND_W*m+(1-BLEND_W)*f;}
 function edgeVsPrice(pP,hr){var be=impliedP(hr);return (pP==null||be==null)?null:Math.round((pP-be)*1000)/1000;} // vs the price you PAY (implied, with vig) ‚Äî not the de-vig fair
 // ME-22 ‚Äî ONE ruler, labelled. Rank/qualify on edge_vs_price everywhere (hitters AND Ks); show edge_vs_fair
@@ -2156,7 +2156,15 @@ function unifiedList(){
   // NEXT(15:40) #1 ‚Äî OPERATOR RULE (DECISIONS.md, since 8/25): Joe does not bet UNDERS. Any under ‚Üí held, no stake,
   // stays visible with the reason. Market-agnostic ‚Äî it's the SIDE, not the market (applies to K and ME-83 hits unders).
   rows.forEach(function(r){if(r.side==='U')r.held='held_operator_no_under';});
-  rows.sort(function(a,b){return (b.edge==null?-99:b.edge)-(a.edge==null?-99:a.edge);}); // ME-86/21 ‚Äî edge vs price DESC
+  // ME-95 ‚Äî THE t GATE IS AN ENDORSEMENT GATE, not just a sort key (ME-59 wired the sort but never the status).
+  // BET requires edge‚â•EDGE_GATE (already enforced above) AND t‚â•T_GATE. No t at all ‚Üí never BET. Does NOT touch the
+  // model, lambdas, pricing, or the edge-vs-price SORT below ‚Äî only which rows are allowed to read as bettable.
+  rows.forEach(function(r){
+    if(r.held)return;                                                    // already held for another reason ‚Äî leave it
+    if(r.tNa||r.t==null){r.held='no_t_unvalidated';r.tGated=true;}       // no t (e.g. hits-allowed n=8) ‚Üí never a $ play
+    else if(r.t<T_GATE){r.held='inside_noise (t '+r.t.toFixed(2)+')';r.tGated=true;} // edge cleared but inside the noise
+  });
+  rows.sort(function(a,b){return (b.edge==null?-99:b.edge)-(a.edge==null?-99:a.edge);}); // ME-86/21 ‚Äî edge vs price DESC (UNCHANGED)
   return rows;
 }
 function render(){
@@ -2185,7 +2193,13 @@ function render(){
     console.log('[ME-69 gate-drop log ‚Äî '+ULheld.length+' eligible rows held]');Object.keys(byR).forEach(function(k){console.log('  '+k+' ('+byR[k].length+'): '+byR[k].join(' ¬∑ '));});}}catch(e){}
   h+='<div class="card" style="border-color:var(--gld);background:rgba(234,179,8,.05)">';
   h+='<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b style="color:var(--gld);font-size:15px">&#128203; ONE LIST ‚Äî '+ULbet.length+' bettable ¬∑ '+ULheld.length+' held</b><button onclick="copyList()" style="font-size:11px;padding:4px 10px;border-radius:8px;border:1px solid var(--gld);background:transparent;color:var(--gld);cursor:pointer">&#128203; Copy all</button></div>';
-  h+='<div style="font-size:10px;margin-top:2px" class="mut">Every eligible row, every market, sorted by <b>edge vs price</b>. Read top-down, bet down. Held rows greyed with the reason ‚Äî visible &amp; overridable. Stake <b>$'+unitDollars()+'</b>/unit (bankroll $'+BANKROLL+', unit '+(UNIT_PCT*100).toFixed(1)+'% ‚Äî setBankroll()/setUnit() in console). t&lt;2 = inside the noise.</div>';
+  h+='<div style="font-size:10px;margin-top:2px" class="mut">Every eligible row, every market, sorted by <b>edge vs price</b>. Read top-down, bet down. Held rows greyed with the reason ‚Äî visible &amp; overridable. Stake <b>$'+unitDollars()+'</b>/unit (bankroll $'+BANKROLL+', unit '+(UNIT_PCT*100).toFixed(1)+'% ‚Äî setBankroll()/setUnit() in console). BET requires edge‚â•+'+(EDGE_GATE*100).toFixed(1)+'pp AND t‚â•'+T_GATE.toFixed(1)+'.</div>';
+  // ME-95 ‚Äî ENDORSEMENT AUDIT (t gate). Two acceptance lines, on the card + console.
+  var _allClear=ULbet.every(function(r){return r.t!=null&&r.t>=T_GATE;}),_demoted=UL.filter(function(r){return r.tGated;}).length;
+  var _m95a='[ME-95] bettable rows: '+ULbet.length+'  ¬∑  all clear t‚â•'+T_GATE.toFixed(1)+': '+(_allClear?'YES':'NO');
+  var _m95b='[ME-95] demoted by t gate this slate: '+_demoted;
+  try{console.log(_m95a);console.log(_m95b);}catch(e){}
+  h+='<div style="font-size:10px;margin-top:3px;font-family:monospace;color:'+(_allClear?'var(--grn)':'var(--red)')+'">'+_m95a+'<br>'+_m95b+'</div>';
   UL.forEach(function(r,i){var grey=!!r.held;
     h+='<div style="font-size:12px;margin-top:5px;border-top:1px solid var(--bord);padding-top:4px'+(grey?';opacity:.55':'')+'"><span class="mut">'+(i+1)+'.</span> '+lightDot(r.light)+' <b>'+esc(r.player)+'</b> <span class="mut">('+esc(r.sub)+')</span> <b style="color:var(--gld)">'+esc(r.mkt)+' '+r.side+r.line+' '+(r.price>0?'+':'')+r.price+'</b>'+(r.prob!=null?' ¬∑ '+Math.round(r.prob*100)+'%':'')+' ¬∑ <b style="color:'+(r.edge>=0?'var(--grn)':'var(--red)')+'">'+(r.edge>=0?'+':'')+(r.edge*100).toFixed(1)+'pp</b>'+(r.tNa?' <span class="mut">(t n/a)</span>':r.t!=null?' <span class="mut">(t '+r.t.toFixed(2)+(r.seAppx?'~':'')+(r.t<2?' ‚ö†noise':'')+')</span>':'')+' ¬∑ '+(grey?'<span style="color:var(--amb)">held: '+esc(r.held)+'</span>':'<b style="color:var(--grn)">$'+unitDollars()+'</b>')+(r.released?' <span style="color:var(--blu);font-size:9px">'+esc(r.released)+'</span>':'')+'</div>';});
   if(!UL.length)h+='<div style="font-size:11px;margin-top:5px" class="mut">No eligible rows yet ‚Äî lineups/prices not posted.</div>';
@@ -2351,7 +2365,10 @@ function copyTop(){
   //    This is the decision list Joe/analyst/grader all read. Legacy board sections are gated off below (SHOW_LEGACY).
   var UL=unifiedList(),ULbet=UL.filter(function(r){return !r.held;}).length,ULheld=UL.length-ULbet;
   t+='\n‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê üìã ONE LIST ‚Äî '+ULbet+' bettable ¬∑ '+ULheld+' held ‚Äî READ TOP-DOWN, BET DOWN ‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê\n';
-  t+='sorted by EDGE VS PRICE ¬∑ flat $'+u+'/unit (bankroll $'+BANKROLL+', unit '+(UNIT_PCT*100).toFixed(1)+'%) ¬∑ t<2 = inside the noise ¬∑ held rows kept visible with the reason\n';
+  var _allClear=UL.filter(function(r){return !r.held;}).every(function(r){return r.t!=null&&r.t>=T_GATE;}),_demoted=UL.filter(function(r){return r.tGated;}).length;
+  t+='[ME-95] bettable rows: '+ULbet+'  ¬∑  all clear t‚â•'+T_GATE.toFixed(1)+': '+(_allClear?'YES':'NO')+'\n';
+  t+='[ME-95] demoted by t gate this slate: '+_demoted+'\n';
+  t+='BET requires edge‚â•+'+(EDGE_GATE*100).toFixed(1)+'pp AND t‚â•'+T_GATE.toFixed(1)+' ¬∑ sorted by EDGE VS PRICE ¬∑ flat $'+u+'/unit (bankroll $'+BANKROLL+', unit '+(UNIT_PCT*100).toFixed(1)+'%) ¬∑ held rows kept visible with the reason\n';
   t+='#|player|team|opp_starter|market|line|side|price|modelP|breakeven|EDGE_VS_PRICE|t|stake|status\n';
   UL.forEach(function(r,i){
     var be=r.price!=null?Math.round(impliedP(r.price)*1000)/10:null;
