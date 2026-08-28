@@ -63,7 +63,7 @@ var MLB='https://statsapi.mlb.com/api/v1';
 var OWM_KEY='6a060c8de21d6f1a5cd9d6fed2b7a53b';
 var ODDS_KEY='e738de03c4b7e835c52b50e1a0b1c494'; // ONLY for game totals context (~2 credits/load)
 var K='me15_';
-var BUILD='v15.029'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
+var BUILD='v15.030'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
 var SHOW_LEGACY=false; // NEXT(2026-08-27) #2 ‚Äî the ONE LIST is the ONLY decision surface, on the PAGE and in the COPY EXPORT. The legacy board sections (Top Picks / Edge / Contact / K / HELD) apply the FULL ace filter while the one list uses the ME-70a-corrected version ‚Äî two surfaces disagreeing = Joe bets a stale board. Flag off, not deleted, so diagnostics recover. Target list + DATA DUMP are NOT legacy (front door + grader feed) and stay.
 // ME-86 ‚Äî stake sizing from bankroll + unit, so a 15-bet night is mechanical not 15 decisions. Configurable
 // in localStorage (me15_bankroll / me15_unit_pct); flat 1u per bet. setBankroll(n)/setUnit(pct) from console.
@@ -95,6 +95,13 @@ function acePenalty(h){return (h&&h.acePenalize)?ACE_EDGE_PENALTY:0;} // ME-70 �
 // it is the only place matchup info (starter, park, slot) currently enters. Do NOT ship BLEND_W=1.0.
 // ME-20 ‚Äî a play must clear EDGE_GATE of edge_vs_price to render in ANY recommending section.
 var BLEND_W=0.5, EDGE_GATE=0.02, T_GATE=2.0; // ME-95 ‚Äî endorsement needs BOTH: edge‚â•EDGE_GATE AND t‚â•T_GATE
+// ME-104 ‚Äî PER-MARKET Œª BIAS CORRECTION, applied to Œª BEFORE modelP/edge/t. A uniformly inflated Œª inflates edge AND
+// t together, so the t gate was selecting HOW FAR OUR BIAS CARRIED US FROM THE MARKET and calling that confidence
+// (singles cleared 6/14 rows, all 19-36% above book). k strips the measured per-market CONSTANT; the row-specific
+// disagreement (the only real edge) survives. NOT "matching the book" ‚Äî Tatis stays +21% over after correction.
+// Measured 2026-08-28 off /slate ‚Äî REFIT WEEKLY, do not hardcode forever. Markets absent here get k=1 (no change).
+var ME104_K={batter_singles:0.888,batter_hits_runs_rbis:0.952,batter_hits:0.910,batter_total_bases:1.007,batter_runs_scored:1.008,batter_rbis:1.051};
+function me104k(mkt){return (ME104_K[mkt]!=null)?ME104_K[mkt]:1;}
 function modelBlend(m,f){return (m==null&&f==null)?null:m==null?f:f==null?m:BLEND_W*m+(1-BLEND_W)*f;}
 function edgeVsPrice(pP,hr){var be=impliedP(hr);return (pP==null||be==null)?null:Math.round((pP-be)*1000)/1000;} // vs the price you PAY (implied, with vig) ‚Äî not the de-vig fair
 // ME-22 ‚Äî ONE ruler, labelled. Rank/qualify on edge_vs_price everywhere (hitters AND Ks); show edge_vs_fair
@@ -653,7 +660,8 @@ function contextTilt(h,mkt){
 function propProb(p,h,mkt){
   if(!p||p.hr==null)return null;
   var lam=hitterLambdaV2(h,mkt);                                        // ME-38 ‚Äî matchup-aware Œª IS LIVE (slot√óplatoon, mean-neutral); v1 still logged for comparison. Neutrality is HARD-GATED in render().
-  var modelP=(lam!=null)?poissonCorr(mkt,lam,p.line):null;              // ME-29 de-biased Poisson on the matchup-aware Œª
+  if(lam!=null)lam=lam*me104k(mkt);                                     // ME-104 ‚Äî strip the measured per-market Œª bias BEFORE modelP/edge/t (else the gate selects bias, not quality)
+  var modelP=(lam!=null)?poissonCorr(mkt,lam,p.line):null;              // ME-29 de-biased Poisson on the matchup-aware, k-corrected Œª
   var fair=(p.fair!=null)?p.fair:null;                                  // de-vig market fair
   var core=modelBlend(modelP,fair);                                    // BLEND_W¬∑model + (1‚àíBLEND_W)¬∑fair (no tilt)
   var ct=contextTilt(h,mkt),tilt=ct.tilt;
@@ -1007,7 +1015,7 @@ function logPlayEdges(hitters){
       rows.push({row_id:todayStr()+'|'+h.id+'|'+bp.mkt+'|'+bp.line+'|'+sec,supersedes_row_id:null, // ME-55 ‚Äî stable id + supersede key; grader tallies only non-superseded rows
         sec:sec,id:h.id,name:h.name,team:h.team,mkt:bp.mkt,line:bp.line,hr:bp.hr,over_price:bp.hr,under_price:(bp.hrUnder!=null?bp.hrUnder:null),devig_over:(bp.devigOver!=null?bp.devigOver:null),devig_under:(bp.devigUnder!=null?bp.devigUnder:null),grade:h.grade,score:h.score,park:h.park,spot:h.spot, // ME-04/15/38/88 ‚Äî grade + park + slot + HR over/under + representative two-way de-vig pair on every EVALUATED row
         model:bp.modelP,fair:bp.fair,blend:bp.blend,blend_notilt:bp.blendNoTilt,tilt:bp.tilt,tilt_preclip:bp.tiltPreClip,tilt_null:bp.tiltNull,hold:bp.hold, // ME-26/27/30
-        engine_lambda:r3(hitterLambda(h.b,bp.mkt)),engine_lambda_v2:hitterLambdaV2(h,bp.mkt),market_lambda:marketLambda(bp.fair,bp.line,bp.mkt),hand_lambda_l7:null,slot_estimated:!!h.slotEstimated, // ME-43/47/49
+        engine_lambda:r3(hitterLambda(h.b,bp.mkt)),engine_lambda_v2:hitterLambdaV2(h,bp.mkt),me104_k:me104k(bp.mkt),market_lambda:marketLambda(bp.fair,bp.line,bp.mkt),hand_lambda_l7:null,slot_estimated:!!h.slotEstimated, // ME-43/47/49/104 ‚Äî v2 is UNCORRECTED (refit k from v2 vs market_lambda); me104_k = k applied to modelP/edge/t
         slot_mult:h.slotMult,platoon_mult:h.platoonMult, // ME-62 ‚Äî for the residual regression
         l7_lambda:(h.b&&h.b.l7&&h.b.l7[bp.mkt]!=null)?r3(h.b.l7[bp.mkt]):null,l10_lambda:(h.b&&h.b.l10&&h.b.l10[bp.mkt]!=null)?r3(h.b.l10[bp.mkt]):null,streak:(formRead(h,bp.mkt)||{}).streak, // ME-63 ‚Äî recent-form windows
         tz_delta:h.travel&&h.travel.zoneDelta,local_fp:h.travel&&h.travel.localFP,is_home:h.travel&&h.travel.isHome,road_trip_days:h.travel&&h.travel.roadTripDays, // ME-53 travel capture
@@ -1847,7 +1855,10 @@ async function loadAll(){
 function postSlate(peLog){
   try{
     if(!D)return;
-    var unified=unifiedList().map(function(r){return {kind:r.kind,player:r.player,team:r.team,opp:r.oppStarter,market:r.mkt,mktKey:r.mktKey,line:r.line,side:r.side,price:r.price,closing_price:null,modelP:r.prob,edge:r.edge,t:r.t,width:r.width,held:r.held||null,status:r.held?('HELD:'+r.held):(r.released||'BET')};}); // ME-74 ‚Äî closing_price stamped at close via /slate-close
+    var unified=unifiedList().map(function(r){
+      var payout=(r.price>0)?r.price/100:(r.price<0?100/(-r.price):null); // ME-105 ‚Äî EV per $1 so the analyst's top-20-by-EV layer reads straight off /slate (a price-driven edge ‚Äî agreement + a mispriced line ‚Äî is invisible to the t gate but shows here)
+      var ev=(r.prob!=null&&payout!=null)?Math.round((r.prob*payout-(1-r.prob))*1000)/1000:null;
+      return {kind:r.kind,player:r.player,team:r.team,opp:r.oppStarter,market:r.mkt,mktKey:r.mktKey,line:r.line,side:r.side,price:r.price,closing_price:null,modelP:r.prob,edge:r.edge,ev:ev,t:r.t,width:r.width,held:r.held||null,status:r.held?('HELD:'+r.held):(r.released||'BET')};});
     var targets=(D.targets||[]).map(function(t){var hp=t.hitsProp;return {name:t.name,id:t.id,cls:t.cls,projHits:t.projHits,projIP:t.projIP,hitsRate:t.hitsRate,hitsPS:t.hitsPS,line:hp&&hp.line,side:hp&&hp.side,over:hp&&hp.over,under:hp&&hp.under,edge:hp&&hp.edge};});
     var rows=(peLog&&peLog.rows)||[];
     if(!rows.length&&!unified.length)return; // nothing worth saving (empty build) ‚Äî don't overwrite a good capture
