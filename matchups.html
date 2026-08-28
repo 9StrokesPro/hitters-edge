@@ -1043,6 +1043,7 @@ function logPlayEdges(hitters){
   try{var cm={};tops.forEach(function(r){if(BIAS_LAMBDA_MAX[r.mkt]!=null&&r.engine_lambda_v2!=null&&r.engine_lambda_v2>BIAS_LAMBDA_MAX[r.mkt])cm[r.mkt]=(cm[r.mkt]||0)+1;});
     var cmk=Object.keys(cm);console.log('[ME-60 bias clamp] rows over the turn: '+(cmk.length?cmk.map(function(m){return m.replace('batter_','')+' '+cm[m]+' (turn '+BIAS_LAMBDA_MAX[m]+')';}).join(' ¬∑ '):'none ‚Äî all Œª inside the fit range'));}catch(e){}
   assertOneProb(rows); // ME-19 acceptance ‚Äî no (player,mkt,line) may carry two different probabilities
+  return {at:Date.now(),blend_w:BLEND_W,gate:EDGE_GATE,rows:rows}; // ME-96 ‚Äî hand the rows back so loadAll can POST them to the worker (localStorage is quota-dead on the shared origin)
 }
 // ME-19 test ‚Äî one probability function everywhere. Scans every surfaced row; if the same
 // (player, market, line) shows two different blended probabilities, that's two code paths ‚Äî fail loudly.
@@ -1827,7 +1828,7 @@ async function loadAll(){
     console.log('[ME-93 hitter check] '+hi.length+' primary rows, all side=OVER (ladder is over-only); modelP=P(over) via poissonOver ‚Äî no side selection, nothing to invert.');
   }catch(e){}
   tagTravel(hitters,games); // ME-53 ‚Äî capture tz / zone-delta / local first-pitch on every hitter row (no model change)
-  logKProjections(pitchers);logEdgePlays(hitters);logPlayEdges(hitters);logTargets(targets);logMarketAudit(hitters); // instrument
+  logKProjections(pitchers);logEdgePlays(hitters);var _peLog=logPlayEdges(hitters);logTargets(targets);logMarketAudit(hitters); // instrument (_peLog captured for the worker slate save ‚Äî ME-96)
   var kcal=null;try{kcal=await settleKProjections();}catch(e){} // settle prior nights vs real box-score Ks
   var ecal=null;try{ecal=await settleEdgePlays();}catch(e){}     // settle prior edge plays, grouped by signal
   var gcal=null;try{gcal=await settlePlayEdges();}catch(e){}     // ME-15 ‚Äî settle the WHOLE evaluated population, bucketed by grade
@@ -1835,8 +1836,26 @@ async function loadAll(){
   var mcal=null;try{mcal=await settleMarketAudit();}catch(e){}   // ME-54 ‚Äî did the surfaced market beat its alternatives?
   D={hitters:hitters,games:games,pitchers:pitchers,targets:targets,kcalib:kcal,ecalib:ecal,gcalib:gcal,tcalib:tcal,mcalib:mcal,generatedAt:new Date(),loadSec:Math.round((Date.now()-t0)/1000),propsAt:propRes.at,serverDown:propRes.serverDown};
   render();
+  postSlate(_peLog); // ME-96 ‚Äî persist THIS slate to the worker (server-side, no browser quota). Fire-and-forget.
   setS(hitters.length+' matchup cards ‚Ä¢ '+games.length+' games ‚Ä¢ built in '+D.loadSec+'s');
   freshLine();
+}
+// ME-96 ‚Äî SAVE THE SLATE TO THE WORKER, not localStorage. The page lives on 9strokespro.github.io, whose localStorage
+// is shared with Hitters Edge and is quota-full, so every ss() write throws QuotaExceededError and was silently
+// swallowed ‚Äî the page retained NOTHING. This POSTs the built slate (decision list + every evaluated row + targets)
+// to /slate; server KV has no browser quota. Fire-and-forget: never blocks or breaks render if the worker is down.
+function postSlate(peLog){
+  try{
+    if(!D)return;
+    var unified=unifiedList().map(function(r){return {kind:r.kind,player:r.player,team:r.team,opp:r.oppStarter,market:r.mkt,line:r.line,side:r.side,price:r.price,modelP:r.prob,edge:r.edge,t:r.t,width:r.width,held:r.held||null,status:r.held?('HELD:'+r.held):(r.released||'BET')};});
+    var targets=(D.targets||[]).map(function(t){var hp=t.hitsProp;return {name:t.name,id:t.id,cls:t.cls,projHits:t.projHits,projIP:t.projIP,hitsRate:t.hitsRate,hitsPS:t.hitsPS,line:hp&&hp.line,side:hp&&hp.side,over:hp&&hp.over,under:hp&&hp.under,edge:hp&&hp.edge};});
+    var rows=(peLog&&peLog.rows)||[];
+    if(!rows.length&&!unified.length)return; // nothing worth saving (empty build) ‚Äî don't overwrite a good capture
+    var payload={date:todayStr(),build:BUILD,at:Date.now(),blend_w:BLEND_W,gate:EDGE_GATE,unified:unified,targets:targets,rows:rows};
+    fetch(SERVER_URL.replace(/\/$/,'')+'/slate',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload)})
+      .then(function(r){return r.json();}).then(function(j){try{console.log('[ME-96 slate-save] '+(j&&j.ok?('‚úì stored '+j.stored+' ‚Äî '+j.rows+' rows'+(j.kept?' ('+j.kept+')':'')):'no-save '+JSON.stringify(j)));}catch(e){}})
+      .catch(function(e){try{console.log('[ME-96 slate-save] worker unreachable ‚Äî slate NOT saved this load: '+e);}catch(_){}});
+  }catch(e){try{console.log('[ME-96 slate-save] error: '+e);}catch(_){}}
 }
 function freshLine(){
   var el=document.getElementById('fresh');if(!el||!D)return;
