@@ -63,7 +63,7 @@ var MLB='https://statsapi.mlb.com/api/v1';
 var OWM_KEY='6a060c8de21d6f1a5cd9d6fed2b7a53b';
 var ODDS_KEY='e738de03c4b7e835c52b50e1a0b1c494'; // ONLY for game totals context (~2 credits/load)
 var K='me15_';
-var BUILD='v15.026'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
+var BUILD='v15.027'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
 var SHOW_LEGACY=false; // NEXT(2026-08-27) #2 ‚Äî the ONE LIST is the ONLY decision surface, on the PAGE and in the COPY EXPORT. The legacy board sections (Top Picks / Edge / Contact / K / HELD) apply the FULL ace filter while the one list uses the ME-70a-corrected version ‚Äî two surfaces disagreeing = Joe bets a stale board. Flag off, not deleted, so diagnostics recover. Target list + DATA DUMP are NOT legacy (front door + grader feed) and stay.
 // ME-86 ‚Äî stake sizing from bankroll + unit, so a 15-bet night is mechanical not 15 decisions. Configurable
 // in localStorage (me15_bankroll / me15_unit_pct); flat 1u per bet. setBankroll(n)/setUnit(pct) from console.
@@ -2113,11 +2113,16 @@ function boardData(){
     console.log('[ME-59 t across board, n='+ts.length+'] t‚â•2.0: '+ge2+' ¬∑ 1.5‚Äì2.0: '+ge15+' ¬∑ <1.5: '+(ts.length-ge2-ge15)+' ¬∑ max '+Math.max.apply(null,ts).toFixed(2)+' (ranking on t, NOT gating ‚Äî need ~50 rows first)');}}catch(e){}
   return{edge:edge,contact:contact,pitcher:pitcher,top:top.slice(0,14),held:held,dropped:dropped};
 }
-// ME-86 ‚Äî ONE RANKED LIST. Every eligible row (every hitter √ó every priced in-band market, + every K prop),
-// sorted by EDGE VS PRICE descending. Held rows are NOT removed ‚Äî they render inline, greyed, with the reason,
-// so Joe can override. Delivery, not model, is the bottleneck: we surface far more winners than sections show.
-// ME-70a ‚Äî h_r_rbi is RELEASED from the ace filter (facing an ace did not reduce HRR clear rate: 75% both
-// sides). Ace filter still applies to every OTHER market. Released rows tagged 'ace_released'.
+// ME-98 ‚Äî WIDTH = how many ways a bet can win = robustness to the model being right about PRODUCTION but wrong
+// about its FORM. Eldridge 8/27: model said he'd produce, he did (hit+run+RBI) ‚Äî Singles O0.5 LOST (the hit was a
+// double), H+R+RBI O1.5 WON. Wider markets tolerate being wrong about the shape. Rank: HRR > TB > hits > runs/rbi >
+// singles/doubles > HR-dart. Pitcher single-stat markets get a neutral 3 (width is a hitter-market concept).
+function marketWidth(k){switch(k){case 'batter_hits_runs_rbis':return 5;case 'batter_total_bases':return 4;case 'batter_hits':return 3;case 'batter_runs_scored':case 'batter_rbis':return 2;case 'batter_singles':case 'batter_doubles':return 1;case 'batter_home_runs':return 0;default:return 3;}}
+// ME-86 ‚Äî ONE RANKED LIST. Every eligible row (every hitter √ó every priced in-band market, + every K prop).
+// Bettable rows (cleared BOTH gates) lead, sorted by EDGE VS PRICE (ME-59). BELOW-BAR (held) rows follow, sorted
+// by modelP DESC with WIDTH as the tiebreak (ME-98) ‚Äî NEVER by t: when nothing clears the bar, the highest-prob /
+// widest market is the least-bad play, and a t-sort buried Eldridge HRR (53%) under Eldridge Singles (50%, t 1.33).
+// ME-70a ‚Äî h_r_rbi is RELEASED from the ace filter (facing an ace did not reduce HRR clear rate: 75% both sides).
 function unifiedList(){
   if(!D)return[];
   var rows=[];
@@ -2133,13 +2138,13 @@ function unifiedList(){
       else if(r.edgeNoTilt!=null&&r.edgeNoTilt<0)held='tilt-only';
       else if(eff<EDGE_GATE)held='below +'+(EDGE_GATE*100).toFixed(1)+'pp gate';   // penalized edge is what must clear the gate
       rows.push({kind:'HIT',player:h.name,team:(TEAM_ABBR[h.team]||h.team),oppStarter:(h.oppPitName||'TBD'),sub:(TEAM_ABBR[h.team]||h.team)+' vs '+(h.oppPitName||'TBD'),
-        mkt:r.label,line:r.line,side:'O',price:r.hr,prob:r.blend,edge:eff,t:r.tStat,seAppx:r.seApprox,
+        mkt:r.label,mktKey:r.mkt,width:marketWidth(r.mkt),line:r.line,side:'O',price:r.hr,prob:r.blend,edge:eff,t:r.tStat,seAppx:r.seApprox,
         held:held,released:pen?'ace_penalized':null,light:pickLight(h),conf:h.confidence});
     });
   });
   (D.pitchers||[]).forEach(function(p){var pr=p.proj;if(!pr||!pr.ok||pr.line==null||pr.edgePrice==null||pr.hrPrice==null||!priceInBand(pr.hrPrice))return;
     rows.push({kind:'K',player:p.name,team:(TEAM_ABBR[p.team]||p.team),oppStarter:'(self)',sub:(TEAM_ABBR[p.team]||p.team)+' '+(p.throws||'?')+'HP vs '+p.opp,
-      mkt:'Ks',line:pr.line,side:pr.side==='Over'?'O':'U',price:pr.hrPrice,prob:pr.modelP,edge:pr.edgePrice,t:pr.tStat,seAppx:pr.seApprox,
+      mkt:'Ks',mktKey:'pitcher_strikeouts',width:marketWidth('pitcher_strikeouts'),line:pr.line,side:pr.side==='Over'?'O':'U',price:pr.hrPrice,prob:pr.modelP,edge:pr.edgePrice,t:pr.tStat,seAppx:pr.seApprox,
       held:pr.recommend?null:(pr.holdReason||pr.marketFlag||'held'),released:null,light:pr.confidence==='HIGH'?'green':pr.confidence==='LOW'?'red':'yellow',conf:pr.confidence});
   });
   // ME-83 ‚Äî PITCHER HITS ALLOWED rows (from the target list, priced above). Always tagged new_market_unvalidated;
@@ -2149,7 +2154,7 @@ function unifiedList(){
     if(!hp.inBand)held='price outside band';
     else if(hp.edge<EDGE_GATE)held='below +'+(EDGE_GATE*100).toFixed(1)+'pp gate';
     rows.push({kind:'PH',player:t.name,team:(TEAM_ABBR[t.team]||t.team||'?'),oppStarter:'(self)',sub:(TEAM_ABBR[t.team]||t.team||'?')+' vs '+(t.opp||'TBD')+' ‚Äî hits allowed',
-      mkt:'Hits allowed',line:hp.line,side:hp.side==='Over'?'O':'U',price:hp.price,prob:hp.modelP,edge:hp.edge,
+      mkt:'Hits allowed',mktKey:'pitcher_hits_allowed',width:marketWidth('pitcher_hits_allowed'),line:hp.line,side:hp.side==='Over'?'O':'U',price:hp.price,prob:hp.modelP,edge:hp.edge,
       t:null,tNa:true,seAppx:hp.seApprox, // NEXT(15:40) #2 ‚Äî t is SE_APPROX on n=8; show n/a, rank on edge alone until ME-82 gives n‚â•30
       held:held,released:'new_market_unvalidated (n=8)',light:'yellow',conf:'NEW'});
   });
@@ -2164,7 +2169,18 @@ function unifiedList(){
     if(r.tNa||r.t==null){r.held='no_t_unvalidated';r.tGated=true;}       // no t (e.g. hits-allowed n=8) ‚Üí never a $ play
     else if(r.t<T_GATE){r.held='inside_noise (t '+r.t.toFixed(2)+')';r.tGated=true;} // edge cleared but inside the noise
   });
-  rows.sort(function(a,b){return (b.edge==null?-99:b.edge)-(a.edge==null?-99:a.edge);}); // ME-86/21 ‚Äî edge vs price DESC (UNCHANGED)
+  // ME-98 ‚Äî TWO-TIER SORT. Bettable rows lead, EDGE VS PRICE DESC (ME-59, unchanged). BELOW-BAR (held) rows follow,
+  // modelP DESC with WIDTH as the tiebreak when modelP is within 3pp ‚Äî NEVER t. On a 0-bettable night the whole list
+  // is below-bar, so the highest-prob / widest market surfaces first (Eldridge HRR 53% over Singles 50%), not the
+  // fatter-edge-but-narrower Singles the old flat edge-sort put on top.
+  rows.sort(function(a,b){
+    var ah=a.held?1:0,bh=b.held?1:0;
+    if(ah!==bh)return ah-bh;                                                    // bettable (0) before held (1)
+    if(!a.held)return (b.edge==null?-99:b.edge)-(a.edge==null?-99:a.edge);       // bettable ‚Üí edge vs price DESC
+    var ap=(a.prob==null?-1:a.prob),bp=(b.prob==null?-1:b.prob);                 // held ‚Üí modelP DESC ‚Ä¶
+    if(Math.abs(ap-bp)<=0.03)return (b.width||0)-(a.width||0);                   // ‚Ä¶ WIDTH DESC tiebreak within 3pp
+    return bp-ap;
+  });
   return rows;
 }
 function render(){
@@ -2201,7 +2217,7 @@ function render(){
   try{console.log(_m95a);console.log(_m95b);}catch(e){}
   h+='<div style="font-size:10px;margin-top:3px;font-family:monospace;color:'+(_allClear?'var(--grn)':'var(--red)')+'">'+_m95a+'<br>'+_m95b+'</div>';
   UL.forEach(function(r,i){var grey=!!r.held;
-    h+='<div style="font-size:12px;margin-top:5px;border-top:1px solid var(--bord);padding-top:4px'+(grey?';opacity:.55':'')+'"><span class="mut">'+(i+1)+'.</span> '+lightDot(r.light)+' <b>'+esc(r.player)+'</b> <span class="mut">('+esc(r.sub)+')</span> <b style="color:var(--gld)">'+esc(r.mkt)+' '+r.side+r.line+' '+(r.price>0?'+':'')+r.price+'</b>'+(r.prob!=null?' ¬∑ '+Math.round(r.prob*100)+'%':'')+' ¬∑ <b style="color:'+(r.edge>=0?'var(--grn)':'var(--red)')+'">'+(r.edge>=0?'+':'')+(r.edge*100).toFixed(1)+'pp</b>'+(r.tNa?' <span class="mut">(t n/a)</span>':r.t!=null?' <span class="mut">(t '+r.t.toFixed(2)+(r.seAppx?'~':'')+(r.t<2?' ‚ö†noise':'')+')</span>':'')+' ¬∑ '+(grey?'<span style="color:var(--amb)">held: '+esc(r.held)+'</span>':'<b style="color:var(--grn)">$'+unitDollars()+'</b>')+(r.released?' <span style="color:var(--blu);font-size:9px">'+esc(r.released)+'</span>':'')+'</div>';});
+    h+='<div style="font-size:12px;margin-top:5px;border-top:1px solid var(--bord);padding-top:4px'+(grey?';opacity:.55':'')+'"><span class="mut">'+(i+1)+'.</span> '+lightDot(r.light)+' <b>'+esc(r.player)+'</b> <span class="mut">('+esc(r.sub)+')</span> <b style="color:var(--gld)">'+esc(r.mkt)+' '+r.side+r.line+' '+(r.price>0?'+':'')+r.price+'</b>'+(r.prob!=null?' ¬∑ '+Math.round(r.prob*100)+'%':'')+' ¬∑ <b style="color:'+(r.edge>=0?'var(--grn)':'var(--red)')+'">'+(r.edge>=0?'+':'')+(r.edge*100).toFixed(1)+'pp</b>'+(r.tNa?' <span class="mut">(t n/a)</span>':r.t!=null?' <span class="mut">(t '+r.t.toFixed(2)+(r.seAppx?'~':'')+(r.t<2?' ‚ö†noise':'')+')</span>':'')+(r.width!=null?' <span class="mut" style="font-size:9px" title="ways to win: 5=HRR widest ‚Ä¶ 1=singles narrowest">w'+r.width+'</span>':'')+' ¬∑ '+(grey?'<span style="color:var(--amb)">held: '+esc(r.held)+'</span>':'<b style="color:var(--grn)">$'+unitDollars()+'</b>')+(r.released?' <span style="color:var(--blu);font-size:9px">'+esc(r.released)+'</span>':'')+'</div>';});
   if(!UL.length)h+='<div style="font-size:11px;margin-top:5px" class="mut">No eligible rows yet ‚Äî lineups/prices not posted.</div>';
   h+='</div>';
   var A=D.hitters.filter(function(x){return x.grade==='A';});
@@ -2368,15 +2384,15 @@ function copyTop(){
   var _allClear=UL.filter(function(r){return !r.held;}).every(function(r){return r.t!=null&&r.t>=T_GATE;}),_demoted=UL.filter(function(r){return r.tGated;}).length;
   t+='[ME-95] bettable rows: '+ULbet+'  ¬∑  all clear t‚â•'+T_GATE.toFixed(1)+': '+(_allClear?'YES':'NO')+'\n';
   t+='[ME-95] demoted by t gate this slate: '+_demoted+'\n';
-  t+='BET requires edge‚â•+'+(EDGE_GATE*100).toFixed(1)+'pp AND t‚â•'+T_GATE.toFixed(1)+' ¬∑ sorted by EDGE VS PRICE ¬∑ flat $'+u+'/unit (bankroll $'+BANKROLL+', unit '+(UNIT_PCT*100).toFixed(1)+'%) ¬∑ held rows kept visible with the reason\n';
-  t+='#|player|team|opp_starter|market|line|side|price|modelP|breakeven|EDGE_VS_PRICE|t|stake|status\n';
+  t+='bettable rows: EDGE VS PRICE DESC ¬∑ below-bar rows: modelP DESC, WIDTH tiebreak (ME-98, never t) ¬∑ width 5=HRR widest‚Ä¶1=singles/doubles narrowest ¬∑ flat $'+u+'/unit (bankroll $'+BANKROLL+', unit '+(UNIT_PCT*100).toFixed(1)+'%)\n';
+  t+='#|player|team|opp_starter|market|line|side|price|modelP|breakeven|EDGE_VS_PRICE|t|width|stake|status\n';
   UL.forEach(function(r,i){
     var be=r.price!=null?Math.round(impliedP(r.price)*1000)/10:null;
     var status=r.held?('HELD:'+r.held):(r.released?r.released:'BET');
     t+=(i+1)+'|'+r.player+'|'+(r.team||'')+'|'+(r.oppStarter||'')+'|'+r.mkt+'|'+r.line+'|'+r.side+'|'+(r.price>0?'+':'')+r.price
       +'|'+(r.prob!=null?Math.round(r.prob*100)+'%':'--')+'|'+(be!=null?be+'%':'--')
       +'|'+(r.edge>=0?'+':'')+(r.edge*100).toFixed(1)+'pp|'+(r.tNa?'n/a':(r.t!=null?r.t.toFixed(2)+(r.seAppx?'~':''):'--'))
-      +'|'+(r.held?'-':'$'+u)+'|'+status+'\n';
+      +'|'+(r.width!=null?r.width:'-')+'|'+(r.held?'-':'$'+u)+'|'+status+'\n';
   });
   if(!UL.length)t+='(no eligible rows ‚Äî lineups/prices not posted yet)\n';
   t+='\nThen the TARGET LIST (which pitchers are hittable + their hits-allowed odds) as research context.\n';
