@@ -63,7 +63,7 @@ var MLB='https://statsapi.mlb.com/api/v1';
 var OWM_KEY='6a060c8de21d6f1a5cd9d6fed2b7a53b';
 var ODDS_KEY='e738de03c4b7e835c52b50e1a0b1c494'; // ONLY for game totals context (~2 credits/load)
 var K='me15_';
-var BUILD='v15.031'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
+var BUILD='v15.032'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
 var SHOW_LEGACY=false; // NEXT(2026-08-27) #2 ‚Äî the ONE LIST is the ONLY decision surface, on the PAGE and in the COPY EXPORT. The legacy board sections (Top Picks / Edge / Contact / K / HELD) apply the FULL ace filter while the one list uses the ME-70a-corrected version ‚Äî two surfaces disagreeing = Joe bets a stale board. Flag off, not deleted, so diagnostics recover. Target list + DATA DUMP are NOT legacy (front door + grader feed) and stay.
 // ME-86 ‚Äî stake sizing from bankroll + unit, so a 15-bet night is mechanical not 15 decisions. Configurable
 // in localStorage (me15_bankroll / me15_unit_pct); flat 1u per bet. setBankroll(n)/setUnit(pct) from console.
@@ -2169,7 +2169,7 @@ function marketWidth(k){switch(k){case 'batter_hits_runs_rbis':return 5;case 'ba
 // ME-70a ‚Äî h_r_rbi is RELEASED from the ace filter (facing an ace did not reduce HRR clear rate: 75% both sides).
 function unifiedList(){
   if(!D)return[];
-  var rows=[];
+  var rows=[],me106disagree=0; // ME-106 ‚Äî count rows where the line-side ‚â† the market_lambda-side (acceptance)
   (D.hitters||[]).forEach(function(h){
     if(!h.spot||h.grade==='D'||!h.ladder||!h.ladder.all)return;
     var red=(pickLight(h)==='red'), ace=aceOut(h), pen=acePenalty(h);              // ME-70 ‚Äî hard-exclude vs 1pp penalty
@@ -2187,11 +2187,20 @@ function unifiedList(){
       var oC=(overIn&&edgeOver!=null)?{side:'O',edge:edgeOver-pen,price:r.hr,prob:r.blend,t:r.tStat,noTilt:r.edgeNoTilt,src:'HR'}:null;
       var uC=(underIn&&edgeUnder!=null)?{side:'U',edge:edgeUnder-pen,price:uPrice,prob:Math.round((1-r.blend)*1000)/1000,t:tUnder,
         noTilt:(r.blendNoTilt!=null)?Math.round(((1-r.blendNoTilt)-impliedP(uPrice))*1000)/1000:null,src:(r.hrUnder!=null?'HR':'book')}:null;
-      // side = whichever edge clears the gate; if both, the larger; if neither, the larger in-band edge (shown, then held)
-      var oPass=oC&&oC.edge>=EDGE_GATE, uPass=uC&&uC.edge>=EDGE_GATE, chosen;
-      if(oPass&&uPass)chosen=(oC.edge>=uC.edge)?oC:uC;
-      else if(oPass)chosen=oC; else if(uPass)chosen=uC;
-      else chosen=(oC&&uC)?((oC.edge>=uC.edge)?oC:uC):(oC||uC);
+      // ME-106 ‚Äî DIRECTION = our Œª vs the BOOK's Œª (market_lambda), NOT vs the posted line. The line is a shaded
+      // display value ~0.179 below their projection so the over looks cheap; their real number lives in the price.
+      // Comparing our proj to the line recommends OVER on rows where we're actually MORE PESSIMISTIC than the market.
+      // Edge/pricing unchanged ‚Äî this chooses the side only. Falls back to edge-based (ME-103) when Œª's are missing.
+      var ourLam=hitterLambdaV2(h,r.mkt); if(ourLam!=null)ourLam*=me104k(r.mkt);       // the k-corrected Œª that priced the row
+      var mktLam=marketLambda(r.fair,r.line,r.mkt);                                     // the book's projection, inverted from the de-vig fair
+      var lineSide=(ourLam!=null)?(ourLam>r.line?'O':'U'):null;
+      var mktSide=(ourLam!=null&&mktLam!=null)?(ourLam>mktLam?'O':'U'):null;
+      if(lineSide&&mktSide&&lineSide!==mktSide)me106disagree++;
+      var chosen;
+      if(mktSide==='O')chosen=oC||uC;                                                  // our proj above their number ‚Üí OVER (if priced)
+      else if(mktSide==='U')chosen=uC||oC;                                             // our proj below their number ‚Üí UNDER
+      else{ var oPass=oC&&oC.edge>=EDGE_GATE, uPass=uC&&uC.edge>=EDGE_GATE;            // Œª unavailable ‚Üí ME-103 edge-based fallback
+        if(oPass&&uPass)chosen=(oC.edge>=uC.edge)?oC:uC; else if(oPass)chosen=oC; else if(uPass)chosen=uC; else chosen=(oC&&uC)?((oC.edge>=uC.edge)?oC:uC):(oC||uC); }
       var eff=Math.round(chosen.edge*1000)/1000;
       var held=null;
       if(ace)held='ace_opponent';                                                 // hard-excluded arm ‚Üí all markets held
@@ -2245,6 +2254,7 @@ function unifiedList(){
     if(Math.abs(ap-bp)<=0.03)return (b.width||0)-(a.width||0);                   // ‚Ä¶ WIDTH DESC tiebreak within 3pp
     return bp-ap;
   });
+  try{window.__me106disagree=me106disagree;}catch(e){} // ME-106 acceptance ‚Äî logged once in render()
   return rows;
 }
 function render(){
@@ -2275,6 +2285,7 @@ function render(){
     console.log('[ME-69 gate-drop log ‚Äî '+ULheld.length+' held]');Object.keys(byR).forEach(function(k){console.log('  '+k+' ('+byR[k].length+'): '+byR[k].join(' ¬∑ '));});}}catch(e){}
   var _allClear=ULbet.every(function(r){return r.t!=null&&r.t>=T_GATE;}),_demoted=UL.filter(function(r){return r.tGated;}).length;
   try{console.log('[ME-95] bettable rows: '+ULbet.length+'  ¬∑  all clear t‚â•'+T_GATE.toFixed(1)+': '+(_allClear?'YES':'NO'));console.log('[ME-95] demoted by t gate this slate: '+_demoted);}catch(e){}
+  try{console.log('[ME-106] rows where line-side and market-side disagree: '+(window.__me106disagree||0));}catch(e){}
   h+='<div class="card" style="border-color:var(--gld);background:rgba(234,179,8,.05)">';
   h+='<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b style="color:var(--gld);font-size:15px">&#127942; TOP 20 by EV</b><button onclick="copyList()" style="font-size:11px;padding:4px 10px;border-radius:8px;border:1px solid var(--gld);background:transparent;color:var(--gld);cursor:pointer">&#128203; Copy</button></div>';
   h+='<div style="font-size:10px;margin-top:2px" class="mut">Highest expected value per $1, both sides, all markets ('+UL.length+' evaluated). The gate flags (t, band, ace) are <b>information, not a filter</b> ‚Äî you decide. Stake <b>$'+unitDollars()+'</b>/unit. <span style="color:var(--amb)">‚ö† EV uses our modelP, which under-ranked winners on the one graded slate ‚Äî trust AGREEMENT+price rows over big-disagreement rows.</span></div>';
