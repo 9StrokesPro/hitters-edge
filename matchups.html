@@ -936,7 +936,7 @@ async function settleMarketAudit(){
 // ME-51 ‚Äî grade the TARGET LIST. Log projected hits-allowed/start (projHits) per pitcher; settle vs ACTUAL
 // hits allowed. Cheapest calibration in the system: no prices, no bets ‚Äî just "is the headline number good?"
 function logTargets(targets){
-  var recs=(targets||[]).filter(function(t){return t.id&&t.projHits!=null;}).map(function(t){return{id:t.id,name:t.name,proj:t.projHits,cls:t.cls,l3:t.hitsPS,opp:t.opp,hits_line:(t.hitsProp&&t.hitsProp.line),over_price:(t.hitsProp&&t.hitsProp.over),under_price:(t.hitsProp&&t.hitsProp.under)};}); // ME-88 step 1 ‚Äî hits-allowed line + both sides
+  var recs=(targets||[]).filter(function(t){return t.id&&t.projHits!=null;}).map(function(t){return{id:t.id,name:t.name,proj:t.projHits,proj_ip:t.projIP,hits_rate:t.hitsRate,cls:t.cls,l3:t.hitsPS,opp:t.opp,hits_line:(t.hitsProp&&t.hitsProp.line),over_price:(t.hitsProp&&t.hitsProp.over),under_price:(t.hitsProp&&t.hitsProp.under)};}); // ME-88 step 1 ‚Äî hits-allowed line + both sides ¬∑ ME-52 ‚Äî projIP + hits/inn
   if(recs.length)ss('tproj_'+todayStr(),recs);
 }
 async function settleTargets(){
@@ -1444,14 +1444,27 @@ function buildTarget(P,ps){
   var whiffDrop=KL.k9Delta!=null&&KL.k9Delta<=-1.0;
   var hw=null,hwGap=0;
   if(P.handSplit&&P.handSplit.vL&&P.handSplit.vR){var d=P.handSplit.vL.ops-P.handSplit.vR.ops;hwGap=Math.round(Math.abs(d)*1000)/1000;hw=d>=0.030?'LHB':d<=-0.030?'RHB':'even';}
-  // ME-46 ‚Äî ONE number: projected hits allowed = recent form REGRESSED toward the season baseline (L3-led,
-  // season anchor). This IS the sort. No +DUE / ‚àíMIRAGE / +hardContact / +lineLags add-ons ‚Äî those were a
-  // within-pitcher signal (DUE) being used as a between-pitcher rank, which made "few hits lately" (an ACE
-  // property) a rank BOOST. hardContact/softContact/lineLags stay as DISPLAY tags only. Labels come FROM projHits.
-  var projHits=Math.round((0.7*hitsPS+0.3*(seasonHPS!=null?seasonHPS:hitsPS))*100)/100;
+  // ME-52 ‚Äî HITS ALLOWED = EXPECTED INNINGS √ó HITS PER INNING. The old projHits blended hits-per-START, which
+  // bakes in a fixed start length and cannot tell Sale (9 IP, cleared O4.5 on the LOWEST contact rate) from Cabrera
+  // (4.1 IP, missed O4.5). 8/27 innings ran 4.33‚Äì9.00. So: project innings from durability CAPPED BY A PITCH BUDGET
+  // (~95 pitches), never an assumed 5.5, and multiply by the per-inning hit rate. projIP and hitsRate are stored
+  // separately so the gap is diagnosable (ME-87) and each half can be graded on its own.
+  var PITCH_BUDGET=95;
+  var durIP=(KL.avg_ip_L3!=null)?KL.avg_ip_L3:(P.gs>0?Math.min(P.ip/Math.max(P.gs,1),6):5.0); // recent durability = best pre-game IP proxy
+  var ppi=(P.pitchesPerPA!=null?P.pitchesPerPA:3.9)*4.25;                                       // pitches/inning ‚âà pitches/PA √ó ~4.25 PA per inning
+  var budgetIP=ppi>0?PITCH_BUDGET/ppi:durIP;                                                    // how many innings ~95 pitches buys at his efficiency
+  var shortLeash=(KL.avg_ip_L3!=null&&KL.avg_ip_L3<4.5);                                        // same rule buildKLayer uses for starters
+  var projIP=Math.max(3.5,Math.min(durIP,budgetIP,7.5));if(shortLeash)projIP=Math.min(projIP,5.0);
+  projIP=Math.round(projIP*100)/100;
+  var rateL3=(KL.avg_ip_L3>0&&hitsPS!=null)?hitsPS/KL.avg_ip_L3:null;                           // recent H/inning = (H/start)/(IP/start)
+  var seasonIpPerStart=(KL.seasonStarts>0&&P.ip>0)?P.ip/KL.seasonStarts:null;                   // ‚âà season IP per start (P.ip starter-dominated)
+  var rateSeason=(seasonIpPerStart>0&&seasonHPS!=null)?seasonHPS/seasonIpPerStart:null;
+  var hitsRate=(rateL3!=null&&rateSeason!=null)?(0.6*rateL3+0.4*rateSeason):(rateL3!=null?rateL3:(rateSeason!=null?rateSeason:1.05)); // league ‚âà 1.05 H/IP fallback
+  hitsRate=Math.round(hitsRate*1000)/1000;
+  var projHits=Math.round(projIP*hitsRate*100)/100;
   var sortKey=projHits; // cls assigned in a post-pass once the slate median of projHits is known
   return{name:P.name,throws:P.throws,reliable:P.reliable,hitsPS:hitsPS,hitsL3:KL.hitsL3,arr:arr,trend:trend,seasonHPS:seasonHPS,nStarts:KL.nStarts,
-    projHits:projHits,cls:'NEUTRAL',seasonStarts:(KL&&KL.seasonStarts),hardContact:hardContact,softContact:softContact,xba:xba,xslg:xslg,hh:hh,br:br,ev:ev,
+    projHits:projHits,projIP:projIP,hitsRate:hitsRate,cls:'NEUTRAL',seasonStarts:(KL&&KL.seasonStarts),hardContact:hardContact,softContact:softContact,xba:xba,xslg:xslg,hh:hh,br:br,ev:ev,
     lineLags:lineLags,whiffDrop:whiffDrop,k9Delta:KL.k9Delta,whipDelta:KL.whipDelta,hw:hw,hwGap:hwGap,handSplit:P.handSplit,sortKey:sortKey};
 }
 // ‚îÄ‚îÄ PITCH-MIX FIT (spec 3.6 ‚Äî wired) ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
@@ -2051,7 +2064,8 @@ function tcard(t,ix){
       +(!hp.inBand?' ¬∑ <span style="color:var(--amb)">price outside band</span>':hp.edge<EDGE_GATE?' ¬∑ <span style="color:var(--amb)">below +'+(EDGE_GATE*100).toFixed(1)+'pp gate</span>':'')+'</span></div>'
     : '<div style="margin-top:5px;padding:6px 8px;border-radius:8px;background:rgba(139,148,167,.08)"><span class="mut" style="font-size:10px">üìä HITS ALLOWED PROP ‚Äî no market line yet (worker feed carries it once <code>wrangler deploy</code> is run).</span></div>';
   b+='<div class="sect" style="border-top:none"><div class="sh">LAYER 1 ‚Äî HITS ALLOWED (the read)</div>'
-    +'Last '+t.nStarts+' starts: <b>'+(t.arr.join(' ¬∑ ')||'‚Äî')+'</b> H ¬∑ <b>'+t.hitsPS+'/start</b> (L3)'+(t.seasonHPS!=null?' vs '+t.seasonHPS+' season':'')+' ¬∑ trend '+trendTxt+propLine+'</div>';
+    +'Last '+t.nStarts+' starts: <b>'+(t.arr.join(' ¬∑ ')||'‚Äî')+'</b> H ¬∑ <b>'+t.hitsPS+'/start</b> (L3)'+(t.seasonHPS!=null?' vs '+t.seasonHPS+' season':'')+' ¬∑ trend '+trendTxt
+    +(t.projIP!=null?'<br><span style="font-size:10px" class="mut">ME-52 projection: <b>'+t.projHits+' H</b> = <b>'+t.projIP+' IP</b> √ó <b>'+t.hitsRate+' H/inn</b> <span style="opacity:.7">(innings from a ~95-pitch budget, not an assumed 5.5)</span></span>':'')+propLine+'</div>';
   b+='<div class="sect"><div class="sh">LAYER 2 ‚Äî IS IT REAL? (contact quality allowed)</div>'
     +(t.xba!=null?'xBA-against <b>'+f3(t.xba)+'</b> ¬∑ xSLG-against <b>'+f3(t.xslg)+'</b><br>':'<span class="mut">no Statcast row yet</span><br>')
     +(t.hh!=null?'Hard-Hit '+t.hh+'% ¬∑ Barrel '+t.br+'% ¬∑ Exit velo '+t.ev+' mph':'')
