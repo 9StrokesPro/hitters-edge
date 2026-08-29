@@ -63,7 +63,7 @@ var MLB='https://statsapi.mlb.com/api/v1';
 var OWM_KEY='6a060c8de21d6f1a5cd9d6fed2b7a53b';
 var ODDS_KEY='e738de03c4b7e835c52b50e1a0b1c494'; // ONLY for game totals context (~2 credits/load)
 var K='me15_';
-var BUILD='v15.032'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
+var BUILD='v15.033'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
 var SHOW_LEGACY=false; // NEXT(2026-08-27) #2 ‚Äî the ONE LIST is the ONLY decision surface, on the PAGE and in the COPY EXPORT. The legacy board sections (Top Picks / Edge / Contact / K / HELD) apply the FULL ace filter while the one list uses the ME-70a-corrected version ‚Äî two surfaces disagreeing = Joe bets a stale board. Flag off, not deleted, so diagnostics recover. Target list + DATA DUMP are NOT legacy (front door + grader feed) and stay.
 // ME-86 ‚Äî stake sizing from bankroll + unit, so a 15-bet night is mechanical not 15 decisions. Configurable
 // in localStorage (me15_bankroll / me15_unit_pct); flat 1u per bet. setBankroll(n)/setUnit(pct) from console.
@@ -944,7 +944,7 @@ async function settleMarketAudit(){
 // ME-51 ‚Äî grade the TARGET LIST. Log projected hits-allowed/start (projHits) per pitcher; settle vs ACTUAL
 // hits allowed. Cheapest calibration in the system: no prices, no bets ‚Äî just "is the headline number good?"
 function logTargets(targets){
-  var recs=(targets||[]).filter(function(t){return t.id&&t.projHits!=null;}).map(function(t){return{id:t.id,name:t.name,proj:t.projHits,proj_ip:t.projIP,hits_rate:t.hitsRate,cls:t.cls,l3:t.hitsPS,opp:t.opp,hits_line:(t.hitsProp&&t.hitsProp.line),over_price:(t.hitsProp&&t.hitsProp.over),under_price:(t.hitsProp&&t.hitsProp.under)};}); // ME-88 step 1 ‚Äî hits-allowed line + both sides ¬∑ ME-52 ‚Äî projIP + hits/inn
+  var recs=(targets||[]).filter(function(t){return t.id&&t.projHits!=null;}).map(function(t){return{id:t.id,name:t.name,proj:t.projHits,proj_ip:t.projIP,hits_rate:t.hitsRate,babip:t.babip,babip_flag:t.babipFlag?1:0,cls:t.cls,l3:t.hitsPS,opp:t.opp,hits_line:(t.hitsProp&&t.hitsProp.line),over_price:(t.hitsProp&&t.hitsProp.over),under_price:(t.hitsProp&&t.hitsProp.under)};}); // ME-88/52/52b ‚Äî hits-allowed line + both sides ¬∑ projIP/hits-rate ¬∑ implied BABIP + out-of-band flag
   if(recs.length)ss('tproj_'+todayStr(),recs);
 }
 async function settleTargets(){
@@ -1817,6 +1817,22 @@ async function loadAll(){
     try{console.log('[ME-70 ace penalty] hard-excluded arms: '+nHard+(nHard>3?' ‚ö† EXPECTED 1-3 ‚Äî thresholds may be wrong':'')+' ¬∑ penalty '+(ACE_EDGE_PENALTY*100).toFixed(1)+'pp/all-markets ¬∑ xBA‚â§'+ACE_XBA_MAX+' AND bottom-tercile projHits AND K‚â•'+ACE_K_PROP_MIN);
       dbg.sort(function(a,b){return a.projHits-b.projHits;}).forEach(function(d){console.log('  '+(d.decision==='HARD-EXCLUDE'?'‚õî':'‚ûñ')+' '+d.name+' ‚Äî xBA '+f3(d.xba)+' ¬∑ projHits '+d.projHits+' ¬∑ Kprop '+d.kprop+' ¬∑ K% '+d.kpct+' ¬∑ '+d.cls+' ‚Üí '+d.decision);});}catch(e){}
   })();
+  // ‚îÄ‚îÄ ME-52b ‚Äî BABIP COHERENCE FLAG. Hits and Ks are projected INDEPENDENTLY and can be jointly impossible: a high
+  //    hits proj + a high K proj implies a BABIP no pitcher sustains. implied BABIP ‚âà projHits / (BF ‚àí projK). Flag
+  //    outside .265‚Äì.325 (league ‚âà .290). FLAG ONLY ‚Äî never auto-adjust; it tells the operator WHICH of the two
+  //    independent numbers to distrust (validated pre-game: Peterson 5.6K + 6.7H ‚Üí .360, hits proj was the broken one).
+  (function(){
+    var kByName={};pitchers.forEach(function(p){if(p.proj&&p.proj.ok)kByName[p.name]={mu:p.proj.mu,bf:p.proj.expBF};});
+    targets.forEach(function(t){
+      var k=kByName[t.name];
+      var bf=(k&&k.bf!=null)?k.bf:(t.projIP!=null?Math.round(t.projIP*4.3):null);
+      var projK=(k&&k.mu!=null)?k.mu:null;
+      if(t.projHits!=null&&bf!=null&&projK!=null&&(bf-projK)>0){
+        t.babip=Math.round(t.projHits/(bf-projK)*1000)/1000;
+        t.babipFlag=(t.babip<0.265||t.babip>0.325);
+      }
+    });
+  })();
   // ‚îÄ‚îÄ ME-93 ‚Äî SIDE-SELECTION AUDIT. Every pitcher row: proj ¬∑ line ¬∑ side ¬∑ comparison. Rule: proj>line=OVER,
   //    proj<line=UNDER. A ‚úó MISMATCH would mean the side still disagrees with the projection (the bug). Hitter
   //    markets are OVER-only (poissonOver = P(over)); a spot-check confirms none is inverted. ‚îÄ‚îÄ
@@ -2095,7 +2111,8 @@ function tcard(t,ix){
     : '<div style="margin-top:5px;padding:6px 8px;border-radius:8px;background:rgba(139,148,167,.08)"><span class="mut" style="font-size:10px">üìä HITS ALLOWED PROP ‚Äî no market line yet (worker feed carries it once <code>wrangler deploy</code> is run).</span></div>';
   b+='<div class="sect" style="border-top:none"><div class="sh">LAYER 1 ‚Äî HITS ALLOWED (the read)</div>'
     +'Last '+t.nStarts+' starts: <b>'+(t.arr.join(' ¬∑ ')||'‚Äî')+'</b> H ¬∑ <b>'+t.hitsPS+'/start</b> (L3)'+(t.seasonHPS!=null?' vs '+t.seasonHPS+' season':'')+' ¬∑ trend '+trendTxt
-    +(t.projIP!=null?'<br><span style="font-size:10px" class="mut">ME-52 projection: <b>'+t.projHits+' H</b> = <b>'+t.projIP+' IP</b> √ó <b>'+t.hitsRate+' H/inn</b> <span style="opacity:.7">(innings from a ~95-pitch budget, not an assumed 5.5)</span></span>':'')+propLine+'</div>';
+    +(t.projIP!=null?'<br><span style="font-size:10px" class="mut">ME-52 projection: <b>'+t.projHits+' H</b> = <b>'+t.projIP+' IP</b> √ó <b>'+t.hitsRate+' H/inn</b> <span style="opacity:.7">(innings from a ~95-pitch budget, not an assumed 5.5)</span></span>':'')
+    +(t.babip!=null?'<br><span style="font-size:10px'+(t.babipFlag?';color:var(--red);font-weight:700':'') +'"'+(t.babipFlag?'':' class="mut"')+'>ME-52b implied BABIP <b>'+f3(t.babip)+'</b>'+(t.babipFlag?' [BABIP-OUT-OF-BAND] ‚Äî hits & Ks are jointly implausible; distrust one of the two projections':' <span style="opacity:.7">(.265‚Äì.325 ok)</span>')+'</span>':'')+propLine+'</div>';
   b+='<div class="sect"><div class="sh">LAYER 2 ‚Äî IS IT REAL? (contact quality allowed)</div>'
     +(t.xba!=null?'xBA-against <b>'+f3(t.xba)+'</b> ¬∑ xSLG-against <b>'+f3(t.xslg)+'</b><br>':'<span class="mut">no Statcast row yet</span><br>')
     +(t.hh!=null?'Hard-Hit '+t.hh+'% ¬∑ Barrel '+t.br+'% ¬∑ Exit velo '+t.ev+' mph':'')
