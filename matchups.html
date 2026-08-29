@@ -63,7 +63,7 @@ var MLB='https://statsapi.mlb.com/api/v1';
 var OWM_KEY='6a060c8de21d6f1a5cd9d6fed2b7a53b';
 var ODDS_KEY='e738de03c4b7e835c52b50e1a0b1c494'; // ONLY for game totals context (~2 credits/load)
 var K='me15_';
-var BUILD='v15.034'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
+var BUILD='v15.035'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
 var SHOW_LEGACY=false; // NEXT(2026-08-27) #2 ‚Äî the ONE LIST is the ONLY decision surface, on the PAGE and in the COPY EXPORT. The legacy board sections (Top Picks / Edge / Contact / K / HELD) apply the FULL ace filter while the one list uses the ME-70a-corrected version ‚Äî two surfaces disagreeing = Joe bets a stale board. Flag off, not deleted, so diagnostics recover. Target list + DATA DUMP are NOT legacy (front door + grader feed) and stay.
 // ME-86 ‚Äî stake sizing from bankroll + unit, so a 15-bet night is mechanical not 15 decisions. Configurable
 // in localStorage (me15_bankroll / me15_unit_pct); flat 1u per bet. setBankroll(n)/setUnit(pct) from console.
@@ -236,6 +236,12 @@ function buildKLayer(gls,season){
 // ‚îÄ‚îÄ static maps (ported from v13) ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ‚îÄ
 var PARKS={'Coors Field':115,'Great American Ball Park':112,'Fenway Park':108,'Globe Life Field':107,'Citizens Bank Park':106,'American Family Field':105,'Wrigley Field':104,'Rogers Centre':104,'Yankee Stadium':103,'Truist Park':102,'Camden Yards':103,'Guaranteed Rate Field':103,'Dodger Stadium':101,'T-Mobile Park':100,'Progressive Field':100,'Nationals Park':100,'Daikin Park':98,'Minute Maid Park':98,'Angel Stadium':99,'Chase Field':99,'loanDepot park':98,'Oracle Park':97,'Citi Field':97,'Comerica Park':97,'Petco Park':96,'Target Field':96,'PNC Park':96,'Busch Stadium':95,'Kauffman Stadium':95,'Tropicana Field':97,'Sutter Health Park':98};
 var TEAM_ABBR={'Arizona Diamondbacks':'AZ','Atlanta Braves':'ATL','Baltimore Orioles':'BAL','Boston Red Sox':'BOS','Chicago Cubs':'CHC','Chicago White Sox':'CWS','Cincinnati Reds':'CIN','Cleveland Guardians':'CLE','Colorado Rockies':'COL','Detroit Tigers':'DET','Houston Astros':'HOU','Kansas City Royals':'KC','Los Angeles Angels':'LAA','Los Angeles Dodgers':'LAD','Miami Marlins':'MIA','Milwaukee Brewers':'MIL','Minnesota Twins':'MIN','New York Mets':'NYM','New York Yankees':'NYY','Philadelphia Phillies':'PHI','Pittsburgh Pirates':'PIT','San Diego Padres':'SD','San Francisco Giants':'SF','Seattle Mariners':'SEA','St. Louis Cardinals':'STL','Tampa Bay Rays':'TB','Texas Rangers':'TEX','Toronto Blue Jays':'TOR','Washington Nationals':'WSH','Athletics':'ATH','Oakland Athletics':'ATH'};
+// ME-117/124 ‚Äî TEAM OFFENSE (embedded from data/team_offense_2026.csv; the browser can't read the repo file, and
+// the CSV columns [rg,hg,kg,bip] are the same StatMuse+ESPN pull). Keyed by TEAM_ABBR code. League: H/G 8.19,
+// K/G 8.35, BIP/G 24.10. ME-124: the hits-allowed offense multiplier is keyed on H/G (hits stat), NOT R/G (runs =
+// hits + sequencing, which a pitcher's hits-allowed does not care about). REFRESH this table when the analyst reships.
+var LG_HG=8.19, LG_KG=8.35, LG_BIP=24.10;
+var TEAM_OFF={CHC:{rg:5.21,hg:8.57,kg:8.56,bip:24.51},WSH:{rg:5.20,hg:8.48,kg:8.31,bip:24.47},MIL:{rg:4.99,hg:8.67,kg:8.29,bip:24.71},LAD:{rg:4.91,hg:8.70,kg:7.87,bip:24.59},PIT:{rg:4.84,hg:8.66,kg:9.48,bip:23.77},CWS:{rg:4.84,hg:8.06,kg:9.11,bip:23.21},COL:{rg:4.75,hg:8.59,kg:8.65,bip:24.18},ATL:{rg:4.67,hg:8.39,kg:8.10,bip:24.42},MIN:{rg:4.59,hg:8.30,kg:7.99,bip:24.56},HOU:{rg:4.56,hg:8.13,kg:8.20,bip:24.11},PHI:{rg:4.54,hg:8.15,kg:8.36,bip:23.99},BAL:{rg:4.54,hg:7.87,kg:9.22,bip:22.87},AZ:{rg:4.53,hg:8.17,kg:7.24,bip:25.26},TB:{rg:4.51,hg:8.73,kg:6.99,bip:25.54},BOS:{rg:4.48,hg:8.36,kg:8.06,bip:24.44},NYY:{rg:4.46,hg:7.58,kg:9.23,bip:22.37},STL:{rg:4.44,hg:8.11,kg:7.85,bip:24.71},DET:{rg:4.43,hg:8.06,kg:8.55,bip:23.97},ATH:{rg:4.36,hg:8.33,kg:8.56,bip:24.19},MIA:{rg:4.33,hg:8.25,kg:8.13,bip:24.06},KC:{rg:4.27,hg:8.30,kg:7.87,bip:24.62},SD:{rg:4.24,hg:7.79,kg:8.07,bip:23.72},CIN:{rg:4.13,hg:7.58,kg:9.50,bip:22.46},NYM:{rg:4.10,hg:7.91,kg:8.52,bip:23.87},SF:{rg:4.09,hg:8.39,kg:7.99,bip:24.77},LAA:{rg:4.08,hg:7.83,kg:9.42,bip:22.99},TEX:{rg:4.03,hg:8.01,kg:8.53,bip:23.56},CLE:{rg:4.02,hg:7.87,kg:8.13,bip:24.30},TOR:{rg:3.95,hg:8.29,kg:7.20,bip:25.55},SEA:{rg:3.90,hg:7.53,kg:8.65,bip:23.23}};
 var STADIUM_TYPE={'AZ':'retractable','HOU':'retractable','SEA':'retractable','MIA':'retractable','MIL':'retractable','TEX':'retractable','TOR':'retractable'};
 // ME-53 ‚Äî home UTC offset by team (standard time; DST ignored ‚Äî coarse zone-delta is all we need). CAPTURE ONLY.
 var TEAM_TZ={ATL:-5,BAL:-5,BOS:-5,CIN:-5,CLE:-5,DET:-5,MIA:-5,NYM:-5,NYY:-5,PHI:-5,PIT:-5,TB:-5,TOR:-5,WSH:-5,CHC:-6,CWS:-6,HOU:-6,KC:-6,MIL:-6,MIN:-6,STL:-6,TEX:-6,AZ:-7,COL:-7,LAA:-8,LAD:-8,SD:-8,SF:-8,SEA:-8,ATH:-8};
@@ -944,7 +950,7 @@ async function settleMarketAudit(){
 // ME-51 ‚Äî grade the TARGET LIST. Log projected hits-allowed/start (projHits) per pitcher; settle vs ACTUAL
 // hits allowed. Cheapest calibration in the system: no prices, no bets ‚Äî just "is the headline number good?"
 function logTargets(targets){
-  var recs=(targets||[]).filter(function(t){return t.id&&t.projHits!=null;}).map(function(t){return{id:t.id,name:t.name,proj:t.projHits,proj_ip:t.projIP,hits_rate:t.hitsRate,babip:t.babip,babip_flag:t.babipFlag?1:0,cls:t.cls,l3:t.hitsPS,opp:t.opp,hits_line:(t.hitsProp&&t.hitsProp.line),over_price:(t.hitsProp&&t.hitsProp.over),under_price:(t.hitsProp&&t.hitsProp.under)};}); // ME-88/52/52b ‚Äî hits-allowed line + both sides ¬∑ projIP/hits-rate ¬∑ implied BABIP + out-of-band flag
+  var recs=(targets||[]).filter(function(t){return t.id&&t.projHits!=null;}).map(function(t){return{id:t.id,name:t.name,proj:t.projHits,proj_pre_offense:t.projHitsPre,proj_ip:t.projIP,hits_rate:t.hitsRate,off_mult:t.offMult,opp_hg:t.oppHG,opp_kg:t.oppKG,opp_bip:t.oppBIP,opp_rg:t.oppRG,babip:t.babip,babip_flag:t.babipFlag?1:0,cls:t.cls,l3:t.hitsPS,opp:t.opp,hits_line:(t.hitsProp&&t.hitsProp.line),over_price:(t.hitsProp&&t.hitsProp.over),under_price:(t.hitsProp&&t.hitsProp.under)};}); // ME-88/52/52b/124 ‚Äî line+both sides ¬∑ projIP/rate ¬∑ BABIP ¬∑ offense mult (H/G) + opp K/G,BIP/G for the R2 backtest
   if(recs.length)ss('tproj_'+todayStr(),recs);
 }
 async function settleTargets(){
@@ -1689,6 +1695,21 @@ async function loadAll(){
       if(t){t.id=P.id;t.opp=x[1];t.oppId=x[2];t.game=g.awayTeam+' @ '+g.homeTeam;t.start=g.start;targets.push(t);} // ME-51 ‚Äî carry pitcher id to settle projHits
     });
   });
+  // ME-117/124 ‚Äî TEAM-OFFENSE ADJUSTMENT on hits-allowed. projHits (pitcher-only so far) √ó (opp H/G √∑ league 8.19).
+  // Keyed on HITS per game, NOT runs (ME-124: a pitcher's hits allowed doesn't care about sequencing/baserunning;
+  // TEX by R/G 0.906 but by H/G 0.978 ‚Äî 6.7pp on a leg). DELIBERATELY LEAGUE-ANCHORED, not slate-normalized: a
+  // slate of good offenses SHOULD read higher hits-allowed ‚Äî this is signal, not the slot/platoon noise the
+  // mean-neutral gate guards. Applied BEFORE the tercile/ACE labels below so they see the matchup-adjusted number.
+  targets.forEach(function(t){
+    var code=TEAM_ABBR[t.opp]||t.opp, off=TEAM_OFF[code];
+    if(off){t.oppHG=off.hg;t.oppKG=off.kg;t.oppBIP=off.bip;t.oppRG=off.rg;}
+    if(off&&t.projHits!=null){
+      t.offMult=Math.round(off.hg/LG_HG*1000)/1000;
+      t.projHitsPre=t.projHits;                              // pre-offense number, kept for audit
+      t.projHits=Math.round(t.projHits*t.offMult*100)/100;
+      t.sortKey=t.projHits;                                  // terciles/sort read the adjusted number
+    }
+  });
   // ME-48 ‚Äî ONE axis of labels, RETIRING DUE/MIRAGE (two opposite meanings across builds). The PRIMARY label
   // is the between-pitcher read off projHits terciles: TARGET (top third ‚Äî hittable vs tonight's field),
   // NEUTRAL (middle), AVOID (bottom third ‚Äî the elite arms, must never read as an invitation). Recent-form
@@ -2111,7 +2132,8 @@ function tcard(t,ix){
     : '<div style="margin-top:5px;padding:6px 8px;border-radius:8px;background:rgba(139,148,167,.08)"><span class="mut" style="font-size:10px">üìä HITS ALLOWED PROP ‚Äî no market line yet (worker feed carries it once <code>wrangler deploy</code> is run).</span></div>';
   b+='<div class="sect" style="border-top:none"><div class="sh">LAYER 1 ‚Äî HITS ALLOWED (the read)</div>'
     +'Last '+t.nStarts+' starts: <b>'+(t.arr.join(' ¬∑ ')||'‚Äî')+'</b> H ¬∑ <b>'+t.hitsPS+'/start</b> (L3)'+(t.seasonHPS!=null?' vs '+t.seasonHPS+' season':'')+' ¬∑ trend '+trendTxt
-    +(t.projIP!=null?'<br><span style="font-size:10px" class="mut">ME-52 projection: <b>'+t.projHits+' H</b> = <b>'+t.projIP+' IP</b> √ó <b>'+t.hitsRate+' H/inn</b> <span style="opacity:.7">(innings from a ~95-pitch budget, not an assumed 5.5)</span></span>':'')
+    +(t.projIP!=null?'<br><span style="font-size:10px" class="mut">ME-52 projection: <b>'+t.projHits+' H</b> = <b>'+t.projIP+' IP</b> √ó <b>'+t.hitsRate+' H/inn</b>'+(t.offMult!=null?' √ó <b>'+t.offMult+' offense</b> <span style="opacity:.7">('+t.opp+' '+t.oppHG+' H/G vs lg '+LG_HG+'; pre-off '+t.projHitsPre+')</span>':' <span style="opacity:.7">(innings from a ~95-pitch budget)</span>')+'</span>':'')
+    +(t.oppBIP!=null?'<br><span style="font-size:10px" class="mut">ME-124 opp context: <b>'+t.oppKG+' K/G</b> (lg '+LG_KG+') ¬∑ <b>'+t.oppBIP+' BIP/G</b> (lg '+LG_BIP+')'+((t.oppKG>LG_KG&&t.oppBIP<LG_BIP)?' <span style="color:var(--amb)">‚Äî high-K/low-BIP offense caps a hits-allowed OVER</span>':'')+'</span>':'')
     +(t.babip!=null?'<br><span style="font-size:10px'+(t.babipFlag?';color:var(--red);font-weight:700':'') +'"'+(t.babipFlag?'':' class="mut"')+'>ME-52b implied BABIP <b>'+f3(t.babip)+'</b>'+(t.babipFlag?' [BABIP-OUT-OF-BAND] ‚Äî hits & Ks are jointly implausible; distrust one of the two projections':' <span style="opacity:.7">(.265‚Äì.325 ok)</span>')+'</span>':'')+propLine+'</div>';
   b+='<div class="sect"><div class="sh">LAYER 2 ‚Äî IS IT REAL? (contact quality allowed)</div>'
     +(t.xba!=null?'xBA-against <b>'+f3(t.xba)+'</b> ¬∑ xSLG-against <b>'+f3(t.xslg)+'</b><br>':'<span class="mut">no Statcast row yet</span><br>')
