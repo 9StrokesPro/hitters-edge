@@ -63,7 +63,7 @@ var MLB='https://statsapi.mlb.com/api/v1';
 var OWM_KEY='6a060c8de21d6f1a5cd9d6fed2b7a53b';
 var ODDS_KEY='e738de03c4b7e835c52b50e1a0b1c494'; // ONLY for game totals context (~2 credits/load)
 var K='me15_';
-var BUILD='v15.033'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
+var BUILD='v15.034'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
 var SHOW_LEGACY=false; // NEXT(2026-08-27) #2 ‚Äî the ONE LIST is the ONLY decision surface, on the PAGE and in the COPY EXPORT. The legacy board sections (Top Picks / Edge / Contact / K / HELD) apply the FULL ace filter while the one list uses the ME-70a-corrected version ‚Äî two surfaces disagreeing = Joe bets a stale board. Flag off, not deleted, so diagnostics recover. Target list + DATA DUMP are NOT legacy (front door + grader feed) and stay.
 // ME-86 ‚Äî stake sizing from bankroll + unit, so a 15-bet night is mechanical not 15 decisions. Configurable
 // in localStorage (me15_bankroll / me15_unit_pct); flat 1u per bet. setBankroll(n)/setUnit(pct) from console.
@@ -2230,7 +2230,7 @@ function unifiedList(){
     });
   });
   (D.pitchers||[]).forEach(function(p){var pr=p.proj;if(!pr||!pr.ok||pr.line==null||pr.edgePrice==null||pr.hrPrice==null||!priceInBand(pr.hrPrice))return;
-    rows.push({kind:'K',player:p.name,team:(TEAM_ABBR[p.team]||p.team),oppStarter:'(self)',sub:(TEAM_ABBR[p.team]||p.team)+' '+(p.throws||'?')+'HP vs '+p.opp,
+    rows.push({kind:'K',player:p.name,team:(TEAM_ABBR[p.team]||p.team),oppStarter:(TEAM_ABBR[p.opp]||p.opp||''),sub:(TEAM_ABBR[p.team]||p.team)+' '+(p.throws||'?')+'HP vs '+p.opp, // ME-118 ‚Äî opp = the offense he faces (was '(self)', which blanked the join for ME-117)
       mkt:'Ks',mktKey:'pitcher_strikeouts',width:marketWidth('pitcher_strikeouts'),line:pr.line,side:pr.side==='Over'?'O':'U',price:pr.hrPrice,prob:pr.modelP,edge:pr.edgePrice,t:pr.tStat,seAppx:pr.seApprox,
       held:pr.recommend?null:(pr.holdReason||pr.marketFlag||'held'),released:null,light:pr.confidence==='HIGH'?'green':pr.confidence==='LOW'?'red':'yellow',conf:pr.confidence});
   });
@@ -2240,7 +2240,7 @@ function unifiedList(){
     var held=null;
     if(!hp.inBand)held='price outside band';
     else if(hp.edge<EDGE_GATE)held='below +'+(EDGE_GATE*100).toFixed(1)+'pp gate';
-    rows.push({kind:'PH',player:t.name,team:(TEAM_ABBR[t.team]||t.team||'?'),oppStarter:'(self)',sub:(TEAM_ABBR[t.team]||t.team||'?')+' vs '+(t.opp||'TBD')+' ‚Äî hits allowed',
+    rows.push({kind:'PH',player:t.name,team:(TEAM_ABBR[t.team]||t.team||'?'),oppStarter:(TEAM_ABBR[t.opp]||t.opp||''),sub:(TEAM_ABBR[t.team]||t.team||'?')+' vs '+(t.opp||'TBD')+' ‚Äî hits allowed', // ME-118 ‚Äî opp = the offense he faces
       mkt:'Hits allowed',mktKey:'pitcher_hits_allowed',width:marketWidth('pitcher_hits_allowed'),line:hp.line,side:hp.side==='Over'?'O':'U',price:hp.price,prob:hp.modelP,edge:hp.edge,
       t:null,tNa:true,seAppx:hp.seApprox, // NEXT(15:40) #2 ‚Äî t is SE_APPROX on n=8; show n/a, rank on edge alone until ME-82 gives n‚â•30
       held:held,released:'new_market_unvalidated (n=8)',light:'yellow',conf:'NEW'});
@@ -2296,7 +2296,7 @@ function render(){
   //    all markets) by EV per $1 and show the top 20. The gates (t / band / ace) become FLAGS on each row, not a
   //    filter on what Joe sees. Full list still goes to /slate for the analyst's own layer. ‚îÄ‚îÄ
   var UL=unifiedList();
-  var TOP=UL.slice().filter(function(r){return r.ev!=null;}).sort(function(a,b){return b.ev-a.ev;}).slice(0,20);
+  var TOP=UL.slice().filter(function(r){return r.prob!=null;}).sort(function(a,b){var ap=a.prob==null?-1:a.prob,bp=b.prob==null?-1:b.prob;return Math.abs(ap-bp)<=0.03?((b.width||0)-(a.width||0)):(bp-ap);}).slice(0,20);
   var ULbet=UL.filter(function(r){return !r.held;}),ULheld=UL.filter(function(r){return !!r.held;});
   try{if(ULheld.length){var byR={};ULheld.forEach(function(r){(byR[r.held]=byR[r.held]||[]).push(r.player+' '+r.mkt);});
     console.log('[ME-69 gate-drop log ‚Äî '+ULheld.length+' held]');Object.keys(byR).forEach(function(k){console.log('  '+k+' ('+byR[k].length+'): '+byR[k].join(' ¬∑ '));});}}catch(e){}
@@ -2304,8 +2304,8 @@ function render(){
   try{console.log('[ME-95] bettable rows: '+ULbet.length+'  ¬∑  all clear t‚â•'+T_GATE.toFixed(1)+': '+(_allClear?'YES':'NO'));console.log('[ME-95] demoted by t gate this slate: '+_demoted);}catch(e){}
   try{console.log('[ME-106] rows where line-side and market-side disagree: '+(window.__me106disagree||0));}catch(e){}
   h+='<div class="card" style="border-color:var(--gld);background:rgba(234,179,8,.05)">';
-  h+='<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b style="color:var(--gld);font-size:15px">&#127942; TOP 20 by EV</b><button onclick="copyList()" style="font-size:11px;padding:4px 10px;border-radius:8px;border:1px solid var(--gld);background:transparent;color:var(--gld);cursor:pointer">&#128203; Copy</button></div>';
-  h+='<div style="font-size:10px;margin-top:2px" class="mut">Highest expected value per $1, both sides, all markets ('+UL.length+' evaluated). The gate flags (t, band, ace) are <b>information, not a filter</b> ‚Äî you decide. Stake <b>$'+unitDollars()+'</b>/unit. <span style="color:var(--amb)">‚ö† EV uses our modelP, which under-ranked winners on the one graded slate ‚Äî trust AGREEMENT+price rows over big-disagreement rows.</span></div>';
+  h+='<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b style="color:var(--gld);font-size:15px">&#127942; TOP 20 ‚Äî model% then width</b><button onclick="copyList()" style="font-size:11px;padding:4px 10px;border-radius:8px;border:1px solid var(--gld);background:transparent;color:var(--gld);cursor:pointer">&#128203; Copy</button></div>';
+  h+='<div style="font-size:10px;margin-top:2px" class="mut">Ranked by <b>model probability, widest market breaking ties</b> (ME-97/98) ‚Äî NOT by EV: EV pushes to long prices by construction and you\'re bankroll-constrained (‚àí125/‚àí115). Both sides, all markets ('+UL.length+' evaluated). Gate flags (t, band, ace) are <b>info, not a filter</b>. EV shown per row for reference. Stake <b>$'+unitDollars()+'</b>/unit.</div>';
   TOP.forEach(function(r,i){var bet=!r.held;
     h+='<div style="font-size:12px;margin-top:5px;border-top:1px solid var(--bord);padding-top:4px">'
       +'<span class="mut">'+(i+1)+'.</span> '+lightDot(r.light)+' <b>'+esc(r.player)+'</b> <b style="color:var(--gld)">'+esc(r.mkt)+' '+r.side+r.line+' '+(r.price>0?'+':'')+r.price+'</b>'
@@ -2457,14 +2457,14 @@ function stripTags(s){return(''+(s||'')).replace(/<[^>]+>/g,'');}
 function copyList(){
   if(!D){toast('Still loading');return;}
   var UL=unifiedList(),u=unitDollars();
-  var TOP=UL.slice().filter(function(r){return r.ev!=null;}).sort(function(a,b){return b.ev-a.ev;}).slice(0,20);
-  var t='MATCHUP ENGINE '+BUILD+' ‚Äî TOP 20 by EV ‚Äî '+new Date().toLocaleString()+'\n';
+  var TOP=UL.slice().filter(function(r){return r.prob!=null;}).sort(function(a,b){var ap=a.prob==null?-1:a.prob,bp=b.prob==null?-1:b.prob;return Math.abs(ap-bp)<=0.03?((b.width||0)-(a.width||0)):(bp-ap);}).slice(0,20);
+  var t='MATCHUP ENGINE '+BUILD+' ‚Äî TOP 20 ‚Äî model% then width ‚Äî '+new Date().toLocaleString()+'\n';
   t+='bankroll $'+BANKROLL+' ¬∑ unit '+(UNIT_PCT*100).toFixed(1)+'% = $'+u+'/bet ¬∑ both sides, all markets ¬∑ gate flags are info, not a filter\n';
   t+='#  player                bet                       EV      our%  edge    t      flag\n';
   TOP.forEach(function(r,i){
     t+=(i+1+'.').padEnd(3)+' '+(r.player||'').padEnd(20).slice(0,20)+' '+((r.mkt+' '+r.side+r.line+' '+(r.price>0?'+':'')+r.price)).padEnd(24).slice(0,24)+' '+((r.ev>=0?'+':'')+r.ev.toFixed(3)).padEnd(7)+' '+(r.prob!=null?Math.round(r.prob*100)+'%':'--').padEnd(5)+' '+((r.edge>=0?'+':'')+(r.edge*100).toFixed(1)+'pp').padEnd(7)+' '+(r.tNa?'n/a':r.t!=null?(r.t.toFixed(2)+(r.seAppx?'~':'')):'--').padEnd(6)+' '+(r.held?('flag: '+r.held):('BET $'+u))+(r.released?' ['+r.released+']':'')+'\n';
   });
-  navigator.clipboard.writeText(t).then(function(){toast('Copied TOP 20 by EV');}).catch(function(){toast('Copy failed');});
+  navigator.clipboard.writeText(t).then(function(){toast('Copied TOP 20 ‚Äî model% then width');}).catch(function(){toast('Copy failed');});
 }
 function copyTop(){
   if(!D){toast('Still loading');return;}
@@ -2474,11 +2474,11 @@ function copyTop(){
   // ‚îÄ‚îÄ üìã ONE LIST ‚Äî THE PRIMARY SURFACE (NEXT #1). Every eligible row, edge-sorted, held inline with reason.
   //    This is the decision list Joe/analyst/grader all read. Legacy board sections are gated off below (SHOW_LEGACY).
   var UL=unifiedList(),ULbet=UL.filter(function(r){return !r.held;}).length;
-  var TOP=UL.slice().filter(function(r){return r.ev!=null;}).sort(function(a,b){return b.ev-a.ev;}).slice(0,20);
+  var TOP=UL.slice().filter(function(r){return r.prob!=null;}).sort(function(a,b){var ap=a.prob==null?-1:a.prob,bp=b.prob==null?-1:b.prob;return Math.abs(ap-bp)<=0.03?((b.width||0)-(a.width||0)):(bp-ap);}).slice(0,20);
   var _allClear=UL.filter(function(r){return !r.held;}).every(function(r){return r.t!=null&&r.t>=T_GATE;}),_demoted=UL.filter(function(r){return r.tGated;}).length;
-  t+='\n‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê üèÜ TOP 20 by EV ‚Äî both sides, all markets ('+UL.length+' evaluated) ‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê\n';
+  t+='\n‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê üèÜ TOP 20 ‚Äî model% then width ‚Äî both sides, all markets ('+UL.length+' evaluated) ‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê\n';
   t+='[ME-95] bettable (clear t‚â•'+T_GATE.toFixed(1)+'+edge gate): '+ULbet+'  ¬∑  demoted by t gate: '+_demoted+'  ¬∑  gate flags are INFO, not a filter\n';
-  t+='‚ö† EV uses our modelP (under-ranked winners on the one graded slate) ‚Äî trust agreement+price rows over big-disagreement rows ¬∑ $'+u+'/unit\n';
+  t+='ranked by MODEL% then WIDTH (ME-97/98, not EV ‚Äî EV pushes to long prices; operator is band-constrained ‚àí125/‚àí115) ¬∑ EV shown for reference ¬∑ $'+u+'/unit\n';
   t+='#|player|team|opp_starter|market|line|side|price|EV|modelP|breakeven|EDGE_VS_PRICE|t|width|flag\n';
   TOP.forEach(function(r,i){
     var be=r.price!=null?Math.round(impliedP(r.price)*1000)/10:null;
