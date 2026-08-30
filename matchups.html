@@ -63,7 +63,7 @@ var MLB='https://statsapi.mlb.com/api/v1';
 var OWM_KEY='6a060c8de21d6f1a5cd9d6fed2b7a53b';
 var ODDS_KEY='e738de03c4b7e835c52b50e1a0b1c494'; // ONLY for game totals context (~2 credits/load)
 var K='me15_';
-var BUILD='v15.035'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
+var BUILD='v15.037'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
 var SHOW_LEGACY=false; // NEXT(2026-08-27) #2 ‚Äî the ONE LIST is the ONLY decision surface, on the PAGE and in the COPY EXPORT. The legacy board sections (Top Picks / Edge / Contact / K / HELD) apply the FULL ace filter while the one list uses the ME-70a-corrected version ‚Äî two surfaces disagreeing = Joe bets a stale board. Flag off, not deleted, so diagnostics recover. Target list + DATA DUMP are NOT legacy (front door + grader feed) and stay.
 // ME-86 ‚Äî stake sizing from bankroll + unit, so a 15-bet night is mechanical not 15 decisions. Configurable
 // in localStorage (me15_bankroll / me15_unit_pct); flat 1u per bet. setBankroll(n)/setUnit(pct) from console.
@@ -102,6 +102,21 @@ var BLEND_W=0.5, EDGE_GATE=0.02, T_GATE=2.0; // ME-95 ‚Äî endorsement needs 
 // Measured 2026-08-28 off /slate ‚Äî REFIT WEEKLY, do not hardcode forever. Markets absent here get k=1 (no change).
 var ME104_K={batter_singles:0.888,batter_hits_runs_rbis:0.952,batter_hits:0.910,batter_total_bases:1.007,batter_runs_scored:1.008,batter_rbis:1.051};
 function me104k(mkt){return (ME104_K[mkt]!=null)?ME104_K[mkt]:1;}
+// JOB 1 (2026-08-30) ‚Äî CALIBRATION LAYER. A post-processing offset on the model probability, per market, measured
+// from graded slates: modelP_cal = clip(modelP + offset). SHRINKAGE: offset = raw_bias √ó n/(n+50) ‚Äî a 50-row market
+// gets HALF its measured bias (the SIGN is real at ~2œÉ, the MAGNITUDE isn't pinned). Self-correcting: reship after
+// each graded slate; noise decays to 0, real bias survives. Mirrors calibration/offsets_2026-08-30.json. NOT a magic
+// number ‚Äî raw_bias + n are shown on every row so the operator sees the correction working. Underlying Œª code untouched.
+// ME-135 ‚Äî OFFSETS ZEROED. Job 2 showed the per-market bias was SLATE VARIANCE, not model error: the book's `fair`
+// missed in the SAME direction and magnitude on all 6 markets (singles: us +9.1pp low, book +10.1pp low). Applying
+// the offsets moved mean|ours‚àíbook| 3.20‚Üí5.64pp. So the pipe stays LIVE and tested (loader, per-market lookup, clip,
+// modelP_raw/modelP_cal side-by-side), but every `off` is 0 ‚Üí modelP_cal == modelP_raw today. raw/n/z kept as the
+// audit trail; real numbers drop in here (and offsets_2026-08-30.json) when level-calibration vs `fair` lands.
+var CALIB_DATE='2026-08-30', CALIB_ACTIVE=true;
+var CALIB={batter_singles:{raw:0.153,n:50,z:2.2,off:0},batter_hits:{raw:0.132,n:41,z:1.7,off:0},batter_hits_runs_rbis:{raw:0.108,n:78,z:1.9,off:0,flag:'PROVISIONAL:both-sides-won'},batter_total_bases:{raw:-0.128,n:45,z:-1.9,off:0},batter_runs_scored:{raw:-0.079,n:48,z:-1.1,off:0},pitcher_hits_allowed:{raw:-0.190,n:26,z:-2.0,off:0,suspend:true}};
+function calibOffset(mkt){var c=CALIB[mkt];return (c&&CALIB_ACTIVE)?c.off:0;}
+function calibN(mkt){var c=CALIB[mkt];return c?c.n:0;}
+function calibrate(mkt,p){return (p==null)?p:Math.max(0.01,Math.min(0.99,p+calibOffset(mkt)));}
 function modelBlend(m,f){return (m==null&&f==null)?null:m==null?f:f==null?m:BLEND_W*m+(1-BLEND_W)*f;}
 function edgeVsPrice(pP,hr){var be=impliedP(hr);return (pP==null||be==null)?null:Math.round((pP-be)*1000)/1000;} // vs the price you PAY (implied, with vig) ‚Äî not the de-vig fair
 // ME-22 ‚Äî ONE ruler, labelled. Rank/qualify on edge_vs_price everywhere (hitters AND Ks); show edge_vs_fair
@@ -667,7 +682,7 @@ function propProb(p,h,mkt){
   if(!p||p.hr==null)return null;
   var lam=hitterLambdaV2(h,mkt);                                        // ME-38 ‚Äî matchup-aware Œª IS LIVE (slot√óplatoon, mean-neutral); v1 still logged for comparison. Neutrality is HARD-GATED in render().
   if(lam!=null)lam=lam*me104k(mkt);                                     // ME-104 ‚Äî strip the measured per-market Œª bias BEFORE modelP/edge/t (else the gate selects bias, not quality)
-  var modelP=(lam!=null)?poissonCorr(mkt,lam,p.line):null;              // ME-29 de-biased Poisson on the matchup-aware, k-corrected Œª
+  var modelP=(lam!=null)?poissonCorr(mkt,lam,p.line):null;              // ME-29 de-biased Poisson on the matchup-aware, k-corrected Œª (JOB 1 calibration applied later as a post-process on the ROW, not here ‚Äî so the FULL offset lands on the bet number, not half through the blend)
   var fair=(p.fair!=null)?p.fair:null;                                  // de-vig market fair
   var core=modelBlend(modelP,fair);                                    // BLEND_W¬∑model + (1‚àíBLEND_W)¬∑fair (no tilt)
   var ct=contextTilt(h,mkt),tilt=ct.tilt;
@@ -762,7 +777,7 @@ function propLadder(pm,h){
     if(mkt==='batter_total_bases')score-=0.02;       // TB: fewer paths ‚Üí demote vs HRR
     if(tier==='trap')score-=0.15;
     rows.push({mkt:mkt,label:MKT_LABEL[mkt]||mkt,line:p.line,hr:p.hr,hrUnder:p.hrUnder,devigOver:p.devigOver,devigUnder:p.devigUnder,fair:p.fair,nBooks:p.nBooks,at:p.at,stale:p.stale,inBand:priceInBand(p.hr), // ME-88 step 1 ‚Äî carry both-sides prices
-      modelP:pp.modelP,prob:Math.round(rankP*1000)/1000,blend:pp.blend,blendNoTilt:pp.blendNoTilt,edgeBlend:pp.edge_blend,edgePure:pp.edge_pure,edgeTiltOnly:pp.edge_tilt_only,edgeFair:pp.edge_fair,edgeNoTilt:pp.edge_notilt,hold:pp.hold,tiltPreClip:pp.tiltPreClip,tiltNull:pp.tiltNull,seEdge:pp.se_edge,tStat:pp.t_stat,seApprox:pp.se_approx, // ME-19/26/22/27/30
+      modelP:pp.modelP,prob:Math.round(rankP*1000)/1000,blend:pp.blend,blendNoTilt:pp.blendNoTilt,edgeBlend:pp.edge_blend,edgePure:pp.edge_pure,edgeTiltOnly:pp.edge_tilt_only,edgeFair:pp.edge_fair,edgeNoTilt:pp.edge_notilt,hold:pp.hold,tiltPreClip:pp.tiltPreClip,tiltNull:pp.tiltNull,seEdge:pp.se_edge,tStat:pp.t_stat,seApprox:pp.se_approx, // ME-19/26/22/27/30 ¬∑ JOB1 calib
       likely:p.fair!=null?p.fair:modelP,value:value,ev:ev,tier:tier,note:note,score:score});
   });
   var main=rows.filter(function(r){return r.tier!=='dart';}).sort(function(a,b){return b.score-a.score;});
@@ -1785,11 +1800,11 @@ async function loadAll(){
     // sign(modelP ‚àí market_fair), which inverted whenever the market's implied line differed from ours ‚Äî the Hughes bug.)
     var side=(t.projHits>line)?'Over':'Under';
     var anchoredOver=(hm.fair!=null)?(hm.fair+BLEND_W*(pOver-hm.fair)):pOver;
-    var modelP=(side==='Over')?anchoredOver:(1-anchoredOver), hrPrice=(side==='Over')?hm.over:hm.under;
+    var modelP=(side==='Over')?anchoredOver:(1-anchoredOver), hrPrice=(side==='Over')?hm.over:hm.under;  // JOB1 calibration applied in the unifiedList post-pass
     var edgePrice=(modelP!=null&&hrPrice!=null)?Math.round((modelP-impliedP(hrPrice))*1000)/1000:null;
     var G=t.seasonStarts||0, seMu=Math.sqrt(Math.max(t.projHits,0.01)/Math.max(G,1));
     var seModel=BLEND_W*poissonPMF(Math.floor(line),t.projHits)*seMu, tStat=(edgePrice!=null&&seModel>0)?Math.round(edgePrice/seModel*100)/100:null;
-    t.hitsProp={line:line,side:side,price:hrPrice,over:hm.over,under:hm.under,modelP:modelP,fair:hm.fair,edge:edgePrice,tStat:tStat,seApprox:true, // ME-88 step 1 ‚Äî both sides
+    t.hitsProp={line:line,side:side,price:hrPrice,over:hm.over,under:hm.under,modelP:modelP,suspend:true,fair:hm.fair,edge:edgePrice,tStat:tStat,seApprox:true, // ME-88 ‚Äî both sides; JOB1 SUSPENDED from selection (10/26, ‚àí30% ROI, no SE)
       nBooks:hm.nBooks,hasHR:!!hm.hasHR,inBand:(hrPrice!=null&&priceInBand(hrPrice))};
   });
   hitters.sort(function(a,b){return b.score-a.score;});
@@ -1895,7 +1910,7 @@ function postSlate(peLog){
     var unified=unifiedList().map(function(r){
       var payout=(r.price>0)?r.price/100:(r.price<0?100/(-r.price):null); // ME-105 ‚Äî EV per $1 so the analyst's top-20-by-EV layer reads straight off /slate (a price-driven edge ‚Äî agreement + a mispriced line ‚Äî is invisible to the t gate but shows here)
       var ev=(r.prob!=null&&payout!=null)?Math.round((r.prob*payout-(1-r.prob))*1000)/1000:null;
-      return {kind:r.kind,player:r.player,team:r.team,opp:r.oppStarter,market:r.mkt,mktKey:r.mktKey,line:r.line,side:r.side,price:r.price,closing_price:null,modelP:r.prob,edge:r.edge,ev:ev,t:r.t,width:r.width,held:r.held||null,status:r.held?('HELD:'+r.held):(r.released||'BET')};});
+      return {kind:r.kind,player:r.player,team:r.team,opp:r.oppStarter,market:r.mkt,mktKey:r.mktKey,line:r.line,side:r.side,price:r.price,closing_price:null,modelP:r.prob,modelP_raw:r.modelPraw,calib_offset:r.calibOffset,calib_n:r.calibN,edge:r.edge,ev:ev,t:r.t,width:r.width,held:r.held||null,status:r.held?('HELD:'+r.held):(r.released||'BET')};}); // JOB1 ‚Äî modelP is CALIBRATED; modelP_raw + offset carried for audit
     var targets=(D.targets||[]).map(function(t){var hp=t.hitsProp;return {name:t.name,id:t.id,cls:t.cls,projHits:t.projHits,projIP:t.projIP,hitsRate:t.hitsRate,hitsPS:t.hitsPS,line:hp&&hp.line,side:hp&&hp.side,over:hp&&hp.over,under:hp&&hp.under,edge:hp&&hp.edge};});
     var rows=(peLog&&peLog.rows)||[];
     if(!rows.length&&!unified.length)return; // nothing worth saving (empty build) ‚Äî don't overwrite a good capture
@@ -2248,6 +2263,7 @@ function unifiedList(){
       else if(eff<EDGE_GATE)held='below +'+(EDGE_GATE*100).toFixed(1)+'pp gate';
       rows.push({kind:'HIT',player:h.name,team:(TEAM_ABBR[h.team]||h.team),oppStarter:(h.oppPitName||'TBD'),sub:(TEAM_ABBR[h.team]||h.team)+' vs '+(h.oppPitName||'TBD'),
         mkt:r.label,mktKey:r.mkt,width:marketWidth(r.mkt),line:r.line,side:chosen.side,price:chosen.price,prob:chosen.prob,edge:eff,t:chosen.t,seAppx:r.seApprox,
+        hold:(r.hold!=null?r.hold:(r.fair!=null&&chosen.price!=null?Math.round((impliedP(chosen.price)-(chosen.side==='O'?r.fair:1-r.fair))*1000)/1000:null)),fair:(r.fair!=null?(chosen.side==='O'?r.fair:Math.round((1-r.fair)*1000)/1000):null),game:h.game, // JOB 3 ‚Äî hold (vig), book fair for the chosen side, game (2-per-game cap)
         held:held,released:(pen?'ace_penalized':(chosen.side==='U'&&chosen.src==='book'?'under@alt-book':null)),light:pickLight(h),conf:h.confidence});
     });
   });
@@ -2259,9 +2275,7 @@ function unifiedList(){
   // ME-83 ‚Äî PITCHER HITS ALLOWED rows (from the target list, priced above). Always tagged new_market_unvalidated;
   // held out of the bet lane on the usual gates (band + edge), same rulers as every other prop.
   (D.targets||[]).forEach(function(t){var hp=t.hitsProp;if(!hp||hp.line==null||hp.edge==null||hp.price==null)return;
-    var held=null;
-    if(!hp.inBand)held='price outside band';
-    else if(hp.edge<EDGE_GATE)held='below +'+(EDGE_GATE*100).toFixed(1)+'pp gate';
+    var held='suspended (hits-allowed: 10/26, ‚àí30% ROI, no SE ‚Äî JOB1/ME-133)'; // JOB 1 req 5 ‚Äî suspend from selection entirely
     rows.push({kind:'PH',player:t.name,team:(TEAM_ABBR[t.team]||t.team||'?'),oppStarter:(TEAM_ABBR[t.opp]||t.opp||''),sub:(TEAM_ABBR[t.team]||t.team||'?')+' vs '+(t.opp||'TBD')+' ‚Äî hits allowed', // ME-118 ‚Äî opp = the offense he faces
       mkt:'Hits allowed',mktKey:'pitcher_hits_allowed',width:marketWidth('pitcher_hits_allowed'),line:hp.line,side:hp.side==='Over'?'O':'U',price:hp.price,prob:hp.modelP,edge:hp.edge,
       t:null,tNa:true,seAppx:hp.seApprox, // NEXT(15:40) #2 ‚Äî t is SE_APPROX on n=8; show n/a, rank on edge alone until ME-82 gives n‚â•30
@@ -2270,6 +2284,19 @@ function unifiedList(){
   // ME-103 ‚Äî NO-UNDERS RULE LIFTED (operator's call 2026-08-28, DECISIONS.md). The rule existed only because the
   // pre-ME-93 board printed unders that contradicted our own projection; that bug is fixed + verified. Unders now
   // inherit EVERY existing guardrail below (t‚â•2 in the chosen direction, price band, no-t rows) ‚Äî nothing loosened.
+  // JOB 1 (2026-08-30) ‚Äî CALIBRATION POST-PASS. The measured per-market offset lands FULLY on the bet number here
+  // (a true post-process, after Œª/blend/edge/side are all fixed), so modelP_cal ‚àí breakeven carries the whole offset,
+  // not half of it through the blend. Over gets +offset, UNDER gets ‚àíoffset (the bias was measured on the over, and
+  // the sides are complementary). modelPraw kept; the below-gate hold is recomputed on the CALIBRATED edge so a
+  // singles row the raw number buried can surface, and a TB row the raw number floated can drop.
+  rows.forEach(function(r){
+    r.modelPraw=r.prob; var off=calibOffset(r.mktKey); r.calibN=calibN(r.mktKey); r.calibProv=(CALIB[r.mktKey]&&CALIB[r.mktKey].flag)||null;
+    if(!off){r.calibOffset=0;return;}
+    var signed=(r.side==='O')?off:-off; r.calibOffset=signed;
+    r.prob=Math.max(0.01,Math.min(0.99,(r.prob||0)+signed));
+    if(r.price!=null)r.edge=Math.round((r.prob-impliedP(r.price))*1000)/1000;
+    if(r.held==null||/^below \+/.test(r.held)) r.held=(r.edge!=null&&r.edge<EDGE_GATE)?('below +'+(EDGE_GATE*100).toFixed(1)+'pp gate'):null; // recompute ONLY the below-gate hold on calibrated edge; ace/thin/tilt/suspend/operator holds preserved
+  });
   // ME-95 ‚Äî THE t GATE IS AN ENDORSEMENT GATE, not just a sort key (ME-59 wired the sort but never the status).
   // BET requires edge‚â•EDGE_GATE (already enforced above) AND t‚â•T_GATE. No t at all ‚Üí never BET. Does NOT touch the
   // model, lambdas, pricing, or the edge-vs-price SORT below ‚Äî only which rows are allowed to read as bettable.
@@ -2296,6 +2323,38 @@ function unifiedList(){
   try{window.__me106disagree=me106disagree;}catch(e){} // ME-106 acceptance ‚Äî logged once in render()
   return rows;
 }
+// JOB 3 (ME-136) ‚Äî THE SIX-PICK SELECTOR. Structural filters (measured, not modelled): the 3 positive markets, OVER
+// only (the cheaper side ‚Äî book loads vig on the under by 1.3pp), price band, and ‚Äî NEW ‚Äî hold ‚â§ slate median (the
+// expensive half of the board is dropped outright; cheap-over-dear is worth ~1.5‚Äì2pp EV with no model involved).
+// Then 1/player, 2/game. Ranked by edge_pp = modelP_cal ‚àí breakeven, FLAGGED EXPERIMENTAL: Job 2 showed our
+// disagreement with the book is inside noise at n=163, so rank is logged and NOT trusted. Tiebreak: cheaper hold.
+function jobSix(){
+  if(!D)return null;
+  var UL=unifiedList(), MKTS={'Singles':1,'Hits':1,'H+R+RBI':1};
+  var pool=UL.filter(function(r){return r.kind==='HIT'&&r.side==='O'&&MKTS[r.mkt];});               // market+side board
+  var holds=pool.filter(function(r){return r.hold!=null;}).map(function(r){return r.hold;}).sort(function(a,b){return a-b;});
+  var medHold=holds.length?holds[Math.floor(holds.length/2)]:null;
+  function killer(r){
+    if(r.price==null||r.price<-140||r.price>150)return 'price band';
+    if(medHold!=null&&(r.hold==null||r.hold>medHold))return 'expensive hold';
+    return null;
+  }
+  var passed=[],struct=[];
+  pool.forEach(function(r){var k=killer(r);if(k)struct.push({r:r,why:k});else passed.push(r);});
+  passed.sort(function(a,b){var ea=(a.edge==null?-99:a.edge),eb=(b.edge==null?-99:b.edge);return (Math.abs(ea-eb)<1e-9)?((a.hold==null?9:a.hold)-(b.hold==null?9:b.hold)):(eb-ea);});
+  var picks=[],miss=[],pC={},gC={};
+  passed.forEach(function(r){
+    if(picks.length>=6){miss.push({r:r,why:'past top 6'});return;}
+    if(pC[r.player]){miss.push({r:r,why:'2nd row, same player'});return;}
+    if((gC[r.game]||0)>=2){miss.push({r:r,why:'3rd row, same game'});return;}
+    picks.push(r);pC[r.player]=1;gC[r.game]=(gC[r.game]||0)+1;
+  });
+  return {picks:picks,missed:miss.concat(struct).slice(0,6),medHold:medHold,killedByHold:struct.filter(function(m){return m.why==='expensive hold';}).length,poolN:pool.length};
+}
+function j6row(r,i,tag){var be=r.price!=null?impliedP(r.price):null;var disagree=(r.prob!=null&&r.fair!=null)?(r.prob-r.fair):null;
+  return '<div style="font-size:11px;margin-top:4px;border-top:1px solid var(--bord);padding-top:3px'+(tag?';opacity:.6':'')+'">'
+    +'<b>'+(tag?'':(i+1)+'. ')+esc(r.player)+'</b> <b style="color:var(--gld)">'+esc(r.mkt)+' O'+r.line+' '+(r.price>0?'+':'')+r.price+'</b>'
+    +'<div style="font-size:10px" class="mut">hold '+(r.hold!=null?(r.hold*100).toFixed(1)+'%':'‚Äî')+' ¬∑ raw '+(r.modelPraw!=null?Math.round(r.modelPraw*100)+'%':'‚Äî')+' ‚Üí cal '+(r.prob!=null?Math.round(r.prob*100)+'%':'‚Äî')+' ¬∑ book fair '+(r.fair!=null?Math.round(r.fair*100)+'%':'‚Äî')+' ¬∑ edge '+(r.edge!=null?((r.edge>=0?'+':'')+(r.edge*100).toFixed(1)+'pp'):'‚Äî')+' ¬∑ disagree '+(disagree!=null?((disagree>=0?'+':'')+(disagree*100).toFixed(1)+'pp'):'‚Äî')+(tag?' ¬∑ <span style="color:var(--amb)">killed: '+tag+'</span>':'')+'</div></div>';}
 function render(){
   if(!D)return;
   // ME-38 GATE 1 ‚Äî HARD-FAIL if a live matchup multiplier is not mean-neutral. A non-neutral multiplier
@@ -2314,9 +2373,18 @@ function render(){
   // ME-54 / ME-52 nightly reports (suppress <10 per ME-15)
   try{var mc=D.mcalib;if(mc&&mc.n>=10)console.log('[ME-54 market selection, n='+mc.n+'] surfaced market won '+mc.surfWon+'/'+mc.n+' ('+Math.round(mc.surfWon/mc.n*100)+'%) ¬∑ wrong-prop (surfaced lost, an alt won) '+mc.altBeat+'/'+mc.n+' ('+Math.round(mc.altBeat/mc.n*100)+'%)');else if(mc)console.log('[ME-54] n='+mc.n+' <10 ‚Äî suppressed');}catch(e){}
   try{var gc2=D.gcalib;if(gc2&&gc2.starterExited)console.log('[ME-52] '+gc2.starterExited+' hitter play(s) voided from calibration ‚Äî opposing starter faced <9 batters (STARTER_EXITED)');}catch(e){}
-  // ‚îÄ‚îÄ TOP 20 BY EV (operator decision 2026-08-28) ‚Äî the ONE LIST was too long to read. Rank every row (both sides,
-  //    all markets) by EV per $1 and show the top 20. The gates (t / band / ace) become FLAGS on each row, not a
-  //    filter on what Joe sees. Full list still goes to /slate for the analyst's own layer. ‚îÄ‚îÄ
+  // ‚îÄ‚îÄ JOB 3 (ME-136) ‚Äî SIX PICKS, the playable card. Structural filters + cheap-hold, ranked by edge_pp (EXPERIMENTAL).
+  var J6=jobSix();
+  if(J6){
+    h+='<div class="card" style="border-color:var(--grn);background:rgba(34,197,94,.05)">';
+    h+='<b style="color:var(--grn);font-size:15px">&#127919; SIX PICKS ‚Äî the playable card</b>';
+    h+='<div style="font-size:10px;margin-top:2px" class="mut">{Singles ¬∑ Hits ¬∑ H+R+RBI} ¬∑ <b>OVER</b> (cheaper side ‚Äî book loads vig on the under) ¬∑ price ‚àí140..+150 ¬∑ <b>hold ‚â§ slate median '+(J6.medHold!=null?(J6.medHold*100).toFixed(1)+'%':'‚Äî')+'</b> (dropped '+J6.killedByHold+' expensive of '+J6.poolN+' ‚Äî cheap-over-dear ‚âà 1.5‚Äì2pp EV, no model) ¬∑ 1/player ¬∑ 2/game. Ranked by <b>edge_pp</b> <span style="color:var(--amb)">EXPERIMENTAL ‚Äî unvalidated (ME-136); our disagreement with the book is inside noise at n=163</span>, tiebreak cheaper hold. Stake $'+unitDollars()+'.</div>';
+    if(J6.picks.length){J6.picks.forEach(function(r,i){h+=j6row(r,i,null);});}
+    else h+='<div style="font-size:11px;margin-top:5px" class="mut">No rows survive the filters on this slate.</div>';
+    if(J6.missed.length){h+='<div style="font-size:11px;margin-top:8px;color:var(--amb);font-weight:700">Just missed ‚Äî and why:</div>';J6.missed.forEach(function(m){h+=j6row(m.r,0,m.why);});}
+    h+='</div>';
+  }
+  // ‚îÄ‚îÄ TOP 20 (full board below the six, ranked model% then width). The gates (t / band / ace) are FLAGS, not a filter.
   var UL=unifiedList();
   var TOP=UL.slice().filter(function(r){return r.prob!=null;}).sort(function(a,b){var ap=a.prob==null?-1:a.prob,bp=b.prob==null?-1:b.prob;return Math.abs(ap-bp)<=0.03?((b.width||0)-(a.width||0)):(bp-ap);}).slice(0,20);
   var ULbet=UL.filter(function(r){return !r.held;}),ULheld=UL.filter(function(r){return !!r.held;});
@@ -2332,7 +2400,8 @@ function render(){
     h+='<div style="font-size:12px;margin-top:5px;border-top:1px solid var(--bord);padding-top:4px">'
       +'<span class="mut">'+(i+1)+'.</span> '+lightDot(r.light)+' <b>'+esc(r.player)+'</b> <b style="color:var(--gld)">'+esc(r.mkt)+' '+r.side+r.line+' '+(r.price>0?'+':'')+r.price+'</b>'
       +' ¬∑ <b style="color:'+(r.ev>=0?'var(--grn)':'var(--red)')+'">EV '+(r.ev>=0?'+':'')+r.ev.toFixed(3)+'</b>'
-      +'<div style="font-size:10px" class="mut">'+esc(r.sub)+' ¬∑ '+(r.prob!=null?Math.round(r.prob*100)+'% ¬∑ ':'')+'<span style="color:'+(r.edge>=0?'var(--grn)':'var(--red)')+'">'+(r.edge>=0?'+':'')+(r.edge*100).toFixed(1)+'pp</span>'+(r.tNa?' ¬∑ t n/a':r.t!=null?' ¬∑ t '+r.t.toFixed(2)+(r.seAppx?'~':''):'')+(r.width!=null?' ¬∑ w'+r.width:'')+' ¬∑ '+(bet?'<b style="color:var(--grn)">BET $'+unitDollars()+'</b>':'<span style="color:var(--amb)">flag: '+esc(r.held)+'</span>')+(r.released?' ¬∑ <span style="color:var(--blu)">'+esc(r.released)+'</span>':'')+'</div></div>';});
+      +'<div style="font-size:10px" class="mut">'+esc(r.sub)+' ¬∑ '+(r.prob!=null?Math.round(r.prob*100)+'% ¬∑ ':'')+'<span style="color:'+(r.edge>=0?'var(--grn)':'var(--red)')+'">'+(r.edge>=0?'+':'')+(r.edge*100).toFixed(1)+'pp</span>'+(r.tNa?' ¬∑ t n/a':r.t!=null?' ¬∑ t '+r.t.toFixed(2)+(r.seAppx?'~':''):'')+(r.width!=null?' ¬∑ w'+r.width:'')+' ¬∑ '+(bet?'<b style="color:var(--grn)">BET $'+unitDollars()+'</b>':'<span style="color:var(--amb)">flag: '+esc(r.held)+'</span>')+(r.released?' ¬∑ <span style="color:var(--blu)">'+esc(r.released)+'</span>':'')
+      +(r.calibOffset?'<br><span style="font-size:9px;color:var(--blu)">JOB1 calib: raw '+(r.modelPraw!=null?Math.round(r.modelPraw*100)+'%':'‚Äî')+' ‚Üí cal '+(r.prob!=null?Math.round(r.prob*100)+'%':'‚Äî')+' ('+(r.calibOffset>=0?'+':'')+(r.calibOffset*100).toFixed(1)+'pp, n='+r.calibN+')'+(r.calibProv?' ‚ö†'+r.calibProv:'')+'</span>':'')+'</div></div>';});
   if(!TOP.length)h+='<div style="font-size:11px;margin-top:5px" class="mut">No eligible rows yet ‚Äî lineups/prices not posted.</div>';
   h+='</div>';
   var A=D.hitters.filter(function(x){return x.grade==='A';});
