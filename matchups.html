@@ -63,7 +63,7 @@ var MLB='https://statsapi.mlb.com/api/v1';
 var OWM_KEY='6a060c8de21d6f1a5cd9d6fed2b7a53b';
 var ODDS_KEY='e738de03c4b7e835c52b50e1a0b1c494'; // ONLY for game totals context (~2 credits/load)
 var K='me15_';
-var BUILD='v15.037'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
+var BUILD='v15.038'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
 var SHOW_LEGACY=false; // NEXT(2026-08-27) #2 ‚Äî the ONE LIST is the ONLY decision surface, on the PAGE and in the COPY EXPORT. The legacy board sections (Top Picks / Edge / Contact / K / HELD) apply the FULL ace filter while the one list uses the ME-70a-corrected version ‚Äî two surfaces disagreeing = Joe bets a stale board. Flag off, not deleted, so diagnostics recover. Target list + DATA DUMP are NOT legacy (front door + grader feed) and stay.
 // ME-86 ‚Äî stake sizing from bankroll + unit, so a 15-bet night is mechanical not 15 decisions. Configurable
 // in localStorage (me15_bankroll / me15_unit_pct); flat 1u per bet. setBankroll(n)/setUnit(pct) from console.
@@ -113,6 +113,10 @@ function me104k(mkt){return (ME104_K[mkt]!=null)?ME104_K[mkt]:1;}
 // modelP_raw/modelP_cal side-by-side), but every `off` is 0 ‚Üí modelP_cal == modelP_raw today. raw/n/z kept as the
 // audit trail; real numbers drop in here (and offsets_2026-08-30.json) when level-calibration vs `fair` lands.
 var CALIB_DATE='2026-08-30', CALIB_ACTIVE=true;
+// ME-137 ‚Äî LEVEL CALIBRATION coefficients: modelP_cal(over) = clip(CALIB_A + CALIB_B¬∑blend). Pooled fit on the clean
+// 8/28 board (fair = 0.163 + 0.608¬∑blend, n=163). B<1 shrinks our over-dispersed probs toward the book's honest
+// number ‚Äî most at the top of the list, which is the only part the operator bets. REFIT per slate; report A,B,n.
+var CALIB_A=0.163, CALIB_B=0.608, CALIB_N=163;
 var CALIB={batter_singles:{raw:0.153,n:50,z:2.2,off:0},batter_hits:{raw:0.132,n:41,z:1.7,off:0},batter_hits_runs_rbis:{raw:0.108,n:78,z:1.9,off:0,flag:'PROVISIONAL:both-sides-won'},batter_total_bases:{raw:-0.128,n:45,z:-1.9,off:0},batter_runs_scored:{raw:-0.079,n:48,z:-1.1,off:0},pitcher_hits_allowed:{raw:-0.190,n:26,z:-2.0,off:0,suspend:true}};
 function calibOffset(mkt){var c=CALIB[mkt];return (c&&CALIB_ACTIVE)?c.off:0;}
 function calibN(mkt){var c=CALIB[mkt];return c?c.n:0;}
@@ -2284,18 +2288,21 @@ function unifiedList(){
   // ME-103 ‚Äî NO-UNDERS RULE LIFTED (operator's call 2026-08-28, DECISIONS.md). The rule existed only because the
   // pre-ME-93 board printed unders that contradicted our own projection; that bug is fixed + verified. Unders now
   // inherit EVERY existing guardrail below (t‚â•2 in the chosen direction, price band, no-t rows) ‚Äî nothing loosened.
-  // JOB 1 (2026-08-30) ‚Äî CALIBRATION POST-PASS. The measured per-market offset lands FULLY on the bet number here
-  // (a true post-process, after Œª/blend/edge/side are all fixed), so modelP_cal ‚àí breakeven carries the whole offset,
-  // not half of it through the blend. Over gets +offset, UNDER gets ‚àíoffset (the bias was measured on the over, and
-  // the sides are complementary). modelPraw kept; the below-gate hold is recomputed on the CALIBRATED edge so a
-  // singles row the raw number buried can surface, and a TB row the raw number floated can drop.
+  // ME-137 ‚Äî LEVEL CALIBRATION (supersedes the ZEROED Job 1 offsets; same pipe, modelP_raw‚ÜímodelP_cal shown). Job 2
+  // proved we run ~7pp hot at the TOP of our own list (where p‚âà0.60 the book says 0.528). The book's de-vigged fair
+  // regresses on our blend as fair = A + B¬∑p_over, B‚âà0.6 on every market ‚Äî our probabilities are over-dispersed and
+  // this shrinks them toward the book's honest number. Applied on P(OVER); the chosen side maps through complement.
+  // Refit A,B per slate (currently pooled 8/28: A=0.163, B=0.608, n=163). modelPraw kept; below-gate recomputed.
   rows.forEach(function(r){
-    r.modelPraw=r.prob; var off=calibOffset(r.mktKey); r.calibN=calibN(r.mktKey); r.calibProv=(CALIB[r.mktKey]&&CALIB[r.mktKey].flag)||null;
-    if(!off){r.calibOffset=0;return;}
-    var signed=(r.side==='O')?off:-off; r.calibOffset=signed;
-    r.prob=Math.max(0.01,Math.min(0.99,(r.prob||0)+signed));
+    r.modelPraw=r.prob; r.calibN=CALIB_N; r.calibProv=null;
+    if(!CALIB_ACTIVE||r.prob==null){r.calibOffset=0;return;}
+    var pOver=(r.side==='O')?r.prob:(1-r.prob);                                 // blend is P(over); recover it for the chosen side
+    var calOver=Math.max(0.01,Math.min(0.99,CALIB_A+CALIB_B*pOver));           // ME-137: fair = A + B¬∑p_over
+    var pCal=(r.side==='O')?calOver:Math.round((1-calOver)*1000)/1000;
+    r.calibOffset=Math.round((pCal-r.prob)*1000)/1000;                         // signed effective shift (for the raw‚Üícal display)
+    r.prob=Math.round(pCal*1000)/1000;
     if(r.price!=null)r.edge=Math.round((r.prob-impliedP(r.price))*1000)/1000;
-    if(r.held==null||/^below \+/.test(r.held)) r.held=(r.edge!=null&&r.edge<EDGE_GATE)?('below +'+(EDGE_GATE*100).toFixed(1)+'pp gate'):null; // recompute ONLY the below-gate hold on calibrated edge; ace/thin/tilt/suspend/operator holds preserved
+    if(r.held==null||/^below \+/.test(r.held)) r.held=(r.edge!=null&&r.edge<EDGE_GATE)?('below +'+(EDGE_GATE*100).toFixed(1)+'pp gate'):null; // recompute ONLY the below-gate hold on calibrated edge
   });
   // ME-95 ‚Äî THE t GATE IS AN ENDORSEMENT GATE, not just a sort key (ME-59 wired the sort but never the status).
   // BET requires edge‚â•EDGE_GATE (already enforced above) AND t‚â•T_GATE. No t at all ‚Üí never BET. Does NOT touch the
@@ -2373,8 +2380,19 @@ function render(){
   // ME-54 / ME-52 nightly reports (suppress <10 per ME-15)
   try{var mc=D.mcalib;if(mc&&mc.n>=10)console.log('[ME-54 market selection, n='+mc.n+'] surfaced market won '+mc.surfWon+'/'+mc.n+' ('+Math.round(mc.surfWon/mc.n*100)+'%) ¬∑ wrong-prop (surfaced lost, an alt won) '+mc.altBeat+'/'+mc.n+' ('+Math.round(mc.altBeat/mc.n*100)+'%)');else if(mc)console.log('[ME-54] n='+mc.n+' <10 ‚Äî suppressed');}catch(e){}
   try{var gc2=D.gcalib;if(gc2&&gc2.starterExited)console.log('[ME-52] '+gc2.starterExited+' hitter play(s) voided from calibration ‚Äî opposing starter faced <9 batters (STARTER_EXITED)');}catch(e){}
+  // ‚îÄ‚îÄ ME-138 B ‚Äî BOARD HEALTH + FAIL LOUD. A thin board (props feed under-serving) must NOT print in the same format
+  //    as a full one. If < 40% of games have hitter props, banner + SUPPRESS the bettable card entirely. ‚îÄ‚îÄ
+  var _gHit={},_gPit={},_teams={},_hitters={};
+  (D.hitters||[]).forEach(function(h){if(h.ladder&&h.ladder.all&&h.ladder.all.some(function(r){return r.hr!=null;})){_gHit[h.game]=1;_teams[TEAM_ABBR[h.team]||h.team]=1;_hitters[h.id]=1;}});
+  (D.pitchers||[]).forEach(function(p){if(p.proj&&p.proj.line!=null)_gPit[p.game]=1;});
+  var _gOn=(D.games||[]).length,_gWH=Object.keys(_gHit).length,_gWP=Object.keys(_gPit).length,_thin=(_gOn>0&&_gWH<0.40*_gOn);
+  h+='<div style="font-size:10px;font-family:monospace;padding:5px 7px;border-radius:7px;margin-bottom:6px;background:'+(_thin?'rgba(239,68,68,.15)':'rgba(34,197,94,.08)')+';color:'+(_thin?'var(--red)':'var(--mut)')+'">[BOARD] '+_gWH+'/'+_gOn+' games w/ hitter props ¬∑ '+_gWP+'/'+_gOn+' w/ pitcher lines ¬∑ '+Object.keys(_teams).length+' teams ¬∑ '+Object.keys(_hitters).length+' hitters'+(_thin?' &#9888; THIN ‚Äî props feed under-serving':'')+'</div>';
+  if(_thin){
+    h+='<div class="card" style="border-color:var(--red)"><b style="color:var(--red);font-size:14px">&#9888; BOARD SUPPRESSED ‚Äî feed coverage '+Math.round(_gWH/_gOn*100)+'% (need ‚â•40%)</b>'
+      +'<div style="font-size:11px;margin-top:5px">The odds/props feed returned hitter props for only <b>'+_gWH+' of '+_gOn+'</b> games and pitcher lines for '+_gWP+'. This is the props feed under-serving (check the Odds API key/quota), not a real slate. The bettable card (Six Picks + Top 20) is HIDDEN so a thin board can\'t be read as a full one (ME-138). The pitcher target list below still works ‚Äî it runs off the schedule feed, which is healthy.</div></div>';
+  }
   // ‚îÄ‚îÄ JOB 3 (ME-136) ‚Äî SIX PICKS, the playable card. Structural filters + cheap-hold, ranked by edge_pp (EXPERIMENTAL).
-  var J6=jobSix();
+  var J6=(!_thin)?jobSix():null;
   if(J6){
     h+='<div class="card" style="border-color:var(--grn);background:rgba(34,197,94,.05)">';
     h+='<b style="color:var(--grn);font-size:15px">&#127919; SIX PICKS ‚Äî the playable card</b>';
@@ -2393,6 +2411,7 @@ function render(){
   var _allClear=ULbet.every(function(r){return r.t!=null&&r.t>=T_GATE;}),_demoted=UL.filter(function(r){return r.tGated;}).length;
   try{console.log('[ME-95] bettable rows: '+ULbet.length+'  ¬∑  all clear t‚â•'+T_GATE.toFixed(1)+': '+(_allClear?'YES':'NO'));console.log('[ME-95] demoted by t gate this slate: '+_demoted);}catch(e){}
   try{console.log('[ME-106] rows where line-side and market-side disagree: '+(window.__me106disagree||0));}catch(e){}
+  if(!_thin){                                                                  // ME-138 B ‚Äî suppress the bettable board when coverage is thin
   h+='<div class="card" style="border-color:var(--gld);background:rgba(234,179,8,.05)">';
   h+='<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b style="color:var(--gld);font-size:15px">&#127942; TOP 20 ‚Äî model% then width</b><button onclick="copyList()" style="font-size:11px;padding:4px 10px;border-radius:8px;border:1px solid var(--gld);background:transparent;color:var(--gld);cursor:pointer">&#128203; Copy</button></div>';
   h+='<div style="font-size:10px;margin-top:2px" class="mut">Ranked by <b>model probability, widest market breaking ties</b> (ME-97/98) ‚Äî NOT by EV: EV pushes to long prices by construction and you\'re bankroll-constrained (‚àí125/‚àí115). Both sides, all markets ('+UL.length+' evaluated). Gate flags (t, band, ace) are <b>info, not a filter</b>. EV shown per row for reference. Stake <b>$'+unitDollars()+'</b>/unit.</div>';
@@ -2404,6 +2423,7 @@ function render(){
       +(r.calibOffset?'<br><span style="font-size:9px;color:var(--blu)">JOB1 calib: raw '+(r.modelPraw!=null?Math.round(r.modelPraw*100)+'%':'‚Äî')+' ‚Üí cal '+(r.prob!=null?Math.round(r.prob*100)+'%':'‚Äî')+' ('+(r.calibOffset>=0?'+':'')+(r.calibOffset*100).toFixed(1)+'pp, n='+r.calibN+')'+(r.calibProv?' ‚ö†'+r.calibProv:'')+'</span>':'')+'</div></div>';});
   if(!TOP.length)h+='<div style="font-size:11px;margin-top:5px" class="mut">No eligible rows yet ‚Äî lineups/prices not posted.</div>';
   h+='</div>';
+  } // end if(!_thin) ‚Äî ME-138 B
   var A=D.hitters.filter(function(x){return x.grade==='A';});
   var conf=D.games.filter(function(g){return g.posted;}).length;
   // ‚îÄ‚îÄ üéØ PITCHER TARGETS ‚Äî "Is He Hittable?" (THE FRONT DOOR ‚Äî sorted by recent hits allowed) ‚îÄ‚îÄ
@@ -2659,3 +2679,4 @@ loadAll();
 </script>
 </body>
 </html>
+
