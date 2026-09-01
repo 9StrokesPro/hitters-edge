@@ -63,7 +63,7 @@ var MLB='https://statsapi.mlb.com/api/v1';
 var OWM_KEY='6a060c8de21d6f1a5cd9d6fed2b7a53b';
 var ODDS_KEY='e738de03c4b7e835c52b50e1a0b1c494'; // ONLY for game totals context (~2 credits/load)
 var K='me15_';
-var BUILD='v15.039'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
+var BUILD='v15.041'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
 var SHOW_LEGACY=false; // NEXT(2026-08-27) #2 ‚Äî the ONE LIST is the ONLY decision surface, on the PAGE and in the COPY EXPORT. The legacy board sections (Top Picks / Edge / Contact / K / HELD) apply the FULL ace filter while the one list uses the ME-70a-corrected version ‚Äî two surfaces disagreeing = Joe bets a stale board. Flag off, not deleted, so diagnostics recover. Target list + DATA DUMP are NOT legacy (front door + grader feed) and stay.
 // ME-86 ‚Äî stake sizing from bankroll + unit, so a 15-bet night is mechanical not 15 decisions. Configurable
 // in localStorage (me15_bankroll / me15_unit_pct); flat 1u per bet. setBankroll(n)/setUnit(pct) from console.
@@ -2291,20 +2291,18 @@ function unifiedList(){
   // pre-ME-93 board printed unders that contradicted our own projection; that bug is fixed + verified. Unders now
   // inherit EVERY existing guardrail below (t‚â•2 in the chosen direction, price band, no-t rows) ‚Äî nothing loosened.
   // ME-137 ‚Äî LEVEL CALIBRATION (supersedes the ZEROED Job 1 offsets; same pipe, modelP_raw‚ÜímodelP_cal shown). Job 2
-  // proved we run ~7pp hot at the TOP of our own list (where p‚âà0.60 the book says 0.528). The book's de-vigged fair
-  // regresses on our blend as fair = A + B¬∑p_over, B‚âà0.6 on every market ‚Äî our probabilities are over-dispersed and
-  // this shrinks them toward the book's honest number. Applied on P(OVER); the chosen side maps through complement.
-  // Refit A,B per slate (currently pooled 8/28: A=0.163, B=0.608, n=163). modelPraw kept; below-gate recomputed.
+  // proved our probabilities are OVER-DISPERSED ‚Äî we run ~7pp hot at the top of our own list. The book's de-vigged
+  // fair regresses on our number as fair = A + B¬∑modelP, B‚âà0.6 on every market. Applied DIRECTLY to the displayed
+  // probability the card ranks/shows (per ME-166 acceptance: 63% ‚Üí 54.6%), a global shrink toward the fixed point
+  // ~0.42. EDGE is recomputed from the CALIBRATED number. Refit A,B per slate (pooled 8/28: A=0.163,B=0.608,n=163).
   rows.forEach(function(r){
     r.modelPraw=r.prob; r.calibN=CALIB_N; r.calibProv=null;
     if(!CALIB_ACTIVE||r.prob==null){r.calibOffset=0;return;}
-    var pOver=(r.side==='O')?r.prob:(1-r.prob);                                 // blend is P(over); recover it for the chosen side
-    var calOver=Math.max(0.01,Math.min(0.99,CALIB_A+CALIB_B*pOver));           // ME-137: fair = A + B¬∑p_over
-    var pCal=(r.side==='O')?calOver:Math.round((1-calOver)*1000)/1000;
+    var pCal=Math.max(0.01,Math.min(0.99,CALIB_A+CALIB_B*r.prob));             // ME-137 direct: modelP_cal = A + B¬∑modelP
     r.calibOffset=Math.round((pCal-r.prob)*1000)/1000;                         // signed effective shift (for the raw‚Üícal display)
     r.prob=Math.round(pCal*1000)/1000;
-    if(r.price!=null)r.edge=Math.round((r.prob-impliedP(r.price))*1000)/1000;
-    if(r.held==null||/^below \+/.test(r.held)) r.held=(r.edge!=null&&r.edge<EDGE_GATE)?('below +'+(EDGE_GATE*100).toFixed(1)+'pp gate'):null; // recompute ONLY the below-gate hold on calibrated edge
+    if(r.price!=null)r.edge=Math.round((r.prob-impliedP(r.price))*1000)/1000;  // EDGE from the calibrated prob
+    if(r.held==null||/^below \+/.test(r.held)) r.held=(r.edge!=null&&r.edge<EDGE_GATE)?('below +'+(EDGE_GATE*100).toFixed(1)+'pp gate'):null;
   });
   // ME-95 ‚Äî THE t GATE IS AN ENDORSEMENT GATE, not just a sort key (ME-59 wired the sort but never the status).
   // BET requires edge‚â•EDGE_GATE (already enforced above) AND t‚â•T_GATE. No t at all ‚Üí never BET. Does NOT touch the
@@ -2411,8 +2409,23 @@ function render(){
   //   market-wide signal; either way the card must catch it (it took the operator's instinct to catch the 20-under sweep).
   var _tO=TOP.filter(function(r){return r.side==='O';}).length,_tU=TOP.length-_tO;
   var _aO=UL.filter(function(r){return r.side==='O';}).length,_aU=UL.length-_aO;
-  var _sweep=(TOP.length>0&&(_tO===0||_tU===0));
-  h+='<div style="font-size:10px;font-family:monospace;padding:4px 7px;border-radius:7px;margin-bottom:6px;background:'+(_sweep?'rgba(239,68,68,.15)':'rgba(139,148,167,.08)')+';color:'+(_sweep?'var(--red)':'var(--mut)')+'">SIDE BALANCE ‚Äî top 20: '+_tO+' over / '+_tU+' under (all-slate: '+_aO+' over / '+_aU+' under)'+(_sweep?' &nbsp;*** WARNING: top 20 is single-sided ***':'')+'</div>';
+  var _tM=TOP.filter(function(r){return r.price<0;}).length,_tP=TOP.filter(function(r){return r.price>0;}).length;
+  var _sweep=(TOP.length>0&&(_tO===0||_tU===0)),_psweep=(TOP.length>0&&(_tM===0||_tP===0));
+  h+='<div style="font-size:10px;font-family:monospace;padding:4px 7px;border-radius:7px;margin-bottom:3px;background:'+(_sweep?'rgba(239,68,68,.15)':'rgba(139,148,167,.08)')+';color:'+(_sweep?'var(--red)':'var(--mut)')+'">SIDE BALANCE ‚Äî top 20: '+_tO+' over / '+_tU+' under (all-slate: '+_aO+' over / '+_aU+' under)'+(_sweep?' &nbsp;*** WARNING: top 20 is single-sided ***':'')+'</div>';
+  h+='<div style="font-size:10px;font-family:monospace;padding:4px 7px;border-radius:7px;margin-bottom:6px;background:'+(_psweep?'rgba(239,68,68,.15)':'rgba(139,148,167,.08)')+';color:'+(_psweep?'var(--red)':'var(--mut)')+'">PRICE BALANCE ‚Äî top 20: '+_tM+' minus / '+_tP+' plus'+(_psweep?' &nbsp;*** WARNING: top 20 is single-priced ***':'')+'</div>';
+  // ME-166 #4 (PROMOTED to LEAD, operator 9/01) ‚Äî THE band is the primary bettable list: ‚àí130..+130 is the operator's
+  //   working range AND exactly where the ME-137 calibration is valid. Outside it the calibration EXTRAPOLATES and
+  //   inflates plus-money longshots (a +200 at model 30% ‚Üí 34.5%, clearing the low breakeven), which is why the full
+  //   top-20 below floats to +odds. This band avoids that. VIEW, not a filter ‚Äî the full board stays below.
+  if(!_thin){
+    var BAND=UL.slice().filter(function(r){return r.prob!=null&&r.price!=null&&r.price>=-130&&r.price<=130;}).sort(function(a,b){return (b.edge==null?-99:b.edge)-(a.edge==null?-99:a.edge);}).slice(0,20);
+    h+='<div class="card" style="border-color:var(--grn);background:rgba(34,197,94,.05)"><b style="color:var(--grn);font-size:15px">&#127919; THE PICKS ‚Äî your range (‚àí130..+130)</b>';
+    h+='<div style="font-size:10px;margin-top:2px" class="mut">Prices in your working band only, ranked by calibrated edge_pp. The full top-20 below shows every price (it leads with +odds because the ME-137 calibration inflates longshots outside this range ‚Äî that\'s a known artifact, not a signal). Stake $'+unitDollars()+'.</div>';
+    if(BAND.length){BAND.forEach(function(r,i){var bet=!r.held;
+      h+='<div style="font-size:12px;margin-top:5px;border-top:1px solid var(--bord);padding-top:4px'+(bet?'':';opacity:.6')+'"><span class="mut">'+(i+1)+'.</span> '+lightDot(r.light)+' <b>'+esc(r.player)+'</b> <b style="color:var(--gld)">'+esc(r.mkt)+' '+r.side+r.line+' '+(r.price>0?'+':'')+r.price+'</b> ¬∑ '+(r.prob!=null?Math.round(r.prob*100)+'%':'‚Äî')+' ¬∑ <b style="color:'+(r.edge>=0?'var(--grn)':'var(--red)')+'">'+(r.edge>=0?'+':'')+(r.edge*100).toFixed(1)+'pp</b>'+(bet?' <b style="color:var(--grn)">BET $'+unitDollars()+'</b>':' <span style="color:var(--amb)">flag: '+esc(r.held)+'</span>')+'<div style="font-size:9px" class="mut">'+esc(r.sub)+(r.modelPraw!=null?' ¬∑ raw '+Math.round(r.modelPraw*100)+'% ‚Üí cal '+Math.round(r.prob*100)+'%':'')+'</div></div>';});}
+    else h+='<div style="font-size:11px;margin-top:5px" class="mut">No rows in your ‚àí130..+130 range on this slate.</div>';
+    h+='</div>';
+  }
   var ULbet=UL.filter(function(r){return !r.held;}),ULheld=UL.filter(function(r){return !!r.held;});
   try{if(ULheld.length){var byR={};ULheld.forEach(function(r){(byR[r.held]=byR[r.held]||[]).push(r.player+' '+r.mkt);});
     console.log('[ME-69 gate-drop log ‚Äî '+ULheld.length+' held]');Object.keys(byR).forEach(function(k){console.log('  '+k+' ('+byR[k].length+'): '+byR[k].join(' ¬∑ '));});}}catch(e){}
@@ -2597,7 +2610,7 @@ function copyTop(){
   var _allClear=UL.filter(function(r){return !r.held;}).every(function(r){return r.t!=null&&r.t>=T_GATE;}),_demoted=UL.filter(function(r){return r.tGated;}).length;
   t+='\n‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê üèÜ TOP 20 ‚Äî by calibrated edge ‚Äî both sides, all markets ('+UL.length+' evaluated) ‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê\n';
   t+='[ME-95] bettable (clear t‚â•'+T_GATE.toFixed(1)+'+edge gate): '+ULbet+'  ¬∑  demoted by t gate: '+_demoted+'  ¬∑  gate flags are INFO, not a filter\n';
-  t+='ranked by MODEL% then WIDTH (ME-97/98, not EV ‚Äî EV pushes to long prices; operator is band-constrained ‚àí125/‚àí115) ¬∑ EV shown for reference ¬∑ $'+u+'/unit\n';
+  t+='ranked by EDGE_PP = calibrated modelP_cal ‚àí breakeven, DESC (ME-165/166) ‚Äî side-neutral, not model% (sorts into unders) and not EV (chases long prices). modelP is CALIBRATED (ME-137: cal = 0.163 + 0.608¬∑raw); raw+cal both shown ¬∑ $'+u+'/unit\n';
   t+='#|player|team|opp_starter|market|line|side|price|EV|modelP|breakeven|EDGE_VS_PRICE|t|width|flag\n';
   TOP.forEach(function(r,i){
     var be=r.price!=null?Math.round(impliedP(r.price)*1000)/10:null;
