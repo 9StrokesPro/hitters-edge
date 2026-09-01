@@ -63,7 +63,7 @@ var MLB='https://statsapi.mlb.com/api/v1';
 var OWM_KEY='6a060c8de21d6f1a5cd9d6fed2b7a53b';
 var ODDS_KEY='e738de03c4b7e835c52b50e1a0b1c494'; // ONLY for game totals context (~2 credits/load)
 var K='me15_';
-var BUILD='v15.041'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
+var BUILD='v15.042'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
 var SHOW_LEGACY=false; // NEXT(2026-08-27) #2 ‚Äî the ONE LIST is the ONLY decision surface, on the PAGE and in the COPY EXPORT. The legacy board sections (Top Picks / Edge / Contact / K / HELD) apply the FULL ace filter while the one list uses the ME-70a-corrected version ‚Äî two surfaces disagreeing = Joe bets a stale board. Flag off, not deleted, so diagnostics recover. Target list + DATA DUMP are NOT legacy (front door + grader feed) and stay.
 // ME-86 ‚Äî stake sizing from bankroll + unit, so a 15-bet night is mechanical not 15 decisions. Configurable
 // in localStorage (me15_bankroll / me15_unit_pct); flat 1u per bet. setBankroll(n)/setUnit(pct) from console.
@@ -1908,6 +1908,26 @@ async function loadAll(){
 // is shared with Hitters Edge and is quota-full, so every ss() write throws QuotaExceededError and was silently
 // swallowed ‚Äî the page retained NOTHING. This POSTs the built slate (decision list + every evaluated row + targets)
 // to /slate; server KV has no browser quota. Fire-and-forget: never blocks or breaks render if the worker is down.
+// FIX 1/3 (JOIN, ME-168) ‚Äî EVERY evaluated row (not the display shortlist) with the numeric fields the line-movement
+// join needs, plus a canonical event_key = date|player_normalised|market|line (same shape as the worker's ledgerKey,
+// so slate ‚ãà snapshots ‚ãà ledger all share ONE key). Out-of-band rows included ‚Äî the model evaluated them.
+function normPlayer(s){return (s||'').toLowerCase().normalize('NFD').replace(/[ÃÄ-ÕØ]/g,'').replace(/[^a-z ]/g,'').trim();}
+function eventKey(player,mkt,line){return todayStr()+'|'+normPlayer(player)+'|'+mkt+'|'+line;}
+function allEvalRows(){
+  if(!D)return[];var now=Date.now(),out=[];var cal=function(p){return (p==null)?null:Math.max(0.01,Math.min(0.99,CALIB_A+CALIB_B*p));};
+  (D.hitters||[]).forEach(function(h){if(!h.ladder||!h.ladder.all)return;
+    h.ladder.all.forEach(function(r){if(r.line==null||r.blend==null)return; // evaluated = has a model prob + a line (price may be out of band)
+      out.push({event_key:eventKey(h.name,r.mkt,r.line),player:h.name,market:r.mkt,line:r.line,side:'O',price:(r.hr!=null?r.hr:null),
+        modelP_raw:Math.round(r.blend*1000)/1000,modelP_cal:cal(r.blend),breakeven:(r.hr!=null?Math.round(impliedP(r.hr)*1000)/1000:null),
+        fair:(r.fair!=null?r.fair:null),n_books:(r.nBooks!=null?r.nBooks:null),game_id:h.game,captured_at:now});});});
+  (D.pitchers||[]).forEach(function(p){var pr=p.proj;if(!pr||!pr.ok||pr.line==null||pr.modelP==null)return;
+    out.push({event_key:eventKey(p.name,'pitcher_strikeouts',pr.line),player:p.name,market:'pitcher_strikeouts',line:pr.line,side:(pr.side==='Over'?'O':'U'),price:(pr.hrPrice!=null?pr.hrPrice:null),
+      modelP_raw:Math.round(pr.modelP*1000)/1000,modelP_cal:cal(pr.modelP),breakeven:(pr.hrPrice!=null?Math.round(impliedP(pr.hrPrice)*1000)/1000:null),fair:(pr.fairP!=null?pr.fairP:null),n_books:(pr.nBooks!=null?pr.nBooks:null),game_id:p.game,captured_at:now});});
+  (D.targets||[]).forEach(function(t){var hp=t.hitsProp;if(!hp||hp.line==null||hp.modelP==null)return;
+    out.push({event_key:eventKey(t.name,'pitcher_hits_allowed',hp.line),player:t.name,market:'pitcher_hits_allowed',line:hp.line,side:(hp.side==='Over'?'O':'U'),price:(hp.price!=null?hp.price:null),
+      modelP_raw:Math.round(hp.modelP*1000)/1000,modelP_cal:cal(hp.modelP),breakeven:(hp.price!=null?Math.round(impliedP(hp.price)*1000)/1000:null),fair:(hp.fair!=null?hp.fair:null),n_books:(hp.nBooks!=null?hp.nBooks:null),game_id:t.game,captured_at:now});});
+  return out;
+}
 function postSlate(peLog){
   try{
     if(!D)return;
@@ -1916,9 +1936,9 @@ function postSlate(peLog){
       var ev=(r.prob!=null&&payout!=null)?Math.round((r.prob*payout-(1-r.prob))*1000)/1000:null;
       return {kind:r.kind,player:r.player,team:r.team,opp:r.oppStarter,market:r.mkt,mktKey:r.mktKey,line:r.line,side:r.side,price:r.price,closing_price:null,modelP:r.prob,modelP_raw:r.modelPraw,calib_offset:r.calibOffset,calib_n:r.calibN,edge:r.edge,ev:ev,t:r.t,width:r.width,held:r.held||null,status:r.held?('HELD:'+r.held):(r.released||'BET')};}); // JOB1 ‚Äî modelP is CALIBRATED; modelP_raw + offset carried for audit
     var targets=(D.targets||[]).map(function(t){var hp=t.hitsProp;return {name:t.name,id:t.id,cls:t.cls,projHits:t.projHits,projIP:t.projIP,hitsRate:t.hitsRate,hitsPS:t.hitsPS,line:hp&&hp.line,side:hp&&hp.side,over:hp&&hp.over,under:hp&&hp.under,edge:hp&&hp.edge};});
-    var rows=(peLog&&peLog.rows)||[];
+    var rows=allEvalRows(); // FIX 1 (JOIN) ‚Äî post EVERY evaluated row (was peLog.rows, the hitter-only shortlist). The display shortlist (unified) is unchanged.
     if(!rows.length&&!unified.length)return; // nothing worth saving (empty build) ‚Äî don't overwrite a good capture
-    var payload={date:todayStr(),build:BUILD,at:Date.now(),blend_w:BLEND_W,gate:EDGE_GATE,unified:unified,targets:targets,rows:rows};
+    var payload={date:todayStr(),build:BUILD,at:Date.now(),blend_w:BLEND_W,gate:EDGE_GATE,n_evaluated:rows.length,unified:unified,targets:targets,rows:rows,playedges:(peLog&&peLog.rows)||[]};
     fetch(SERVER_URL.replace(/\/$/,'')+'/slate',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload)})
       .then(function(r){return r.json();}).then(function(j){try{console.log('[ME-96 slate-save] '+(j&&j.ok?('‚úì stored '+j.stored+' ‚Äî '+j.rows+' rows'+(j.kept?' ('+j.kept+')':'')):'no-save '+JSON.stringify(j)));}catch(e){}})
       .catch(function(e){try{console.log('[ME-96 slate-save] worker unreachable ‚Äî slate NOT saved this load: '+e);}catch(_){}});
