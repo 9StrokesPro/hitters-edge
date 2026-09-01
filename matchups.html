@@ -63,7 +63,7 @@ var MLB='https://statsapi.mlb.com/api/v1';
 var OWM_KEY='6a060c8de21d6f1a5cd9d6fed2b7a53b';
 var ODDS_KEY='e738de03c4b7e835c52b50e1a0b1c494'; // ONLY for game totals context (~2 credits/load)
 var K='me15_';
-var BUILD='v15.038'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
+var BUILD='v15.039'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
 var SHOW_LEGACY=false; // NEXT(2026-08-27) #2 ‚Äî the ONE LIST is the ONLY decision surface, on the PAGE and in the COPY EXPORT. The legacy board sections (Top Picks / Edge / Contact / K / HELD) apply the FULL ace filter while the one list uses the ME-70a-corrected version ‚Äî two surfaces disagreeing = Joe bets a stale board. Flag off, not deleted, so diagnostics recover. Target list + DATA DUMP are NOT legacy (front door + grader feed) and stay.
 // ME-86 ‚Äî stake sizing from bankroll + unit, so a 15-bet night is mechanical not 15 decisions. Configurable
 // in localStorage (me15_bankroll / me15_unit_pct); flat 1u per bet. setBankroll(n)/setUnit(pct) from console.
@@ -2279,7 +2279,9 @@ function unifiedList(){
   // ME-83 ‚Äî PITCHER HITS ALLOWED rows (from the target list, priced above). Always tagged new_market_unvalidated;
   // held out of the bet lane on the usual gates (band + edge), same rulers as every other prop.
   (D.targets||[]).forEach(function(t){var hp=t.hitsProp;if(!hp||hp.line==null||hp.edge==null||hp.price==null)return;
-    var held='suspended (hits-allowed: 10/26, ‚àí30% ROI, no SE ‚Äî JOB1/ME-133)'; // JOB 1 req 5 ‚Äî suspend from selection entirely
+    // ME-166 BUG 4 ‚Äî suspend hits-allowed UNDER only (our history is 113 overs / 3 unders; PH OVERS are 15-6, the
+    // -30% ROI sample was under-side). The OVER stays live ‚Äî it's exactly where the pull_arms ATTACK arms produce value.
+    var held=(hp.side==='Under')?'suspended (hits-allowed UNDER: ‚àí30% ROI, no SE ‚Äî ME-166)':(!hp.inBand?'price outside band':(hp.edge<EDGE_GATE?'below +'+(EDGE_GATE*100).toFixed(1)+'pp gate':null));
     rows.push({kind:'PH',player:t.name,team:(TEAM_ABBR[t.team]||t.team||'?'),oppStarter:(TEAM_ABBR[t.opp]||t.opp||''),sub:(TEAM_ABBR[t.team]||t.team||'?')+' vs '+(t.opp||'TBD')+' ‚Äî hits allowed', // ME-118 ‚Äî opp = the offense he faces
       mkt:'Hits allowed',mktKey:'pitcher_hits_allowed',width:marketWidth('pitcher_hits_allowed'),line:hp.line,side:hp.side==='Over'?'O':'U',price:hp.price,prob:hp.modelP,edge:hp.edge,
       t:null,tNa:true,seAppx:hp.seApprox, // NEXT(15:40) #2 ‚Äî t is SE_APPROX on n=8; show n/a, rank on edge alone until ME-82 gives n‚â•30
@@ -2404,7 +2406,13 @@ function render(){
   }
   // ‚îÄ‚îÄ TOP 20 (full board below the six, ranked model% then width). The gates (t / band / ace) are FLAGS, not a filter.
   var UL=unifiedList();
-  var TOP=UL.slice().filter(function(r){return r.prob!=null;}).sort(function(a,b){var ap=a.prob==null?-1:a.prob,bp=b.prob==null?-1:b.prob;return Math.abs(ap-bp)<=0.03?((b.width||0)-(a.width||0)):(bp-ap);}).slice(0,20);
+  var TOP=UL.slice().filter(function(r){return r.prob!=null;}).sort(function(a,b){return (b.edge==null?-99:b.edge)-(a.edge==null?-99:a.edge);}).slice(0,20);
+  // ME-165/166 BUG 3 ‚Äî SIDE-BALANCE SELF-CHECK. A unanimous side sweep in the top 20 is a ranking bug or a real
+  //   market-wide signal; either way the card must catch it (it took the operator's instinct to catch the 20-under sweep).
+  var _tO=TOP.filter(function(r){return r.side==='O';}).length,_tU=TOP.length-_tO;
+  var _aO=UL.filter(function(r){return r.side==='O';}).length,_aU=UL.length-_aO;
+  var _sweep=(TOP.length>0&&(_tO===0||_tU===0));
+  h+='<div style="font-size:10px;font-family:monospace;padding:4px 7px;border-radius:7px;margin-bottom:6px;background:'+(_sweep?'rgba(239,68,68,.15)':'rgba(139,148,167,.08)')+';color:'+(_sweep?'var(--red)':'var(--mut)')+'">SIDE BALANCE ‚Äî top 20: '+_tO+' over / '+_tU+' under (all-slate: '+_aO+' over / '+_aU+' under)'+(_sweep?' &nbsp;*** WARNING: top 20 is single-sided ***':'')+'</div>';
   var ULbet=UL.filter(function(r){return !r.held;}),ULheld=UL.filter(function(r){return !!r.held;});
   try{if(ULheld.length){var byR={};ULheld.forEach(function(r){(byR[r.held]=byR[r.held]||[]).push(r.player+' '+r.mkt);});
     console.log('[ME-69 gate-drop log ‚Äî '+ULheld.length+' held]');Object.keys(byR).forEach(function(k){console.log('  '+k+' ('+byR[k].length+'): '+byR[k].join(' ¬∑ '));});}}catch(e){}
@@ -2413,8 +2421,8 @@ function render(){
   try{console.log('[ME-106] rows where line-side and market-side disagree: '+(window.__me106disagree||0));}catch(e){}
   if(!_thin){                                                                  // ME-138 B ‚Äî suppress the bettable board when coverage is thin
   h+='<div class="card" style="border-color:var(--gld);background:rgba(234,179,8,.05)">';
-  h+='<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b style="color:var(--gld);font-size:15px">&#127942; TOP 20 ‚Äî model% then width</b><button onclick="copyList()" style="font-size:11px;padding:4px 10px;border-radius:8px;border:1px solid var(--gld);background:transparent;color:var(--gld);cursor:pointer">&#128203; Copy</button></div>';
-  h+='<div style="font-size:10px;margin-top:2px" class="mut">Ranked by <b>model probability, widest market breaking ties</b> (ME-97/98) ‚Äî NOT by EV: EV pushes to long prices by construction and you\'re bankroll-constrained (‚àí125/‚àí115). Both sides, all markets ('+UL.length+' evaluated). Gate flags (t, band, ace) are <b>info, not a filter</b>. EV shown per row for reference. Stake <b>$'+unitDollars()+'</b>/unit.</div>';
+  h+='<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b style="color:var(--gld);font-size:15px">&#127942; TOP 20 ‚Äî by calibrated edge</b><button onclick="copyList()" style="font-size:11px;padding:4px 10px;border-radius:8px;border:1px solid var(--gld);background:transparent;color:var(--gld);cursor:pointer">&#128203; Copy</button></div>';
+  h+='<div style="font-size:10px;margin-top:2px" class="mut">Ranked by <b>edge_pp = calibrated modelP_cal ‚àí breakeven</b> (ME-165/166), descending ‚Äî side-neutral, does not scale with price. NOT model% (that sorts into favourites = the under on props ‚Üí the 20-under sweep) and NOT EV (chases long prices). Both sides, all markets ('+UL.length+' evaluated); negative-edge rows ranked below, NOT filtered. Gate flags are info, not a filter. Stake <b>$'+unitDollars()+'</b>/unit.</div>';
   TOP.forEach(function(r,i){var bet=!r.held;
     h+='<div style="font-size:12px;margin-top:5px;border-top:1px solid var(--bord);padding-top:4px">'
       +'<span class="mut">'+(i+1)+'.</span> '+lightDot(r.light)+' <b>'+esc(r.player)+'</b> <b style="color:var(--gld)">'+esc(r.mkt)+' '+r.side+r.line+' '+(r.price>0?'+':'')+r.price+'</b>'
@@ -2568,14 +2576,14 @@ function stripTags(s){return(''+(s||'')).replace(/<[^>]+>/g,'');}
 function copyList(){
   if(!D){toast('Still loading');return;}
   var UL=unifiedList(),u=unitDollars();
-  var TOP=UL.slice().filter(function(r){return r.prob!=null;}).sort(function(a,b){var ap=a.prob==null?-1:a.prob,bp=b.prob==null?-1:b.prob;return Math.abs(ap-bp)<=0.03?((b.width||0)-(a.width||0)):(bp-ap);}).slice(0,20);
-  var t='MATCHUP ENGINE '+BUILD+' ‚Äî TOP 20 ‚Äî model% then width ‚Äî '+new Date().toLocaleString()+'\n';
+  var TOP=UL.slice().filter(function(r){return r.prob!=null;}).sort(function(a,b){return (b.edge==null?-99:b.edge)-(a.edge==null?-99:a.edge);}).slice(0,20);
+  var t='MATCHUP ENGINE '+BUILD+' ‚Äî TOP 20 ‚Äî by calibrated edge ‚Äî '+new Date().toLocaleString()+'\n';
   t+='bankroll $'+BANKROLL+' ¬∑ unit '+(UNIT_PCT*100).toFixed(1)+'% = $'+u+'/bet ¬∑ both sides, all markets ¬∑ gate flags are info, not a filter\n';
   t+='#  player                bet                       EV      our%  edge    t      flag\n';
   TOP.forEach(function(r,i){
     t+=(i+1+'.').padEnd(3)+' '+(r.player||'').padEnd(20).slice(0,20)+' '+((r.mkt+' '+r.side+r.line+' '+(r.price>0?'+':'')+r.price)).padEnd(24).slice(0,24)+' '+((r.ev>=0?'+':'')+r.ev.toFixed(3)).padEnd(7)+' '+(r.prob!=null?Math.round(r.prob*100)+'%':'--').padEnd(5)+' '+((r.edge>=0?'+':'')+(r.edge*100).toFixed(1)+'pp').padEnd(7)+' '+(r.tNa?'n/a':r.t!=null?(r.t.toFixed(2)+(r.seAppx?'~':'')):'--').padEnd(6)+' '+(r.held?('flag: '+r.held):('BET $'+u))+(r.released?' ['+r.released+']':'')+'\n';
   });
-  navigator.clipboard.writeText(t).then(function(){toast('Copied TOP 20 ‚Äî model% then width');}).catch(function(){toast('Copy failed');});
+  navigator.clipboard.writeText(t).then(function(){toast('Copied TOP 20 ‚Äî by calibrated edge');}).catch(function(){toast('Copy failed');});
 }
 function copyTop(){
   if(!D){toast('Still loading');return;}
@@ -2585,9 +2593,9 @@ function copyTop(){
   // ‚îÄ‚îÄ üìã ONE LIST ‚Äî THE PRIMARY SURFACE (NEXT #1). Every eligible row, edge-sorted, held inline with reason.
   //    This is the decision list Joe/analyst/grader all read. Legacy board sections are gated off below (SHOW_LEGACY).
   var UL=unifiedList(),ULbet=UL.filter(function(r){return !r.held;}).length;
-  var TOP=UL.slice().filter(function(r){return r.prob!=null;}).sort(function(a,b){var ap=a.prob==null?-1:a.prob,bp=b.prob==null?-1:b.prob;return Math.abs(ap-bp)<=0.03?((b.width||0)-(a.width||0)):(bp-ap);}).slice(0,20);
+  var TOP=UL.slice().filter(function(r){return r.prob!=null;}).sort(function(a,b){return (b.edge==null?-99:b.edge)-(a.edge==null?-99:a.edge);}).slice(0,20);
   var _allClear=UL.filter(function(r){return !r.held;}).every(function(r){return r.t!=null&&r.t>=T_GATE;}),_demoted=UL.filter(function(r){return r.tGated;}).length;
-  t+='\n‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê üèÜ TOP 20 ‚Äî model% then width ‚Äî both sides, all markets ('+UL.length+' evaluated) ‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê\n';
+  t+='\n‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê üèÜ TOP 20 ‚Äî by calibrated edge ‚Äî both sides, all markets ('+UL.length+' evaluated) ‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê\n';
   t+='[ME-95] bettable (clear t‚â•'+T_GATE.toFixed(1)+'+edge gate): '+ULbet+'  ¬∑  demoted by t gate: '+_demoted+'  ¬∑  gate flags are INFO, not a filter\n';
   t+='ranked by MODEL% then WIDTH (ME-97/98, not EV ‚Äî EV pushes to long prices; operator is band-constrained ‚àí125/‚àí115) ¬∑ EV shown for reference ¬∑ $'+u+'/unit\n';
   t+='#|player|team|opp_starter|market|line|side|price|EV|modelP|breakeven|EDGE_VS_PRICE|t|width|flag\n';
@@ -2679,4 +2687,3 @@ loadAll();
 </script>
 </body>
 </html>
-
