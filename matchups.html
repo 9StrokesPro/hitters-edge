@@ -63,7 +63,7 @@ var MLB='https://statsapi.mlb.com/api/v1';
 var OWM_KEY='6a060c8de21d6f1a5cd9d6fed2b7a53b';
 var ODDS_KEY='e738de03c4b7e835c52b50e1a0b1c494'; // ONLY for game totals context (~2 credits/load)
 var K='me15_';
-var BUILD='v15.042'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
+var BUILD='v15.043'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
 var SHOW_LEGACY=false; // NEXT(2026-08-27) #2 ‚Äî the ONE LIST is the ONLY decision surface, on the PAGE and in the COPY EXPORT. The legacy board sections (Top Picks / Edge / Contact / K / HELD) apply the FULL ace filter while the one list uses the ME-70a-corrected version ‚Äî two surfaces disagreeing = Joe bets a stale board. Flag off, not deleted, so diagnostics recover. Target list + DATA DUMP are NOT legacy (front door + grader feed) and stay.
 // ME-86 ‚Äî stake sizing from bankroll + unit, so a 15-bet night is mechanical not 15 decisions. Configurable
 // in localStorage (me15_bankroll / me15_unit_pct); flat 1u per bet. setBankroll(n)/setUnit(pct) from console.
@@ -2286,7 +2286,7 @@ function unifiedList(){
       else if(chosen.noTilt!=null&&chosen.noTilt<0)held='tilt-only';              // ME-36 on the CHOSEN side (no-tilt edge must be ‚â•0)
       else if(eff<EDGE_GATE)held='below +'+(EDGE_GATE*100).toFixed(1)+'pp gate';
       rows.push({kind:'HIT',player:h.name,team:(TEAM_ABBR[h.team]||h.team),oppStarter:(h.oppPitName||'TBD'),sub:(TEAM_ABBR[h.team]||h.team)+' vs '+(h.oppPitName||'TBD'),
-        mkt:r.label,mktKey:r.mkt,width:marketWidth(r.mkt),line:r.line,side:chosen.side,price:chosen.price,prob:chosen.prob,edge:eff,t:chosen.t,seAppx:r.seApprox,
+        mkt:r.label,mktKey:r.mkt,width:marketWidth(r.mkt),line:r.line,side:chosen.side,price:chosen.price,prob:chosen.prob,edge:eff,t:chosen.t,seAppx:r.seApprox,nbk:(r.nBooks!=null?r.nBooks:null), // nbk ‚Äî book count behind the de-vig fair (ME-137/169 price-gap view: a gap off ‚â§3 books is thin)
         hold:(r.hold!=null?r.hold:(r.fair!=null&&chosen.price!=null?Math.round((impliedP(chosen.price)-(chosen.side==='O'?r.fair:1-r.fair))*1000)/1000:null)),fair:(r.fair!=null?(chosen.side==='O'?r.fair:Math.round((1-r.fair)*1000)/1000):null),game:h.game, // JOB 3 ‚Äî hold (vig), book fair for the chosen side, game (2-per-game cap)
         held:held,released:(pen?'ace_penalized':(chosen.side==='U'&&chosen.src==='book'?'under@alt-book':null)),light:pickLight(h),conf:h.confidence});
     });
@@ -2438,9 +2438,21 @@ function render(){
   //   inflates plus-money longshots (a +200 at model 30% ‚Üí 34.5%, clearing the low breakeven), which is why the full
   //   top-20 below floats to +odds. This band avoids that. VIEW, not a filter ‚Äî the full board stays below.
   if(!_thin){
+    // ‚îÄ‚îÄ üí∞ CHEAPEST ROWS ‚Äî THE LEAD (ME-137/169 pivot). PRICE GAP = fair(de-vig median) ‚àí breakeven(HR price). NO MODEL.
+    //    Positive = Hard Rock pays LONGER than the market ‚Üí real, model-free value. This is the trustworthy signal:
+    //    the model is at parity with the book and shows no demonstrated edge (ME-136/169, n=163, p=0.24), so we lead
+    //    with where the BOOK is mispriced, not with what we project. Ranked in the operator's ‚àí130..+130 band.
+    var GAP=UL.slice().map(function(r){return {r:r,pg:(r.fair!=null&&r.price!=null)?Math.round((r.fair-impliedP(r.price))*1000)/1000:null};})
+      .filter(function(x){return x.pg!=null&&x.r.price!=null&&x.r.price>=-130&&x.r.price<=130&&!x.r.held;}).sort(function(a,b){return b.pg-a.pg;}).slice(0,12);
+    h+='<div class="card" style="border-color:var(--gld);background:rgba(234,179,8,.07)"><b style="color:var(--gld);font-size:15px">&#128176; CHEAPEST ROWS ‚Äî your range (&minus;130..+130)</b>';
+    h+='<div style="font-size:10px;margin-top:2px" class="mut"><b>PRICE GAP = fair &minus; breakeven</b> ‚Äî fair is the de-vig median across the books, breakeven is Hard Rock&#39;s price. <b>NO model.</b> Positive = Hard Rock is paying <b>longer</b> than the true market ‚Üí model-free value (this is your plus-money edge, made rigorous). Led here because the model is at parity with the book and shows no demonstrated predictive signal (ME-136/169, n=163). Stake $'+unitDollars()+'.</div>';
+    if(GAP.length){GAP.forEach(function(x,i){var r=x.r,thin=(r.nbk!=null&&r.nbk<4);
+      h+='<div style="font-size:12px;margin-top:5px;border-top:1px solid var(--bord);padding-top:4px"><span class="mut">'+(i+1)+'.</span> '+lightDot(r.light)+' <b>'+esc(r.player)+'</b> <b style="color:var(--gld)">'+esc(r.mkt)+' '+r.side+r.line+' '+(r.price>0?'+':'')+r.price+'</b> ¬∑ <b style="color:'+(x.pg>=0?'var(--grn)':'var(--red)')+'">gap '+(x.pg>=0?'+':'')+(x.pg*100).toFixed(1)+'pp</b>'+(r.nbk!=null?' <span class="mut" style="font-size:9px">'+r.nbk+' book'+(r.nbk===1?'':'s')+(thin?' ‚ö† thin':'')+'</span>':'')+'<div style="font-size:9px" class="mut">'+esc(r.sub)+' ¬∑ fair '+(r.fair!=null?Math.round(r.fair*100)+'%':'‚Äî')+' vs breakeven '+(r.price!=null?Math.round(impliedP(r.price)*100)+'%':'‚Äî')+'</div></div>';});}
+    else h+='<div style="font-size:11px;margin-top:5px" class="mut">No priced rows with a book fair in your &minus;130..+130 range on this slate.</div>';
+    h+='</div>';
     var BAND=UL.slice().filter(function(r){return r.prob!=null&&r.price!=null&&r.price>=-130&&r.price<=130;}).sort(function(a,b){return (b.edge==null?-99:b.edge)-(a.edge==null?-99:a.edge);}).slice(0,20);
-    h+='<div class="card" style="border-color:var(--grn);background:rgba(34,197,94,.05)"><b style="color:var(--grn);font-size:15px">&#127919; THE PICKS ‚Äî your range (‚àí130..+130)</b>';
-    h+='<div style="font-size:10px;margin-top:2px" class="mut">Prices in your working band only, ranked by calibrated edge_pp. The full top-20 below shows every price (it leads with +odds because the ME-137 calibration inflates longshots outside this range ‚Äî that\'s a known artifact, not a signal). Stake $'+unitDollars()+'.</div>';
+    h+='<div class="card" style="border-color:var(--grn);background:rgba(34,197,94,.05)"><b style="color:var(--grn);font-size:15px">&#127919; MODEL VIEW ‚Äî your range (‚àí130..+130)</b>';
+    h+='<div style="font-size:10px;margin-top:2px" class="mut"><b>Diagnostic, not a bettable edge.</b> Ranked by MODEL_vs_PRICE = calibrated modelP_cal ‚àí breakeven. The model is calibrated to the BOOK, not to outcomes, and shows no demonstrated predictive signal (ME-169, n=163, p=0.24) ‚Äî so this ranks below the price-gap view above, which needs no model. Use it to see WHERE the model and the cheap price agree, not to pick on its own. Stake $'+unitDollars()+'.</div>';
     if(BAND.length){BAND.forEach(function(r,i){var bet=!r.held;
       h+='<div style="font-size:12px;margin-top:5px;border-top:1px solid var(--bord);padding-top:4px'+(bet?'':';opacity:.6')+'"><span class="mut">'+(i+1)+'.</span> '+lightDot(r.light)+' <b>'+esc(r.player)+'</b> <b style="color:var(--gld)">'+esc(r.mkt)+' '+r.side+r.line+' '+(r.price>0?'+':'')+r.price+'</b> ¬∑ '+(r.prob!=null?Math.round(r.prob*100)+'%':'‚Äî')+' ¬∑ <b style="color:'+(r.edge>=0?'var(--grn)':'var(--red)')+'">'+(r.edge>=0?'+':'')+(r.edge*100).toFixed(1)+'pp</b>'+(bet?' <b style="color:var(--grn)">BET $'+unitDollars()+'</b>':' <span style="color:var(--amb)">flag: '+esc(r.held)+'</span>')+'<div style="font-size:9px" class="mut">'+esc(r.sub)+(r.modelPraw!=null?' ¬∑ raw '+Math.round(r.modelPraw*100)+'% ‚Üí cal '+Math.round(r.prob*100)+'%':'')+'</div></div>';});}
     else h+='<div style="font-size:11px;margin-top:5px" class="mut">No rows in your ‚àí130..+130 range on this slate.</div>';
@@ -2454,8 +2466,8 @@ function render(){
   try{console.log('[ME-106] rows where line-side and market-side disagree: '+(window.__me106disagree||0));}catch(e){}
   if(!_thin){                                                                  // ME-138 B ‚Äî suppress the bettable board when coverage is thin
   h+='<div class="card" style="border-color:var(--gld);background:rgba(234,179,8,.05)">';
-  h+='<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b style="color:var(--gld);font-size:15px">&#127942; TOP 20 ‚Äî by calibrated edge</b><button onclick="copyList()" style="font-size:11px;padding:4px 10px;border-radius:8px;border:1px solid var(--gld);background:transparent;color:var(--gld);cursor:pointer">&#128203; Copy</button></div>';
-  h+='<div style="font-size:10px;margin-top:2px" class="mut">Ranked by <b>edge_pp = calibrated modelP_cal ‚àí breakeven</b> (ME-165/166), descending ‚Äî side-neutral, does not scale with price. NOT model% (that sorts into favourites = the under on props ‚Üí the 20-under sweep) and NOT EV (chases long prices). Both sides, all markets ('+UL.length+' evaluated); negative-edge rows ranked below, NOT filtered. Gate flags are info, not a filter. Stake <b>$'+unitDollars()+'</b>/unit.</div>';
+  h+='<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b style="color:var(--gld);font-size:15px">&#127942; TOP 20 ‚Äî MODEL DIAGNOSTIC</b><button onclick="copyList()" style="font-size:11px;padding:4px 10px;border-radius:8px;border:1px solid var(--gld);background:transparent;color:var(--gld);cursor:pointer">&#128203; Copy</button></div>';
+  h+='<div style="font-size:10px;margin-top:2px" class="mut"><b>MODEL_vs_PRICE, a diagnostic ‚Äî not a bettable edge.</b> Ranked by MODEL_vs_PRICE = calibrated modelP_cal ‚àí breakeven (ME-165/166), descending. The model is calibrated to the BOOK, not to outcomes, and shows <b>no demonstrated predictive signal</b> (ME-169, n=163, p=0.24) ‚Äî the price-gap view above is the trustworthy read. Kept side-neutral (NOT model%, which sweeps into unders; NOT EV, which chases long prices). Both sides, all markets ('+UL.length+' evaluated); rows ranked below, NOT filtered. Stake <b>$'+unitDollars()+'</b>/unit.</div>';
   TOP.forEach(function(r,i){var bet=!r.held;
     h+='<div style="font-size:12px;margin-top:5px;border-top:1px solid var(--bord);padding-top:4px">'
       +'<span class="mut">'+(i+1)+'.</span> '+lightDot(r.light)+' <b>'+esc(r.player)+'</b> <b style="color:var(--gld)">'+esc(r.mkt)+' '+r.side+r.line+' '+(r.price>0?'+':'')+r.price+'</b>'
@@ -2610,13 +2622,15 @@ function copyList(){
   if(!D){toast('Still loading');return;}
   var UL=unifiedList(),u=unitDollars();
   var TOP=UL.slice().filter(function(r){return r.prob!=null;}).sort(function(a,b){return (b.edge==null?-99:b.edge)-(a.edge==null?-99:a.edge);}).slice(0,20);
-  var t='MATCHUP ENGINE '+BUILD+' ‚Äî TOP 20 ‚Äî by calibrated edge ‚Äî '+new Date().toLocaleString()+'\n';
+  var t='MATCHUP ENGINE '+BUILD+' ‚Äî TOP 20 ‚Äî MODEL DIAGNOSTIC (price gap leads on the page) ‚Äî '+new Date().toLocaleString()+'\n';
   t+='bankroll $'+BANKROLL+' ¬∑ unit '+(UNIT_PCT*100).toFixed(1)+'% = $'+u+'/bet ¬∑ both sides, all markets ¬∑ gate flags are info, not a filter\n';
-  t+='#  player                bet                       EV      our%  edge    t      flag\n';
+  t+='model_vs_price is a DIAGNOSTIC (calibrated to the book, no demonstrated signal ME-169); GAP = fair‚àíbreakeven is the model-free read\n';
+  t+='#  player                bet                       EV      our%  m_v_p   GAP     t      flag\n';
   TOP.forEach(function(r,i){
-    t+=(i+1+'.').padEnd(3)+' '+(r.player||'').padEnd(20).slice(0,20)+' '+((r.mkt+' '+r.side+r.line+' '+(r.price>0?'+':'')+r.price)).padEnd(24).slice(0,24)+' '+((r.ev>=0?'+':'')+r.ev.toFixed(3)).padEnd(7)+' '+(r.prob!=null?Math.round(r.prob*100)+'%':'--').padEnd(5)+' '+((r.edge>=0?'+':'')+(r.edge*100).toFixed(1)+'pp').padEnd(7)+' '+(r.tNa?'n/a':r.t!=null?(r.t.toFixed(2)+(r.seAppx?'~':'')):'--').padEnd(6)+' '+(r.held?('flag: '+r.held):('BET $'+u))+(r.released?' ['+r.released+']':'')+'\n';
+    var pg=(r.fair!=null&&r.price!=null)?Math.round((r.fair-impliedP(r.price))*1000)/10:null;
+    t+=(i+1+'.').padEnd(3)+' '+(r.player||'').padEnd(20).slice(0,20)+' '+((r.mkt+' '+r.side+r.line+' '+(r.price>0?'+':'')+r.price)).padEnd(24).slice(0,24)+' '+((r.ev>=0?'+':'')+r.ev.toFixed(3)).padEnd(7)+' '+(r.prob!=null?Math.round(r.prob*100)+'%':'--').padEnd(5)+' '+((r.edge>=0?'+':'')+(r.edge*100).toFixed(1)+'pp').padEnd(7)+' '+(pg!=null?((pg>=0?'+':'')+pg.toFixed(1)+'pp'):'--').padEnd(7)+' '+(r.tNa?'n/a':r.t!=null?(r.t.toFixed(2)+(r.seAppx?'~':'')):'--').padEnd(6)+' '+(r.held?('flag: '+r.held):('BET $'+u))+(r.released?' ['+r.released+']':'')+'\n';
   });
-  navigator.clipboard.writeText(t).then(function(){toast('Copied TOP 20 ‚Äî by calibrated edge');}).catch(function(){toast('Copy failed');});
+  navigator.clipboard.writeText(t).then(function(){toast('Copied TOP 20 ‚Äî model diagnostic + price gap');}).catch(function(){toast('Copy failed');});
 }
 function copyTop(){
   if(!D){toast('Still loading');return;}
@@ -2628,17 +2642,18 @@ function copyTop(){
   var UL=unifiedList(),ULbet=UL.filter(function(r){return !r.held;}).length;
   var TOP=UL.slice().filter(function(r){return r.prob!=null;}).sort(function(a,b){return (b.edge==null?-99:b.edge)-(a.edge==null?-99:a.edge);}).slice(0,20);
   var _allClear=UL.filter(function(r){return !r.held;}).every(function(r){return r.t!=null&&r.t>=T_GATE;}),_demoted=UL.filter(function(r){return r.tGated;}).length;
-  t+='\n‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê üèÜ TOP 20 ‚Äî by calibrated edge ‚Äî both sides, all markets ('+UL.length+' evaluated) ‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê\n';
+  t+='\n‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê üèÜ TOP 20 ‚Äî MODEL DIAGNOSTIC (price gap is the lead on the page) ‚Äî both sides, all markets ('+UL.length+' evaluated) ‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê‚ïê\n';
   t+='[ME-95] bettable (clear t‚â•'+T_GATE.toFixed(1)+'+edge gate): '+ULbet+'  ¬∑  demoted by t gate: '+_demoted+'  ¬∑  gate flags are INFO, not a filter\n';
-  t+='ranked by EDGE_PP = calibrated modelP_cal ‚àí breakeven, DESC (ME-165/166) ‚Äî side-neutral, not model% (sorts into unders) and not EV (chases long prices). modelP is CALIBRATED (ME-137: cal = 0.163 + 0.608¬∑raw); raw+cal both shown ¬∑ $'+u+'/unit\n';
-  t+='#|player|team|opp_starter|market|line|side|price|EV|modelP|breakeven|EDGE_VS_PRICE|t|width|flag\n';
+  t+='MODEL_vs_PRICE = calibrated modelP_cal ‚àí breakeven ‚Äî DIAGNOSTIC ONLY (model calibrated to the book, no demonstrated signal ME-169 n=163 p=0.24). PRICE_GAP = fair(de-vig median) ‚àí breakeven is the MODEL-FREE read the card now leads with (ME-137/169 pivot). modelP CALIBRATED (cal = 0.163 + 0.608¬∑raw) ¬∑ $'+u+'/unit\n';
+  t+='#|player|team|opp_starter|market|line|side|price|EV|modelP|breakeven|MODEL_vs_PRICE|PRICE_GAP|nbooks|t|width|flag\n';
   TOP.forEach(function(r,i){
     var be=r.price!=null?Math.round(impliedP(r.price)*1000)/10:null;
+    var pg=(r.fair!=null&&r.price!=null)?Math.round((r.fair-impliedP(r.price))*1000)/10:null;
     var flag=r.held?r.held:(r.released?r.released:'BET');
     t+=(i+1)+'|'+r.player+'|'+(r.team||'')+'|'+(r.oppStarter||'')+'|'+r.mkt+'|'+r.line+'|'+r.side+'|'+(r.price>0?'+':'')+r.price
       +'|'+(r.ev>=0?'+':'')+r.ev.toFixed(3)
       +'|'+(r.prob!=null?Math.round(r.prob*100)+'%':'--')+'|'+(be!=null?be+'%':'--')
-      +'|'+(r.edge>=0?'+':'')+(r.edge*100).toFixed(1)+'pp|'+(r.tNa?'n/a':(r.t!=null?r.t.toFixed(2)+(r.seAppx?'~':''):'--'))
+      +'|'+(r.edge>=0?'+':'')+(r.edge*100).toFixed(1)+'pp|'+(pg!=null?((pg>=0?'+':'')+pg+'pp'):'--')+'|'+(r.nbk!=null?r.nbk:'-')+'|'+(r.tNa?'n/a':(r.t!=null?r.t.toFixed(2)+(r.seAppx?'~':''):'--'))
       +'|'+(r.width!=null?r.width:'-')+'|'+flag+'\n';
   });
   if(!TOP.length)t+='(no eligible rows ‚Äî lineups/prices not posted yet)\n';
