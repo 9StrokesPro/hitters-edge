@@ -63,7 +63,7 @@ var MLB='https://statsapi.mlb.com/api/v1';
 var OWM_KEY='6a060c8de21d6f1a5cd9d6fed2b7a53b';
 var ODDS_KEY='e738de03c4b7e835c52b50e1a0b1c494'; // ONLY for game totals context (~2 credits/load)
 var K='me15_';
-var BUILD='v15.046'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
+var BUILD='v15.047'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
 var SHOW_LEGACY=false; // NEXT(2026-08-27) #2 ‚Äî the ONE LIST is the ONLY decision surface, on the PAGE and in the COPY EXPORT. The legacy board sections (Top Picks / Edge / Contact / K / HELD) apply the FULL ace filter while the one list uses the ME-70a-corrected version ‚Äî two surfaces disagreeing = Joe bets a stale board. Flag off, not deleted, so diagnostics recover. Target list + DATA DUMP are NOT legacy (front door + grader feed) and stay.
 // ME-86 ‚Äî stake sizing from bankroll + unit, so a 15-bet night is mechanical not 15 decisions. Configurable
 // in localStorage (me15_bankroll / me15_unit_pct); flat 1u per bet. setBankroll(n)/setUnit(pct) from console.
@@ -573,6 +573,7 @@ function parsePropRows(d){
 //   (outside its ~10h window, or its last pull failed) ¬∑ failed = tracker server unreachable.
 var SERVER_URL='https://edge-scanner.joe-f3f.workers.dev';
 var JOIN_SL=null; // ME-203 ‚Äî tonight's arm‚Üîbat matchup shortlist, pulled from the worker /join/shortlist (statsapi, 0 credits)
+var JOIN_PICKS=null; // ME-207 ‚Äî band-filtered picks (posted price + line-aware fair + edge), from the worker /join/picks. THE page.
 async function loadProps(games){
   var d=null;
   try{var r=await fetch(SERVER_URL.replace(/\/$/,'')+'/props');if(r.ok)d=await r.json();}catch(e){}
@@ -1792,7 +1793,7 @@ async function loadAll(){
   var propRes={props:{},pitchers:{},status:{},at:null};
   try{propRes=await loadProps(games);attachProps(hitters,propRes);}catch(e){console.warn('props',e);hitters.forEach(function(h){if(h.propFetch==null)h.propFetch='failed';});}
   // ME-203 ‚Äî pull tonight's arm‚Üîbat matchup shortlist from the worker (statsapi-built, 0 Odds API credits). Display block, never a bet gate.
-  try{setS('Pulling arm‚Üîbat matchup shortlist...');var _jr=await fetch(SERVER_URL.replace(/\/$/,'')+'/join/shortlist');if(_jr.ok)JOIN_SL=await _jr.json();}catch(e){console.warn('join',e);}
+  try{setS('Pulling band-filtered picks (arm‚Üîbat + posted price)...');var _jr=await fetch(SERVER_URL.replace(/\/$/,'')+'/join/picks');if(_jr.ok)JOIN_PICKS=await _jr.json();}catch(e){console.warn('picks',e);}
   // ME-83 ‚Äî PITCHER HITS ALLOWED as a real prop. The projection already exists (t.projHits, the target list's
   // "is he hittable" number); this attaches the market LINE + ODDS and prices it. UNCORRECTED Poisson ‚Äî hits
   // allowed does NOT clump (a HR is one hit), so it takes NO ME-29/ME-60 bias correction, exactly like pitcher_ks.
@@ -2385,20 +2386,24 @@ function j6row(r,i,tag){var be=r.price!=null?impliedP(r.price):null;var disagree
   return '<div style="font-size:11px;margin-top:4px;border-top:1px solid var(--bord);padding-top:3px'+(tag?';opacity:.6':'')+'">'
     +'<b>'+(tag?'':(i+1)+'. ')+esc(r.player)+'</b> <b style="color:var(--gld)">'+esc(r.mkt)+' O'+r.line+' '+(r.price>0?'+':'')+r.price+'</b>'
     +'<div style="font-size:10px" class="mut">hold '+(r.hold!=null?(r.hold*100).toFixed(1)+'%':'‚Äî')+' ¬∑ raw '+(r.modelPraw!=null?Math.round(r.modelPraw*100)+'%':'‚Äî')+' ‚Üí cal '+(r.prob!=null?Math.round(r.prob*100)+'%':'‚Äî')+' ¬∑ book fair '+(r.fair!=null?Math.round(r.fair*100)+'%':'‚Äî')+' ¬∑ edge '+(r.edge!=null?((r.edge>=0?'+':'')+(r.edge*100).toFixed(1)+'pp'):'‚Äî')+' ¬∑ disagree '+(disagree!=null?((disagree>=0?'+':'')+(disagree*100).toFixed(1)+'pp'):'‚Äî')+(tag?' ¬∑ <span style="color:var(--amb)">killed: '+tag+'</span>':'')+'</div></div>';}
-// ME-203 ‚Äî MATCHUP SHORTLIST card. Reads the worker /join/shortlist (arm‚Üîbat join). Display block, never a bet gate.
-function joinSLcard(){
-  if(!JOIN_SL||!JOIN_SL.shortlist||!JOIN_SL.shortlist.length)return '';
-  var sl=JOIN_SL.shortlist,tbd=JOIN_SL.probables_tbd_count||0;
-  var ageH=JOIN_SL.generated_at?Math.round((Date.now()-new Date(JOIN_SL.generated_at).getTime())/3600e3):null;
-  var lu=JOIN_SL.lineups||null; // ME-73 lineup verification summary
+// ME-207 ‚Äî BAND-FILTERED PICKS. THE page. Reads worker /join/picks (arm‚Üîbat + POSTED price + line-aware fair + edge).
+// Band applies to the POSTED price (‚àí130..+150). Fair shown is fair AT THE POSTED LINE (ME-198). Never pads.
+function picksCard(){
+  var J=JOIN_PICKS; if(!J)return '';
   function ordSuf(n){return n===1?'st':n===2?'nd':n===3?'rd':'th';}
-  var h='<div class="card" style="border-color:var(--grn);background:rgba(34,197,94,.06)"><b style="color:var(--grn);font-size:15px">&#127919; MATCHUP SHORTLIST ‚Äî hot bats vs hittable arms</b>';
-  h+='<div style="font-size:10px;margin-top:2px" class="mut">Arm‚Üîbat join (ME-203, statsapi, 0 credits): bats with L5 60%+ facing a <b>top-6 most-hittable arm</b>, H+R+RBI <b>over 1.5</b>. The percentage is our <b>model estimate</b>; the price beside it is the <b>FAIR odds our % implies ‚Äî NOT a book price</b> (no Hard Rock price is joined yet). '+(tbd>0?'<span style="color:var(--amb)">&#9888; '+tbd+' starter(s) still TBD ‚Äî list rebuilds when they post. </span>':'')+(ageH!=null?'Built '+ageH+'h ago.':'')+'</div>';
-  if(lu){h+='<div style="font-size:9px;margin-top:2px" class="mut">&#9989; Lineups (ME-73): <b>'+(lu.games_posted||0)+'/'+(lu.games_total||0)+'</b> games posted'+((lu.shortlist_suppressed||0)>0?' ¬∑ <b style="color:var(--red)">'+lu.shortlist_suppressed+' bat(s) dropped ‚Äî not in the lineup</b>':'')+((lu.shortlist_not_posted||0)>0?' ¬∑ '+lu.shortlist_not_posted+' awaiting lineup':'')+'. A bat not in the posted lineup is removed automatically.</div>';}
-  sl.forEach(function(b,i){var fp=b.fair_1_5;var luB=(b.lineup_status==='CONFIRMED'&&b.batting_order)?' <span style="color:var(--grn);font-size:9px">batting '+b.batting_order+ordSuf(b.batting_order)+'</span>':(b.lineup_status==='NOT_POSTED'?' <span style="color:var(--amb);font-size:9px">&#9888; lineup not posted</span>':'');
-    h+='<div style="font-size:12px;margin-top:5px;border-top:1px solid var(--bord);padding-top:4px"><span class="mut">'+(i+1)+'.</span> <b>'+esc(b.name)+'</b> <span class="mut">'+esc(b.team||'')+'</span>'+luB+' <b style="color:var(--gld)">H+R+RBI o1.5</b> ¬∑ <b>'+Math.round(b.p_1_5*100)+'%</b> <span class="mut">fair est. '+(fp>0?'+':'')+fp+' (model)</span>'
-      +'<div style="font-size:9px" class="mut">vs '+esc(b.opp_arm||'?')+' ('+(b.opp_arm_baa!=null?'.'+((''+Math.round(b.opp_arm_baa*1000)).padStart(3,'0')):'?')+' BAA, rk'+b.opp_arm_rank+'/'+b.opp_arm_of+' '+esc(b.opp_arm_tier||'')+') ¬∑ L5 '+Math.round(b.l5_1_5*100)+'% ¬∑ last5 ['+(b.hrr_last5||[]).join(',')+']</div></div>';});
-  h+='<div style="font-size:10px;margin-top:7px;padding-top:5px;border-top:1px solid var(--bord);color:var(--amb)">&#9888; Model estimates only ‚Äî no book price joined. The fair odds show what our % implies, not what Hard Rock is paying. <b>Check the posted LINE (confirm it\'s 1.5, ME-198) and PRICE</b> in your app before betting.</div>';
+  function baa(x){return x!=null?'.'+((''+Math.round(x*1000)).padStart(3,'0')):'?';}
+  var picks=J.picks||[],unp=J.unpriced||[],age=J.snapshot_age_hours,stale=J.snapshot_stale;
+  var h='<div class="card" style="border-color:var(--grn);background:rgba(34,197,94,.07)"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b style="color:var(--grn);font-size:16px">&#127919; TONIGHT&#39;S PICKS ‚Äî your range (&minus;130..+150)</b>'+(stale?'<span style="color:var(--red);font-size:9px;white-space:nowrap">&#9888; PRICES '+age+'h STALE</span>':(age!=null?'<span class="mut" style="font-size:9px;white-space:nowrap">prices '+age+'h old</span>':''))+'</div>';
+  h+='<div style="font-size:10px;margin-top:2px" class="mut">Hot bats (L5 60%+) vs a top-6 hittable arm, H+R+RBI, whose <b>posted Hard Rock price sits in your &minus;130..+150 band</b>. Ranked by model probability. <b>EDGE</b> = model % minus the posted price&#39;s implied %. '+(J.lineups?('Lineups '+((J.lineups.games_posted||0)+'/'+(J.lineups.games_total||0))+' posted.'):'')+'</div>';
+  if(picks.length<3)h+='<div style="font-size:11px;margin-top:5px;color:var(--amb)"><b>ONLY '+picks.length+' ROW'+(picks.length===1?'':'S')+' CLEARED THE BAND TONIGHT.</b> A short list is the board talking, not a broken screen.</div>';
+  picks.forEach(function(p,i){
+    var luB=(p.lineup_status==='CONFIRMED'&&p.batting_order)?' <span style="color:var(--grn);font-size:9px">batting '+p.batting_order+ordSuf(p.batting_order)+'</span>':(p.lineup_status==='NOT_POSTED'?' <span style="color:var(--amb);font-size:9px">&#9888; lineup TBD</span>':'');
+    var ec=p.edge_pp>=0?'var(--grn)':'var(--red)';
+    h+='<div style="font-size:12px;margin-top:5px;border-top:1px solid var(--bord);padding-top:4px"><span class="mut">'+(i+1)+'.</span> <b>'+esc(p.name)+'</b> <span class="mut">'+esc(p.team||'')+'</span>'+luB+' ¬∑ <b style="color:var(--gld)">H+R+RBI o'+p.posted_line+' @ '+(p.posted_price>0?'+':'')+p.posted_price+'</b> ¬∑ <b>'+Math.round(p.p_at_posted*100)+'%</b> <span style="color:'+ec+'">edge '+(p.edge_pp>=0?'+':'')+p.edge_pp+'pp</span>'
+      +'<div style="font-size:9px" class="mut">vs '+esc(p.opp_arm||'?')+' ('+baa(p.opp_arm_baa)+' BAA, rk'+p.opp_arm_rank+'/'+p.opp_arm_of+') ¬∑ L5 '+Math.round(p.l5_1_5*100)+'% ¬∑ last5 ['+(p.hrr_last5||[]).join(',')+'] ¬∑ fair '+(p.fair_at_posted>0?'+':'')+p.fair_at_posted+' at o'+p.posted_line+'</div></div>';});
+  if(!picks.length)h+='<div style="font-size:11px;margin-top:5px" class="mut">No rows cleared the &minus;130..+150 band on tonight&#39;s posted prices'+(unp.length?' ('+unp.length+' names have no usable posted line ‚Äî see below)':'')+'.</div>';
+  if(unp.length){h+='<div style="font-size:10px;margin-top:8px;padding-top:5px;border-top:1px solid var(--bord)" class="mut"><b>UNPRICED</b> ‚Äî no posted price to band-filter (shown, never silently dropped):<br>'+unp.map(function(u){return '<b>'+esc(u.name)+'</b> <span style="font-size:8px">('+esc(u.reason||'')+')</span>';}).join(' ¬∑ ')+'</div>';}
+  h+='<div style="font-size:9px;margin-top:7px;padding-top:5px;border-top:1px solid var(--bord);color:var(--amb)">&#9888; '+esc(J.me204_note||'Verify the line in your app (ME-204).')+' Prices snapshot '+(age!=null?age+'h old':'unknown age')+(stale?' ‚Äî STALE, re-check the price before betting':'')+'.</div>';
   h+='</div>';return h;
 }
 function render(){
@@ -2415,7 +2420,7 @@ function render(){
     return;
   }
   var h='';
-  h+=joinSLcard(); // ME-203 ‚Äî matchup shortlist leads the card (hot bats vs hittable arms)
+  var LEAD=picksCard(); // ME-207 ‚Äî band-filtered picks are THE page; everything below collapses into Diagnostics
   var BD=boardData();
   // ME-54 / ME-52 nightly reports (suppress <10 per ME-15)
   try{var mc=D.mcalib;if(mc&&mc.n>=10)console.log('[ME-54 market selection, n='+mc.n+'] surfaced market won '+mc.surfWon+'/'+mc.n+' ('+Math.round(mc.surfWon/mc.n*100)+'%) ¬∑ wrong-prop (surfaced lost, an alt won) '+mc.altBeat+'/'+mc.n+' ('+Math.round(mc.altBeat/mc.n*100)+'%)');else if(mc)console.log('[ME-54] n='+mc.n+' <10 ‚Äî suppressed');}catch(e){}
@@ -2632,7 +2637,7 @@ function render(){
   }
   D.hitters.slice(0,120).forEach(function(x,ix){h+=mcard(x,ix);});
   if(D.hitters.length>120)h+='<div class="card mut" style="font-size:11px">'+(D.hitters.length-120)+' lower-graded cards not shown.</div>';
-  document.getElementById('main').innerHTML=h;
+  document.getElementById('main').innerHTML=LEAD+(LEAD?'<details class="card" style="border-color:var(--mut);margin-top:8px"><summary style="cursor:pointer;color:var(--mut);font-size:12px;font-weight:700">&#128202; DIAGNOSTICS ‚Äî old card, target list &amp; model views (tap to open)</summary>'+h+'</details>':h); // ME-207 ‚Äî picks lead; the rest is diagnostics
 }
 function dotTxt(l){return l==='green'?'üü¢':l==='yellow'?'üü°':'üî¥';}
 function stripTags(s){return(''+(s||'')).replace(/<[^>]+>/g,'');}
