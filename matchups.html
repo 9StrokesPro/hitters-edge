@@ -63,7 +63,7 @@ var MLB='https://statsapi.mlb.com/api/v1';
 var OWM_KEY='6a060c8de21d6f1a5cd9d6fed2b7a53b';
 var ODDS_KEY='e738de03c4b7e835c52b50e1a0b1c494'; // ONLY for game totals context (~2 credits/load)
 var K='me15_';
-var BUILD='v15.045'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
+var BUILD='v15.046'; // NEXT #1 ‚Äî MONOTONIC build number. Bump the last segment by 1 on EVERY build handed to Joe (even a one-line fix). Header + copy export both read this.
 var SHOW_LEGACY=false; // NEXT(2026-08-27) #2 ‚Äî the ONE LIST is the ONLY decision surface, on the PAGE and in the COPY EXPORT. The legacy board sections (Top Picks / Edge / Contact / K / HELD) apply the FULL ace filter while the one list uses the ME-70a-corrected version ‚Äî two surfaces disagreeing = Joe bets a stale board. Flag off, not deleted, so diagnostics recover. Target list + DATA DUMP are NOT legacy (front door + grader feed) and stay.
 // ME-86 ‚Äî stake sizing from bankroll + unit, so a 15-bet night is mechanical not 15 decisions. Configurable
 // in localStorage (me15_bankroll / me15_unit_pct); flat 1u per bet. setBankroll(n)/setUnit(pct) from console.
@@ -2390,10 +2390,13 @@ function joinSLcard(){
   if(!JOIN_SL||!JOIN_SL.shortlist||!JOIN_SL.shortlist.length)return '';
   var sl=JOIN_SL.shortlist,tbd=JOIN_SL.probables_tbd_count||0;
   var ageH=JOIN_SL.generated_at?Math.round((Date.now()-new Date(JOIN_SL.generated_at).getTime())/3600e3):null;
+  var lu=JOIN_SL.lineups||null; // ME-73 lineup verification summary
+  function ordSuf(n){return n===1?'st':n===2?'nd':n===3?'rd':'th';}
   var h='<div class="card" style="border-color:var(--grn);background:rgba(34,197,94,.06)"><b style="color:var(--grn);font-size:15px">&#127919; MATCHUP SHORTLIST ‚Äî hot bats vs hittable arms</b>';
   h+='<div style="font-size:10px;margin-top:2px" class="mut">Arm‚Üîbat join (ME-203, statsapi, 0 credits): bats with L5 60%+ facing a <b>top-6 most-hittable arm</b>, H+R+RBI <b>over 1.5</b>. The percentage is our <b>model estimate</b>; the price beside it is the <b>FAIR odds our % implies ‚Äî NOT a book price</b> (no Hard Rock price is joined yet). '+(tbd>0?'<span style="color:var(--amb)">&#9888; '+tbd+' starter(s) still TBD ‚Äî list rebuilds when they post. </span>':'')+(ageH!=null?'Built '+ageH+'h ago.':'')+'</div>';
-  sl.forEach(function(b,i){var fp=b.fair_1_5;
-    h+='<div style="font-size:12px;margin-top:5px;border-top:1px solid var(--bord);padding-top:4px"><span class="mut">'+(i+1)+'.</span> <b>'+esc(b.name)+'</b> <span class="mut">'+esc(b.team||'')+'</span> <b style="color:var(--gld)">H+R+RBI o1.5</b> ¬∑ <b>'+Math.round(b.p_1_5*100)+'%</b> <span class="mut">fair est. '+(fp>0?'+':'')+fp+' (model)</span>'
+  if(lu){h+='<div style="font-size:9px;margin-top:2px" class="mut">&#9989; Lineups (ME-73): <b>'+(lu.games_posted||0)+'/'+(lu.games_total||0)+'</b> games posted'+((lu.shortlist_suppressed||0)>0?' ¬∑ <b style="color:var(--red)">'+lu.shortlist_suppressed+' bat(s) dropped ‚Äî not in the lineup</b>':'')+((lu.shortlist_not_posted||0)>0?' ¬∑ '+lu.shortlist_not_posted+' awaiting lineup':'')+'. A bat not in the posted lineup is removed automatically.</div>';}
+  sl.forEach(function(b,i){var fp=b.fair_1_5;var luB=(b.lineup_status==='CONFIRMED'&&b.batting_order)?' <span style="color:var(--grn);font-size:9px">batting '+b.batting_order+ordSuf(b.batting_order)+'</span>':(b.lineup_status==='NOT_POSTED'?' <span style="color:var(--amb);font-size:9px">&#9888; lineup not posted</span>':'');
+    h+='<div style="font-size:12px;margin-top:5px;border-top:1px solid var(--bord);padding-top:4px"><span class="mut">'+(i+1)+'.</span> <b>'+esc(b.name)+'</b> <span class="mut">'+esc(b.team||'')+'</span>'+luB+' <b style="color:var(--gld)">H+R+RBI o1.5</b> ¬∑ <b>'+Math.round(b.p_1_5*100)+'%</b> <span class="mut">fair est. '+(fp>0?'+':'')+fp+' (model)</span>'
       +'<div style="font-size:9px" class="mut">vs '+esc(b.opp_arm||'?')+' ('+(b.opp_arm_baa!=null?'.'+((''+Math.round(b.opp_arm_baa*1000)).padStart(3,'0')):'?')+' BAA, rk'+b.opp_arm_rank+'/'+b.opp_arm_of+' '+esc(b.opp_arm_tier||'')+') ¬∑ L5 '+Math.round(b.l5_1_5*100)+'% ¬∑ last5 ['+(b.hrr_last5||[]).join(',')+']</div></div>';});
   h+='<div style="font-size:10px;margin-top:7px;padding-top:5px;border-top:1px solid var(--bord);color:var(--amb)">&#9888; Model estimates only ‚Äî no book price joined. The fair odds show what our % implies, not what Hard Rock is paying. <b>Check the posted LINE (confirm it\'s 1.5, ME-198) and PRICE</b> in your app before betting.</div>';
   h+='</div>';return h;
